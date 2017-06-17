@@ -53,7 +53,6 @@ export class KnexPgDbConnectionFactory implements DbConnectionFactory
     {
         if (this._isDestroyed)
             return Promise.resolve();    
-                
         
         let knex = this._knex;
         this._knex = null;

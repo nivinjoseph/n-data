@@ -1,1 +1,1 @@
-{"version":3,"file":"db-connection-factory.js","sourceRoot":"","sources":["../../src/db-connection-factory/db-connection-factory.ts"],"names":[],"mappings":"","sourcesContent":["// public\nexport interface DbConnectionFactory\n{\n    create(): Promise<object>;\n}"]}
+{"version":3,"file":"db-connection-factory.js","sourceRoot":"","sources":["../../src/db-connection-factory/db-connection-factory.ts"],"names":[],"mappings":"","sourcesContent":["// public\nexport interface DbConnectionFactory\n{\n    create(): Promise<object>;\n    destructor(): Promise<void>;\n}"]}
