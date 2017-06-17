@@ -1,0 +1,54 @@
+{
+    "name": "n-data",
+    "version": "1.0.0",
+    "description": "Data access library for Postgres based on Knex",
+    "main": "./dist/index.js",
+    "types": "./dist/index.d.ts",
+    "scripts": {
+        "ts-build": "tsc -p .",
+        "ts-build-watch": "npm run ts-build -- -w",
+        "ts-build-dist": "tsc -p ./dist",
+        "clean-src": "find ./src -name '*.js' -delete -o -name '*.map' -delete",
+        "clean-test": "find ./test -name '*.js' -delete -o -name '*.map' -delete",
+        "pretest": "npm run ts-build",
+        "test": "mocha --reporter spec --ui tdd --require ts-node/register './test/**/*.test.js' || true",
+        "pretest-ci": "npm run pretest",
+        "test-ci": "mocha --reporter spec --ui tdd --require ts-node/register './test/**/*.test.js'",
+        "pregit-publish": "npm run ts-build-dist && git add . && git commit -m 'preparing to publish new version'",
+        "git-publish": "npm version patch",
+        "postgit-publish": "git push"
+    },
+    "repository": {
+        "type": "git",
+        "url": "git+https://github.com/nivinjoseph/n-data.git"
+    },
+    "keywords": [
+        "data"
+    ],
+    "author": "NiviN",
+    "license": "MIT",
+    "bugs": {
+        "url": "https://github.com/nivinjoseph/n-data/issues"
+    },
+    "homepage": "https://github.com/nivinjoseph/n-data#readme",
+    "devDependencies": {
+        "@types/knex": "0.0.53",
+        "@types/mocha": "^2.2.39",
+        "@types/node": "^7.0.5",
+        "@types/sinon": "^1.16.35",
+        "mocha": "^3.2.0",
+        "sinon": "^2.0.0-pre.6",
+        "ts-node": "^2.1.0",
+        "tslint": "^4.5.1",
+        "typescript": "2.2.1"
+    },
+    "dependencies": {
+        "knex": "^0.13.0",
+        "n-defensive": "git+https://github.com/nivinjoseph/n-defensive.git",
+        "n-exception": "git+https://github.com/nivinjoseph/n-exception.git",
+        "n-ext": "git+https://github.com/nivinjoseph/n-ext.git",
+        "n-ject": "git+https://github.com/nivinjoseph/n-ject.git",
+        "pg": "^6.2.4",
+        "treeize": "^2.0.3"
+    }
+}
