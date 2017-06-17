@@ -60,7 +60,7 @@ suite("Db tests", () =>
 
         test("query should return count", async () =>
         {
-            let result = await db.executeQuery(`select cast(count(*) as int) from products`);
+            let result = await db.executeQuery<any>(`select cast(count(*) as int) from products`);
             Assert.strictEqual(1, result.rows.length);
             Assert.strictEqual(result.rows[0].count, 2);
         });
@@ -164,7 +164,7 @@ suite("Db tests", () =>
                 await unitOfWork.rollback();
             }
 
-            let result = await db.executeQuery(`select cast(count(*) as int) from products where id in (5, 6)`);
+            let result = await db.executeQuery<any>(`select cast(count(*) as int) from products where id in (5, 6)`);
             Assert.strictEqual(result.rows[0].count, 0);
         });
     });
@@ -212,7 +212,33 @@ suite("Db tests", () =>
             `);
         });
 
-        test("Produce object tree from query", async () =>
+        test("Produce single object tree from query", async () =>
+        {
+            let result = await db.executeQuery(`
+                    select c.id as id, c.name as name, o.id as "orders:id", o.amount as "orders:amount"
+                    from customers as c inner join orders as o on c.id = o.customer_id where c.id = 1
+                `);
+
+            let data = result.toObjectTree();
+            Assert.deepEqual(data, [
+                {
+                    id: 1,
+                    name: "nivin",
+                    orders: [
+                        {
+                            id: 1,
+                            amount: 50.00
+                        },
+                        {
+                            id: 2,
+                            amount: 30.00
+                        }
+                    ]
+                }
+            ]);
+        });
+        
+        test("Produce multiple object trees from query", async () =>
         {
             let result = await db.executeQuery(`
                     select c.id as id, c.name as name, o.id as "orders:id", o.amount as "orders:amount"

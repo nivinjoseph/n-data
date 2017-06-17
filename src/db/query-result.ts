@@ -3,22 +3,22 @@ const Treeize = require("treeize");
 
 
 // public
-export class QueryResult
+export class QueryResult<T>
 {
-    private readonly _rows: Array<any>;
+    private readonly _rows: Array<T>;
     
     
-    public get rows(): ReadonlyArray<any> { return this._rows; }
+    public get rows(): ReadonlyArray<T> { return this._rows; }
     
     
-    public constructor(rows: Array<any>)
+    public constructor(rows: Array<T>)
     {
         given(rows, "rows").ensureHasValue();
         this._rows = rows;
     }
     
     
-    public toObjectTree(): Object
+    public toObjectTree<U>(): Array<U>
     {
         let tree = new Treeize();
         tree.grow(this._rows);

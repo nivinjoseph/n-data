@@ -25,9 +25,9 @@ export class KnexPgDb implements Db
     }
     
     
-    public executeQuery(sql: string, ...params: Array<any>): Promise<QueryResult>
+    public executeQuery<T>(sql: string, ...params: Array<any>): Promise<QueryResult<T>>
     {
-        let promise = new Promise<QueryResult>((resolve, reject) =>
+        let promise = new Promise<QueryResult<T>>((resolve, reject) =>
         {
             this._dbConnectionFactory.create()
                 .then((knex: Knex) =>
@@ -40,7 +40,7 @@ export class KnexPgDb implements Db
                         }
                         else
                         {
-                            resolve(new QueryResult(result.rows));
+                            resolve(new QueryResult<T>(result.rows));
                         }
                     });
                 })

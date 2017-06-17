@@ -1,6 +1,6 @@
-export declare class QueryResult {
+export declare class QueryResult<T> {
     private readonly _rows;
-    readonly rows: ReadonlyArray<any>;
-    constructor(rows: Array<any>);
-    toObjectTree(): Object;
+    readonly rows: ReadonlyArray<T>;
+    constructor(rows: Array<T>);
+    toObjectTree<U>(): Array<U>;
 }
