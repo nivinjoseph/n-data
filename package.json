@@ -1,6 +1,6 @@
 {
   "name": "n-data",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "description": "Data access library for Postgres based on Knex",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
