@@ -21,7 +21,7 @@ let KnexPgUnitOfWork = class KnexPgUnitOfWork {
     getTransactionScope() {
         if (this._transactionScope) {
             if (this._transactionScope.isCommitted || this._transactionScope.isRolledBack)
-                return Promise.reject(new n_exception_1.InvalidOperationException("using completed transaction scope"));
+                return Promise.reject(new n_exception_1.InvalidOperationException("using completed UnitOfWork"));
             return Promise.resolve(this._transactionScope.trx);
         }
         let promise = new Promise((resolve, reject) => {
@@ -31,7 +31,7 @@ let KnexPgUnitOfWork = class KnexPgUnitOfWork {
                     if (this._transactionScope) {
                         trx.rollback();
                         if (this._transactionScope.isCommitted || this._transactionScope.isRolledBack)
-                            reject(new n_exception_1.InvalidOperationException("using completed transaction scope"));
+                            reject(new n_exception_1.InvalidOperationException("using completed UnitOfWork"));
                         else
                             resolve(this._transactionScope.trx);
                     }
@@ -53,7 +53,7 @@ let KnexPgUnitOfWork = class KnexPgUnitOfWork {
         if (!this._transactionScope)
             return Promise.resolve();
         if (this._transactionScope.isCommitted || this._transactionScope.isRolledBack)
-            return Promise.reject(new n_exception_1.InvalidOperationException("using completed transaction scope"));
+            return Promise.reject(new n_exception_1.InvalidOperationException("commiting completed UnitOfWork"));
         this._transactionScope.isCommitted = true;
         let promise = new Promise((resolve, reject) => {
             this._transactionScope.trx.commit()
@@ -66,8 +66,8 @@ let KnexPgUnitOfWork = class KnexPgUnitOfWork {
         if (!this._transactionScope)
             return Promise.resolve();
         if (this._transactionScope.isCommitted || this._transactionScope.isRolledBack)
-            return Promise.reject(new n_exception_1.InvalidOperationException("using completed transaction scope"));
-        this._transactionScope.isCommitted = true;
+            return Promise.reject(new n_exception_1.InvalidOperationException("rolling back completed UnitOfWork"));
+        this._transactionScope.isRolledBack = true;
         let promise = new Promise((resolve, reject) => {
             this._transactionScope.trx.rollback("[DELIBERATE]")
                 .then(() => resolve())
