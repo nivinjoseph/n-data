@@ -285,6 +285,8 @@ suite("Db tests", () =>
     
     suite("JsonB query tests", () =>
     {
+        let createdOn = Date.now();
+        
         suiteSetup(async () =>
         {
             await db.executeCommand(`
@@ -299,7 +301,8 @@ suite("Db tests", () =>
             await db.executeCommand(`
                 insert into assets(id, body)
                     values(?,?), (?,?)
-            `, 1, { name: "txt1.txt", ext: "txt" }, 2, { name: "import.xls", ext: "xls" });
+            `, 1, { name: "txt1.txt", ext: "txt", createdOn: createdOn },
+                2, { name: "import.xls", ext: "xls" });
         });
         
         suiteTeardown(async () =>
@@ -313,7 +316,15 @@ suite("Db tests", () =>
         {
             let result = await db.executeQuery("select * from assets where id = 1");
             Assert.strictEqual(result.rows.length, 1);
-            Assert.deepEqual(result.rows, [{ id: 1, body: { name: "txt1.txt", ext: "txt" } }]);
+            Assert.deepEqual(result.rows, [
+                {
+                id: 1,
+                body: {
+                    name: "txt1.txt",
+                    ext: "txt",
+                    createdOn: createdOn
+                }
+                }]);
         });
     });
     
