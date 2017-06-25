@@ -64,6 +64,13 @@ suite("Db tests", () =>
             Assert.strictEqual(1, result.rows.length);
             Assert.strictEqual(result.rows[0].count, 2);
         });
+        
+        test("query with in clause should return results", async () =>
+        {
+            let result = await db.executeQuery(`select * from products where id in (?, ?)`, 1, 2);
+            Assert.strictEqual(2, result.rows.length);
+            Assert.deepEqual(result.rows, [{ id: 1, name: "cheese" }, { id: 2, name: "wine" }]);
+        });
     });
 
     suite("Command tests", () =>
@@ -301,8 +308,19 @@ suite("Db tests", () =>
             await db.executeCommand(`
                 insert into assets(id, body)
                     values(?,?), (?,?)
-            `, 1, { name: "txt1.txt", ext: "txt", createdOn: createdOn },
-                2, { name: "import.xls", ext: "xls" });
+            `, 1,
+                {
+                    name: "txt1.txt",
+                    ext: "txt", createdOn:
+                    createdOn,
+                    tags: ["baz", "bar"]
+                },
+                2,
+                {
+                    name: "import.xls",
+                    ext: "xls",
+                    tags: ["foo", "bar"]
+                });
         });
         
         suiteTeardown(async () =>
@@ -312,18 +330,58 @@ suite("Db tests", () =>
             `);
         });
         
-        test("successfully retrieve jsonb data", async () =>
+        test("successfully retrieve jsonb data when queried by id", async () =>
         {
-            let result = await db.executeQuery("select * from assets where id = 1");
+            let result = await db.executeQuery("select * from assets where id = ?", 1);
             Assert.strictEqual(result.rows.length, 1);
             Assert.deepEqual(result.rows, [
                 {
-                id: 1,
-                body: {
-                    name: "txt1.txt",
-                    ext: "txt",
-                    createdOn: createdOn
-                }
+                    id: 1,
+                    body: {
+                        name: "txt1.txt",
+                        ext: "txt",
+                        createdOn: createdOn,
+                        tags: ["baz", "bar"]
+                    }
+                }]);
+        });
+        
+        test("successfully retrieve jsonb data when queried by jsonb scalar field", async () =>
+        {
+            let result = await db.executeQuery(`select * from assets where body @> ?;`, {ext: "xls"});
+            Assert.strictEqual(result.rows.length, 1);
+            Assert.deepEqual(result.rows, [
+                {
+                    id: 2,
+                    body: {
+                        name: "import.xls",
+                        ext: "xls",
+                        tags: ["foo", "bar"]
+                    }
+                }]);
+        });
+        
+        test("successfully retrieve jsonb data when queried by jsonb array field", async () =>
+        {
+            let result = await db.executeQuery(`select * from assets where body @> ?;`, { tags: ["bar"] });
+            Assert.strictEqual(result.rows.length, 2);
+            Assert.deepEqual(result.rows, [
+                {
+                    id: 1,
+                    body: {
+                        name: "txt1.txt",
+                        ext: "txt",
+                        createdOn: createdOn,
+                        tags: ["baz", "bar"]
+                    }
+                },
+                {
+                    id: 2,
+                    body: {
+                        name: "import.xls",
+                        ext: "xls",
+                        tags: ["foo", "bar"]
+                    }
                 }]);
         });
     });
