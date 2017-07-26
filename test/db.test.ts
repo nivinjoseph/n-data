@@ -118,6 +118,73 @@ suite("Db tests", () =>
             Assert.deepEqual(result.rows, [{ id: 3, name: "milk" }, { id: 4, name: "pasta" }]);
         });
     });
+    
+    suite("Versioning tests", () =>
+    {
+        suiteSetup(async () =>
+        {
+            // console.log("creating table");
+            await db.executeCommand(`
+                drop table if exists products;
+                create table products(
+                    id int primary key,
+                    version int not null,
+                    name varchar(100)
+                );
+            `);
+            
+            // console.log("Inserting 2");
+            await db.executeCommand(`
+                insert into products(id, version, name) values(1, 1, 'cheese'), (2, 1, 'bread');
+            `);
+            
+            // console.log("updating 1");
+            // await db.executeCommand(`update products set version = ?, name = ? where id = ? and version = ?;`,
+            //     2, "brie cheese", 1, 1);
+            
+            // console.log("updating 2");
+            // await db.executeCommand(`update products set version = ? where id in (?, ?);`,
+            //     3, 1, 2);
+            
+            // console.log("deleting 1");
+            // await db.executeCommand(`delete from products where id = 1;`);
+        });
+        
+        // test("nothing", () =>
+        // {
+        //     Assert.ok(true);
+        // });
+        
+        test("Should successfully update record", async () =>
+        {
+            let sql = `update products set version = ?, name = ? where id = ? and version = ?;`;
+            await db.executeCommand(sql, 2, "brie cheese", 1, 1);
+            let result = await db.executeQuery("select * from products order by id;");
+            Assert.strictEqual(result.rows.length, 2);
+            Assert.deepEqual(result.rows, [{ id: 1, version: 2, name: "brie cheese" }, { id: 2, version: 1, name: "bread" }]);
+        });
+        
+        test("Should fail and not update the record", async () =>
+        {
+            let sql = `update products set version = ?, name = ? where id = ? and version = ?;`;
+            
+            let exceptionThrown = false;
+            try 
+            {
+                await db.executeCommand(sql, 2, "provolone cheese", 1, 1);
+            }
+            catch (error)
+            {
+                exceptionThrown = true;
+                // console.log(error);
+            }
+            
+            Assert.strictEqual(exceptionThrown, true);
+            let result = await db.executeQuery("select * from products order by id;");
+            Assert.strictEqual(result.rows.length, 2);
+            Assert.deepEqual(result.rows, [{ id: 1, version: 2, name: "brie cheese" }, { id: 2, version: 1, name: "bread" }]);
+        });
+    });
 
     suite("UnitOfWork tests", () =>
     {

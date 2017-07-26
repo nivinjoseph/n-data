@@ -42,13 +42,16 @@ let KnexPgDb = class KnexPgDb {
         let promise = new Promise((resolve, reject) => {
             this._dbConnectionFactory.create()
                 .then((knex) => {
-                knex.raw(sql, params).asCallback((err) => {
+                knex.raw(sql, params).asCallback((err, result) => {
                     if (err) {
                         reject(new db_exception_1.DbException(operation_type_1.OperationType.command, sql, params, err));
+                        return;
                     }
-                    else {
-                        resolve();
+                    if (!this.validateCommandResult(result)) {
+                        reject(new db_exception_1.DbException(operation_type_1.OperationType.command, sql, params, new Error("No rows were affected.")));
+                        return;
                     }
+                    resolve();
                 });
             })
                 .catch(err => reject(err));
@@ -59,18 +62,31 @@ let KnexPgDb = class KnexPgDb {
         let promise = new Promise((resolve, reject) => {
             transactionProvider.getTransactionScope()
                 .then((trx) => {
-                trx.raw(sql, params).asCallback((err) => {
+                trx.raw(sql, params).asCallback((err, result) => {
                     if (err) {
                         reject(new db_exception_1.DbException(operation_type_1.OperationType.command, sql, params, err));
+                        return;
                     }
-                    else {
-                        resolve();
+                    if (!this.validateCommandResult(result)) {
+                        reject(new db_exception_1.DbException(operation_type_1.OperationType.command, sql, params, new Error("No rows were affected.")));
+                        return;
                     }
+                    resolve();
                 });
             })
                 .catch(err => reject(err));
         });
         return promise;
+    }
+    validateCommandResult(result) {
+        let command = result.command;
+        let rowCount = result.rowCount;
+        let commands = ["INSERT", "UPDATE", "DELETE"];
+        if (commands.some(t => t === command)) {
+            if (rowCount === undefined || rowCount === null || Number.isNaN(rowCount) || rowCount <= 0)
+                return false;
+        }
+        return true;
     }
 };
 KnexPgDb = __decorate([

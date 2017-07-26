@@ -9,4 +9,5 @@ export declare class KnexPgDb implements Db {
     executeQuery<T>(sql: string, ...params: Array<any>): Promise<QueryResult<T>>;
     executeCommand(sql: string, ...params: any[]): Promise<void>;
     executeCommandWithinUnitOfWork(transactionProvider: TransactionProvider, sql: string, ...params: any[]): Promise<void>;
+    private validateCommandResult(result);
 }

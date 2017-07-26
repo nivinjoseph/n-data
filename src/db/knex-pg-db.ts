@@ -57,16 +57,21 @@ export class KnexPgDb implements Db
             this._dbConnectionFactory.create()
                 .then((knex: Knex) =>
                 {
-                    knex.raw(sql, params).asCallback((err) =>
+                    knex.raw(sql, params).asCallback((err, result: any) =>
                     {
                         if (err)
                         {
                             reject(new DbException(OperationType.command, sql, params, err));
+                            return;
                         }
-                        else
+                        
+                        if (!this.validateCommandResult(result))
                         {
-                            resolve();
+                            reject(new DbException(OperationType.command, sql, params, new Error("No rows were affected.")));
+                            return;
                         }
+                        
+                        resolve();
                     });
                 })
                 .catch(err => reject(err));
@@ -82,21 +87,41 @@ export class KnexPgDb implements Db
             transactionProvider.getTransactionScope()
                 .then((trx: Knex.Transaction) =>
                 {
-                    trx.raw(sql, params).asCallback((err) =>
+                    trx.raw(sql, params).asCallback((err, result: any) =>
                     {
                         if (err)
                         {
                             reject(new DbException(OperationType.command, sql, params, err));
+                            return;
                         }
-                        else
+
+                        if (!this.validateCommandResult(result))
                         {
-                            resolve();
+                            reject(new DbException(OperationType.command, sql, params, new Error("No rows were affected.")));
+                            return;
                         }
+
+                        resolve();
                     });
                 })
                 .catch(err => reject(err));
         });
 
         return promise;
+    }
+    
+    private validateCommandResult(result: any): boolean
+    {
+        let command: string = result.command;
+        let rowCount: number = result.rowCount;
+        
+        let commands = ["INSERT", "UPDATE", "DELETE"];
+        if (commands.some(t => t === command))
+        {
+            if (rowCount === undefined || rowCount === null || Number.isNaN(rowCount) || rowCount <= 0)
+                return false;
+        }
+        
+        return true;
     }
 }
