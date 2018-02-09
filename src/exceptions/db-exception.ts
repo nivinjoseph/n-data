@@ -1,6 +1,6 @@
-import { Exception } from "n-exception";
+import { Exception } from "@nivinjoseph/n-exception";
 import { OperationType } from "./operation-type";
-import { given } from "n-defensive";
+import { given } from "@nivinjoseph/n-defensive";
 
 
 export class DbException extends Exception

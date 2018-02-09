@@ -1,8 +1,8 @@
 import { DbConnectionFactory } from "./db-connection-factory";
-import { given } from "n-defensive";
-import "n-ext";
+import { given } from "@nivinjoseph/n-defensive";
+import "@nivinjoseph/n-ext";
 import * as Knex from "knex";
-import { InvalidOperationException } from "n-exception";
+import { InvalidOperationException } from "@nivinjoseph/n-exception";
 
 
 // public

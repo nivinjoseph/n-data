@@ -1,4 +1,4 @@
-import { Exception } from "n-exception";
+import { Exception } from "@nivinjoseph/n-exception";
 import { OperationType } from "./operation-type";
 export declare class DbException extends Exception {
     private readonly _operation;

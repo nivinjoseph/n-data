@@ -1,5 +1,5 @@
 import { Db } from "./db";
-import "n-ext";
+import "@nivinjoseph/n-ext";
 import { DbConnectionFactory } from "../db-connection-factory/db-connection-factory";
 import { TransactionProvider } from "../unit-of-work/transaction-provider";
 import { QueryResult } from "./query-result";

@@ -9,9 +9,9 @@ var __metadata = (this && this.__metadata) || function (k, v) {
     if (typeof Reflect === "object" && typeof Reflect.metadata === "function") return Reflect.metadata(k, v);
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-const n_defensive_1 = require("n-defensive");
-const n_exception_1 = require("n-exception");
-const n_ject_1 = require("n-ject");
+const n_defensive_1 = require("@nivinjoseph/n-defensive");
+const n_exception_1 = require("@nivinjoseph/n-exception");
+const n_ject_1 = require("@nivinjoseph/n-ject");
 // public
 let KnexPgUnitOfWork = class KnexPgUnitOfWork {
     constructor(dbConnectionFactory) {

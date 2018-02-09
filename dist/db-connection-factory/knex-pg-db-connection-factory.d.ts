@@ -1,5 +1,5 @@
 import { DbConnectionFactory } from "./db-connection-factory";
-import "n-ext";
+import "@nivinjoseph/n-ext";
 export declare class KnexPgDbConnectionFactory implements DbConnectionFactory {
     private readonly _config;
     private _knex;

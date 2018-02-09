@@ -1,12 +1,12 @@
 import { Db } from "./db";
-import { given } from "n-defensive";
-import "n-ext";
+import { given } from "@nivinjoseph/n-defensive";
+import "@nivinjoseph/n-ext";
 import * as Knex from "knex";
 import { DbException } from "../exceptions/db-exception";
 import { OperationType } from "../exceptions/operation-type";
 import { DbConnectionFactory } from "../db-connection-factory/db-connection-factory";
 import { TransactionProvider } from "../unit-of-work/transaction-provider";
-import { inject } from "n-ject";
+import { inject } from "@nivinjoseph/n-ject";
 import { QueryResult } from "./query-result";
 
 

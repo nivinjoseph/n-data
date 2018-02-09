@@ -9,11 +9,11 @@ var __metadata = (this && this.__metadata) || function (k, v) {
     if (typeof Reflect === "object" && typeof Reflect.metadata === "function") return Reflect.metadata(k, v);
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-const n_defensive_1 = require("n-defensive");
-require("n-ext");
+const n_defensive_1 = require("@nivinjoseph/n-defensive");
+require("@nivinjoseph/n-ext");
 const db_exception_1 = require("../exceptions/db-exception");
 const operation_type_1 = require("../exceptions/operation-type");
-const n_ject_1 = require("n-ject");
+const n_ject_1 = require("@nivinjoseph/n-ject");
 const query_result_1 = require("./query-result");
 // public
 let KnexPgDb = class KnexPgDb {

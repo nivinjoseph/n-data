@@ -1,8 +1,8 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-const n_exception_1 = require("n-exception");
+const n_exception_1 = require("@nivinjoseph/n-exception");
 const operation_type_1 = require("./operation-type");
-const n_defensive_1 = require("n-defensive");
+const n_defensive_1 = require("@nivinjoseph/n-defensive");
 class DbException extends n_exception_1.Exception {
     get operation() { return this._operation; }
     get sql() { return this._sql; }
