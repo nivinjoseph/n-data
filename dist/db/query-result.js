@@ -2,7 +2,6 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 const n_defensive_1 = require("@nivinjoseph/n-defensive");
 const Treeize = require("treeize");
-// public
 class QueryResult {
     constructor(rows) {
         n_defensive_1.given(rows, "rows").ensureHasValue();

@@ -4,7 +4,6 @@ const n_defensive_1 = require("@nivinjoseph/n-defensive");
 require("@nivinjoseph/n-ext");
 const Knex = require("knex");
 const n_exception_1 = require("@nivinjoseph/n-exception");
-// public
 class KnexPgDbConnectionFactory {
     constructor(host, port, database, username, password) {
         this._config = {
@@ -13,7 +12,6 @@ class KnexPgDbConnectionFactory {
                 min: 2,
                 max: 10
             }
-            // debug: true
         };
         this._isDestroyed = false;
         n_defensive_1.given(host, "host").ensureHasValue().ensure(t => !t.isEmptyOrWhiteSpace());

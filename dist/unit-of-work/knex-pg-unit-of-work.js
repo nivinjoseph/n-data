@@ -12,7 +12,6 @@ Object.defineProperty(exports, "__esModule", { value: true });
 const n_defensive_1 = require("@nivinjoseph/n-defensive");
 const n_exception_1 = require("@nivinjoseph/n-exception");
 const n_ject_1 = require("@nivinjoseph/n-ject");
-// public
 let KnexPgUnitOfWork = class KnexPgUnitOfWork {
     constructor(dbConnectionFactory) {
         n_defensive_1.given(dbConnectionFactory, "dbConnectionFactory").ensureHasValue();

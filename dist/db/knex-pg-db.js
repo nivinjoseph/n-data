@@ -15,7 +15,6 @@ const db_exception_1 = require("../exceptions/db-exception");
 const operation_type_1 = require("../exceptions/operation-type");
 const n_ject_1 = require("@nivinjoseph/n-ject");
 const query_result_1 = require("./query-result");
-// public
 let KnexPgDb = class KnexPgDb {
     constructor(dbConnectionFactory) {
         n_defensive_1.given(dbConnectionFactory, "dbConnectionFactory").ensureHasValue();
