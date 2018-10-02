@@ -1,52 +1,50 @@
 {
-  "name": "@nivinjoseph/n-data",
-  "version": "1.0.7",
-  "description": "Data access library for Postgres based on Knex",
-  "main": "./dist/index.js",
-  "types": "./dist/index.d.ts",
-  "scripts": {
-    "ts-build": "tsc -p .",
-    "ts-build-watch": "npm run ts-build -- -w",
-    "ts-build-dist": "tsc -p ./dist",
-    "clean-src": "find ./src -name '*.js' -delete -o -name '*.map' -delete",
-    "clean-test": "find ./test -name '*.js' -delete -o -name '*.map' -delete",
-    "pretest": "npm run ts-build",
-    "test": "mocha --reporter spec --ui tdd --require ts-node/register './test/**/*.test.js' || true",
-    "pretest-ci": "npm run pretest",
-    "test-ci": "mocha --reporter spec --ui tdd --require ts-node/register './test/**/*.test.js'",
-    "publish-package": "npm run ts-build-dist && git add . && git commit -m 'preparing to publish new version' && npm version patch && git push && npm publish --access=public"
-  },
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/nivinjoseph/n-data.git"
-  },
-  "keywords": [
-    "data"
-  ],
-  "author": "NiviN",
-  "license": "MIT",
-  "bugs": {
-    "url": "https://github.com/nivinjoseph/n-data/issues"
-  },
-  "homepage": "https://github.com/nivinjoseph/n-data#readme",
-  "devDependencies": {
-    "@types/knex": "0.0.53",
-    "@types/mocha": "^2.2.48",
-    "@types/node": "^7.0.53",
-    "@types/sinon": "^1.16.35",
-    "mocha": "^3.2.0",
-    "sinon": "^2.0.0-pre.6",
-    "ts-node": "^2.1.0",
-    "tslint": "^4.5.1",
-    "typescript": "^2.7.1"
-  },
-  "dependencies": {
-    "@nivinjoseph/n-defensive": "^1.0.17",
-    "@nivinjoseph/n-exception": "^1.0.13",
-    "@nivinjoseph/n-ext": "^1.0.24",
-    "@nivinjoseph/n-ject": "^1.0.11",
-    "knex": "^0.13.0",
-    "pg": "^6.2.4",
-    "treeize": "^2.0.3"
-  }
+    "name": "@nivinjoseph/n-data",
+    "version": "1.0.7",
+    "description": "Data access library for Postgres based on Knex",
+    "main": "./dist/index.js",
+    "types": "./dist/index.d.ts",
+    "scripts": {
+        "ts-compile": "tsc -p .",
+        "ts-lint": "tslint -p . -c tslint.json",
+        "ts-build": "npm run ts-compile && npm run ts-lint",
+        "ts-build-dist": "npm run ts-build && tsc -p ./dist",
+        "clean-src": "find ./src -name '*.js' -delete -o -name '*.map' -delete",
+        "clean-test": "find ./test -name '*.js' -delete -o -name '*.map' -delete",
+        "pretest": "npm run ts-build",
+        "test": "mocha --reporter spec --ui tdd --require ts-node/register './test/**/*.test.js' || true",
+        "pretest-ci": "npm run pretest",
+        "test-ci": "mocha --reporter spec --ui tdd --require ts-node/register './test/**/*.test.js'",
+        "publish-package": "npm run ts-build-dist && git add . && git commit -m 'preparing to publish new version' && npm version patch && git push && npm publish --access=public"
+    },
+    "repository": {
+        "type": "git",
+        "url": "git+https://github.com/nivinjoseph/n-data.git"
+    },
+    "keywords": [
+        "data"
+    ],
+    "author": "NiviN",
+    "license": "MIT",
+    "bugs": {
+        "url": "https://github.com/nivinjoseph/n-data/issues"
+    },
+    "homepage": "https://github.com/nivinjoseph/n-data#readme",
+    "devDependencies": {},
+    "dependencies": {
+        "@nivinjoseph/n-defensive": "^1.0.17",
+        "@nivinjoseph/n-exception": "^1.0.13",
+        "@nivinjoseph/n-ext": "^1.0.24",
+        "@nivinjoseph/n-ject": "^1.0.11",
+        "@types/knex": "0.14.25",
+        "@types/mocha": "^5.2.5",
+        "@types/node": "^8.9.5",
+        "knex": "^0.15.2",
+        "mocha": "^5.2.0",
+        "pg": "^7.4.3",
+        "treeize": "^2.1.2",
+        "ts-node": "^7.0.1",
+        "tslint": "^5.11.0",
+        "typescript": "^3.1.1"
+    }
 }

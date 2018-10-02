@@ -17,10 +17,10 @@ suite("Db tests", () =>
         db = new KnexPgDb(dbConnectionFactory);
     });
 
-    suiteTeardown(() =>
+    suiteTeardown(async () =>
     {
         if (dbConnectionFactory && dbConnectionFactory instanceof KnexPgDbConnectionFactory)
-            (dbConnectionFactory as KnexPgDbConnectionFactory).destructor();
+            await (dbConnectionFactory as KnexPgDbConnectionFactory).destructor();
     });
 
 

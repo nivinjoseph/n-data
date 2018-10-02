@@ -15,4 +15,4 @@ export
     Db, KnexPgDb, QueryResult,
     DbConnectionFactory, KnexPgDbConnectionFactory,
     TransactionProvider, UnitOfWork, KnexPgUnitOfWork
-}
+};
