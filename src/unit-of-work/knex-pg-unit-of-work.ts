@@ -69,7 +69,7 @@ export class KnexPgUnitOfWork implements UnitOfWork
             return Promise.resolve();
         
         if (this._transactionScope.isCommitted || this._transactionScope.isRolledBack)
-            return Promise.reject(new InvalidOperationException("commiting completed UnitOfWork"));    
+            return Promise.reject(new InvalidOperationException("committing completed UnitOfWork"));    
         
         this._transactionScope.isCommitted = true;
         let promise = new Promise<void>((resolve, reject) =>

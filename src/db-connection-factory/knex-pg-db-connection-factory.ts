@@ -49,7 +49,7 @@ export class KnexPgDbConnectionFactory implements DbConnectionFactory
         return Promise.resolve(this._knex);
     }
     
-    public destructor(): Promise<void>
+    public dispose(): Promise<void>
     {
         if (this._isDestroyed)
             return Promise.resolve();    

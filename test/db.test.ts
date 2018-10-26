@@ -13,14 +13,14 @@ suite("Db tests", () =>
 
     suiteSetup(async () =>
     {
-        dbConnectionFactory = new KnexPgDbConnectionFactory("localhost", "5432", "testdb", "postgres", "P0stgr3s");
+        dbConnectionFactory = new KnexPgDbConnectionFactory("localhost", "5432", "testdb", "postgres", "p@ssw0rd");
         db = new KnexPgDb(dbConnectionFactory);
     });
 
     suiteTeardown(async () =>
     {
         if (dbConnectionFactory && dbConnectionFactory instanceof KnexPgDbConnectionFactory)
-            await (dbConnectionFactory as KnexPgDbConnectionFactory).destructor();
+            await (dbConnectionFactory as KnexPgDbConnectionFactory).dispose();
     });
 
 
