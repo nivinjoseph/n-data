@@ -6,5 +6,5 @@ export declare class KnexPgDbConnectionFactory implements DbConnectionFactory {
     private _isDestroyed;
     constructor(host: string, port: string, database: string, username: string, password: string);
     create(): Promise<object>;
-    destructor(): Promise<void>;
+    dispose(): Promise<void>;
 }

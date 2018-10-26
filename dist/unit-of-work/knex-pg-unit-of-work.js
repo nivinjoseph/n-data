@@ -52,7 +52,7 @@ let KnexPgUnitOfWork = class KnexPgUnitOfWork {
         if (!this._transactionScope)
             return Promise.resolve();
         if (this._transactionScope.isCommitted || this._transactionScope.isRolledBack)
-            return Promise.reject(new n_exception_1.InvalidOperationException("commiting completed UnitOfWork"));
+            return Promise.reject(new n_exception_1.InvalidOperationException("committing completed UnitOfWork"));
         this._transactionScope.isCommitted = true;
         let promise = new Promise((resolve, reject) => {
             this._transactionScope.trx.commit()

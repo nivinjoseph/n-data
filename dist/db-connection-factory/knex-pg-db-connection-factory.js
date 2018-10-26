@@ -33,7 +33,7 @@ class KnexPgDbConnectionFactory {
             throw new n_exception_1.InvalidOperationException("using destroyed instance");
         return Promise.resolve(this._knex);
     }
-    destructor() {
+    dispose() {
         if (this._isDestroyed)
             return Promise.resolve();
         let knex = this._knex;
