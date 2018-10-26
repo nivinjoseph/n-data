@@ -12,7 +12,7 @@
         "clean-src": "find ./src -name '*.js' -delete -o -name '*.map' -delete",
         "clean-test": "find ./test -name '*.js' -delete -o -name '*.map' -delete",
         "setup-db-server": "docker run --name test-postgres -p 5432:5432 -e POSTGRES_PASSWORD=p@ssw0rd -d postgres:10.5 && sleep 5",
-        "setup-db": "docker run -it --rm -e PGPASSWORD=p@ssw0rd postgres:10.5 psql -h 172.17.0.1 -U postgres -c 'create database testdb'",
+        "setup-db": "docker run -it --rm -e PGPASSWORD=p@ssw0rd postgres:10.5 psql -h 172.17.0.1 -U postgres -c 'create database testdb;'",
         "pretest": "npm run ts-build && npm run setup-db-server && npm run setup-db",
         "test": "mocha --reporter spec --ui tdd --require ts-node/register './test/**/*.test.js' || true",
         "posttest": "docker stop test-postgres && docker rm test-postgres",
