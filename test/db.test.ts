@@ -19,8 +19,7 @@ suite("Db tests", () =>
 
     suiteTeardown(async () =>
     {
-        if (dbConnectionFactory && dbConnectionFactory instanceof KnexPgDbConnectionFactory)
-            await (dbConnectionFactory as KnexPgDbConnectionFactory).dispose();
+        await dbConnectionFactory.dispose();
     });
 
 

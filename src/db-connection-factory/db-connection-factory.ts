@@ -1,6 +1,7 @@
+import { Disposable } from "@nivinjoseph/n-util";
+
 // public
-export interface DbConnectionFactory
+export interface DbConnectionFactory extends Disposable
 {
     create(): Promise<object>;
-    dispose(): Promise<void>;
 }

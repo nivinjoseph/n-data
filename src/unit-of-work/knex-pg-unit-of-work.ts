@@ -102,6 +102,7 @@ export class KnexPgUnitOfWork implements UnitOfWork
     }
 }
 
+
 interface TransactionScope
 {
     trx: Knex.Transaction;

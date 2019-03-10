@@ -2,7 +2,7 @@ import { DbConnectionFactory } from "./db-connection-factory";
 import { given } from "@nivinjoseph/n-defensive";
 import "@nivinjoseph/n-ext";
 import * as Knex from "knex";
-import { InvalidOperationException } from "@nivinjoseph/n-exception";
+import { ObjectDisposedException } from "@nivinjoseph/n-exception";
 
 
 // public
@@ -18,7 +18,7 @@ export class KnexPgDbConnectionFactory implements DbConnectionFactory
     };
 
     private _knex: Knex;
-    private _isDestroyed = false;
+    private _isDisposed = false;
     
     
     public constructor(host: string, port: string, database: string, username: string, password: string)
@@ -43,18 +43,20 @@ export class KnexPgDbConnectionFactory implements DbConnectionFactory
     
     public create(): Promise<object>
     {
-        if (this._isDestroyed)
-            throw new InvalidOperationException("using destroyed instance");    
+        if (this._isDisposed)
+            return Promise.reject(new ObjectDisposedException(this));
         
         return Promise.resolve(this._knex);
     }
     
     public dispose(): Promise<void>
     {
-        if (this._isDestroyed)
+        if (this._isDisposed)
             return Promise.resolve();    
         
-        let knex = this._knex;
+        this._isDisposed = true;
+        
+        const knex = this._knex;
         this._knex = null;
         return new Promise<void>((resolve, reject) =>
         {
