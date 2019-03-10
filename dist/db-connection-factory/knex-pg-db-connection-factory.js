@@ -13,7 +13,7 @@ class KnexPgDbConnectionFactory {
                 max: 10
             }
         };
-        this._isDestroyed = false;
+        this._isDisposed = false;
         n_defensive_1.given(host, "host").ensureHasValue().ensure(t => !t.isEmptyOrWhiteSpace());
         n_defensive_1.given(port, "port").ensureHasValue().ensure(t => !t.isEmptyOrWhiteSpace());
         n_defensive_1.given(database, "database").ensureHasValue().ensure(t => !t.isEmptyOrWhiteSpace());
@@ -29,14 +29,15 @@ class KnexPgDbConnectionFactory {
         this._knex = Knex(this._config);
     }
     create() {
-        if (this._isDestroyed)
-            throw new n_exception_1.InvalidOperationException("using destroyed instance");
+        if (this._isDisposed)
+            return Promise.reject(new n_exception_1.ObjectDisposedException(this));
         return Promise.resolve(this._knex);
     }
     dispose() {
-        if (this._isDestroyed)
+        if (this._isDisposed)
             return Promise.resolve();
-        let knex = this._knex;
+        this._isDisposed = true;
+        const knex = this._knex;
         this._knex = null;
         return new Promise((resolve, reject) => {
             knex.destroy().then(() => resolve()).catch((err) => reject(err));
