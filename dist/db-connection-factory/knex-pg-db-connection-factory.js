@@ -5,7 +5,7 @@ require("@nivinjoseph/n-ext");
 const Knex = require("knex");
 const n_exception_1 = require("@nivinjoseph/n-exception");
 class KnexPgDbConnectionFactory {
-    constructor(host, port, database, username, password) {
+    constructor(config) {
         this._config = {
             client: "pg",
             pool: {
@@ -14,18 +14,29 @@ class KnexPgDbConnectionFactory {
             }
         };
         this._isDisposed = false;
-        n_defensive_1.given(host, "host").ensureHasValue().ensure(t => !t.isEmptyOrWhiteSpace());
-        n_defensive_1.given(port, "port").ensureHasValue().ensure(t => !t.isEmptyOrWhiteSpace());
-        n_defensive_1.given(database, "database").ensureHasValue().ensure(t => !t.isEmptyOrWhiteSpace());
-        n_defensive_1.given(username, "username").ensureHasValue().ensure(t => !t.isEmptyOrWhiteSpace());
-        n_defensive_1.given(password, "password").ensureHasValue().ensure(t => !t.isEmptyOrWhiteSpace());
-        this._config.connection = {
-            host: host.trim(),
-            port: port.trim(),
-            database: database.trim(),
-            user: username.trim(),
-            password: password.trim()
-        };
+        if (config && typeof config === "string") {
+            const connectionString = config;
+            n_defensive_1.given(connectionString, "connectionString").ensureHasValue().ensureIsString();
+            this._config.connection = connectionString.trim();
+        }
+        else {
+            const connectionConfig = config;
+            n_defensive_1.given(connectionConfig, "connectionConfig").ensureHasValue().ensureIsObject()
+                .ensureHasStructure({
+                host: "string",
+                port: "string",
+                database: "string",
+                username: "string",
+                password: "string"
+            });
+            this._config.connection = {
+                host: connectionConfig.host.trim(),
+                port: connectionConfig.port.trim(),
+                database: connectionConfig.database.trim(),
+                user: connectionConfig.username.trim(),
+                password: connectionConfig.password.trim()
+            };
+        }
         this._knex = Knex(this._config);
     }
     create() {

@@ -1,0 +1,1 @@
+{"version":3,"file":"db-connection-config.js","sourceRoot":"","sources":["../../src/db-connection-factory/db-connection-config.ts"],"names":[],"mappings":"","sourcesContent":["export interface DbConnectionConfig\n{\n    host: string;\n    port: string;\n    database: string;\n    username: string;\n    password: string;\n}"]}
