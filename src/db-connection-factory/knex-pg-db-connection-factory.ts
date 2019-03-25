@@ -2,6 +2,7 @@ import { DbConnectionFactory } from "./db-connection-factory";
 import { given } from "@nivinjoseph/n-defensive";
 import "@nivinjoseph/n-ext";
 import * as Knex from "knex";
+import * as Pg from "pg";
 import { ObjectDisposedException } from "@nivinjoseph/n-exception";
 import { DbConnectionConfig } from "./db-connection-config";
 
@@ -30,6 +31,8 @@ export class KnexPgDbConnectionFactory implements DbConnectionFactory
             const connectionString = config;
             given(connectionString, "connectionString").ensureHasValue().ensureIsString();
             this._config.connection = connectionString.trim();
+            
+            Pg.defaults.ssl = true; // this is a workaround
         }
         else
         {

@@ -37,6 +37,7 @@
         "@types/knex": "0.16.1",
         "@types/mocha": "^5.2.5",
         "@types/node": "^8.9.5",
+        "@types/pg": "^7.4.14",
         "mocha": "^5.2.0",
         "ts-node": "^7.0.1",
         "tslint": "^5.11.0",
