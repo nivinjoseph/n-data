@@ -4,6 +4,7 @@ import { Db } from "../src/db/db";
 import { KnexPgDbConnectionFactory } from "../src/db-connection-factory/knex-pg-db-connection-factory";
 import { KnexPgDb } from "../src/db/knex-pg-db";
 import { KnexPgUnitOfWork } from "../src/unit-of-work/knex-pg-unit-of-work";
+import { DbConnectionConfig } from "../src/db-connection-factory/db-connection-config";
 
 
 suite("Db tests", () =>
@@ -13,7 +14,14 @@ suite("Db tests", () =>
 
     suiteSetup(async () =>
     {
-        dbConnectionFactory = new KnexPgDbConnectionFactory("localhost", "5432", "testdb", "postgres", "p@ssw0rd");
+        const config: DbConnectionConfig = {
+            host: "localhost",
+            port: "5432",
+            database: "testdb",
+            username: "postgres",
+            password: "p@ssw0rd"
+        };
+        dbConnectionFactory = new KnexPgDbConnectionFactory(config);
         db = new KnexPgDb(dbConnectionFactory);
     });
 

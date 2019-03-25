@@ -3,12 +3,12 @@ import { given } from "@nivinjoseph/n-defensive";
 import "@nivinjoseph/n-ext";
 import * as Knex from "knex";
 import { ObjectDisposedException } from "@nivinjoseph/n-exception";
-
+import { DbConnectionConfig } from "./db-connection-config";
 
 // public
 export class KnexPgDbConnectionFactory implements DbConnectionFactory
 {
-    private readonly _config: any = {
+    private readonly _config: Knex.Config = {
         client: "pg",
         pool: {
             min: 2,
@@ -21,21 +21,36 @@ export class KnexPgDbConnectionFactory implements DbConnectionFactory
     private _isDisposed = false;
     
     
-    public constructor(host: string, port: string, database: string, username: string, password: string)
+    public constructor(connectionString: string);
+    public constructor(connectionConfig: DbConnectionConfig);
+    public constructor(config: string | DbConnectionConfig)
     {
-        given(host, "host").ensureHasValue().ensure(t => !t.isEmptyOrWhiteSpace());
-        given(port, "port").ensureHasValue().ensure(t => !t.isEmptyOrWhiteSpace());
-        given(database, "database").ensureHasValue().ensure(t => !t.isEmptyOrWhiteSpace());
-        given(username, "username").ensureHasValue().ensure(t => !t.isEmptyOrWhiteSpace());
-        given(password, "password").ensureHasValue().ensure(t => !t.isEmptyOrWhiteSpace());
-
-        this._config.connection = {
-            host: host.trim(),
-            port: port.trim(),
-            database: database.trim(),
-            user: username.trim(),
-            password: password.trim()
-        };
+        if (config && typeof config === "string")
+        {
+            const connectionString = config;
+            given(connectionString, "connectionString").ensureHasValue().ensureIsString();
+            this._config.connection = connectionString.trim();
+        }
+        else
+        {
+            const connectionConfig: DbConnectionConfig = config as DbConnectionConfig;
+            given(connectionConfig, "connectionConfig").ensureHasValue().ensureIsObject()
+                .ensureHasStructure({
+                    host: "string",
+                    port: "string",
+                    database: "string",
+                    username: "string",
+                    password: "string"
+                });
+            
+            this._config.connection = {
+                host: connectionConfig.host.trim(),
+                port: connectionConfig.port.trim(),
+                database: connectionConfig.database.trim(),
+                user: connectionConfig.username.trim(),
+                password: connectionConfig.password.trim()
+            };
+        }
 
         this._knex = Knex(this._config);
     }

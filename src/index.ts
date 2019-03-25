@@ -3,6 +3,7 @@ import { KnexPgDb } from "./db/knex-pg-db";
 import { QueryResult } from "./db/query-result";
 
 import { DbConnectionFactory } from "./db-connection-factory/db-connection-factory";
+import { DbConnectionConfig } from "./db-connection-factory/db-connection-config";
 import { KnexPgDbConnectionFactory } from "./db-connection-factory/knex-pg-db-connection-factory";
 
 import { TransactionProvider } from "./unit-of-work/transaction-provider";
@@ -13,6 +14,6 @@ import { KnexPgUnitOfWork } from "./unit-of-work/knex-pg-unit-of-work";
 export
 {
     Db, KnexPgDb, QueryResult,
-    DbConnectionFactory, KnexPgDbConnectionFactory,
+    DbConnectionFactory, DbConnectionConfig, KnexPgDbConnectionFactory,
     TransactionProvider, UnitOfWork, KnexPgUnitOfWork
 };
