@@ -39,16 +39,17 @@
         "@types/node": "^8.9.5",
         "@types/pg": "^7.4.14",
         "mocha": "^5.2.0",
-        "ts-node": "^7.0.1",
-        "tslint": "^5.11.0",
-        "typescript": "^3.1.1"
+        "ts-node": "^2.1.0",
+        "tslint": "^5.15.0",
+        "typescript": "^3.4.1",
+        "typescript-tslint-plugin": "^0.3.1"
     },
     "dependencies": {
-        "@nivinjoseph/n-defensive": "^1.0.26",
-        "@nivinjoseph/n-exception": "^1.0.17",
-        "@nivinjoseph/n-ext": "^1.1.5",
-        "@nivinjoseph/n-ject": "^1.1.5",
-        "@nivinjoseph/n-util": "^1.0.28",
+        "@nivinjoseph/n-defensive": "^1.0.27",
+        "@nivinjoseph/n-exception": "^1.0.18",
+        "@nivinjoseph/n-ext": "^1.1.7",
+        "@nivinjoseph/n-ject": "^1.1.6",
+        "@nivinjoseph/n-util": "^1.0.30",
         "knex": "^0.16.3",
         "pg": "^7.9.0",
         "treeize": "^2.1.2"
