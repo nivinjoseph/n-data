@@ -1,1 +1,1 @@
-{"version":3,"file":"unit-of-work.js","sourceRoot":"","sources":["../../src/unit-of-work/unit-of-work.ts"],"names":[],"mappings":"","sourcesContent":["import { TransactionProvider } from \"./transaction-provider\";\n\n\n// public\nexport interface UnitOfWork extends TransactionProvider\n{\n    commit(): Promise<void>;\n    rollback(): Promise<void>;\n}"]}
+{"version":3,"file":"unit-of-work.js","sourceRoot":"","sources":["../../src/unit-of-work/unit-of-work.ts"],"names":[],"mappings":""}
