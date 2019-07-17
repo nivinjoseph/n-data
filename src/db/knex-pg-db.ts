@@ -32,7 +32,7 @@ export class KnexPgDb implements Db
             this._dbConnectionFactory.create()
                 .then((knex: Knex) =>
                 {
-                    knex.raw(sql, params).asCallback((err, result) =>
+                    knex.raw(sql, params).asCallback((err: any, result: any) =>
                     {
                         if (err)
                         {
@@ -57,7 +57,7 @@ export class KnexPgDb implements Db
             this._dbConnectionFactory.create()
                 .then((knex: Knex) =>
                 {
-                    knex.raw(sql, params).asCallback((err, result: any) =>
+                    knex.raw(sql, params).asCallback((err: any, result: any) =>
                     {
                         if (err)
                         {
@@ -87,7 +87,7 @@ export class KnexPgDb implements Db
             transactionProvider.getTransactionScope()
                 .then((trx: Knex.Transaction) =>
                 {
-                    trx.raw(sql, params).asCallback((err, result: any) =>
+                    trx.raw(sql, params).asCallback((err: any, result: any) =>
                     {
                         if (err)
                         {
@@ -115,7 +115,7 @@ export class KnexPgDb implements Db
         let command: string = result.command;
         let rowCount: number = result.rowCount;
         
-        let commands = ["INSERT", "UPDATE", "DELETE"];
+        let commands = ["INSERT", "UPDATE"];
         if (commands.some(t => t === command))
         {
             if (rowCount === undefined || rowCount === null || Number.isNaN(rowCount) || rowCount <= 0)

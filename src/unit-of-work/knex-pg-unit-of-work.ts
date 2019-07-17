@@ -35,6 +35,7 @@ export class KnexPgUnitOfWork implements UnitOfWork
             this._dbConnectionFactory.create()
                 .then((knex: Knex) =>
                 {
+// tslint:disable-next-line: no-floating-promises
                     knex.transaction((trx: Knex.Transaction) =>
                     {
                         if (this._transactionScope)

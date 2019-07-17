@@ -34,7 +34,6 @@
     },
     "homepage": "https://github.com/nivinjoseph/n-data#readme",
     "devDependencies": {
-        "@types/knex": "0.16.1",
         "@types/mocha": "^5.2.5",
         "@types/node": "^8.9.5",
         "@types/pg": "^7.4.14",
@@ -47,11 +46,11 @@
     "dependencies": {
         "@nivinjoseph/n-defensive": "^1.0.27",
         "@nivinjoseph/n-exception": "^1.0.18",
-        "@nivinjoseph/n-ext": "^1.1.7",
-        "@nivinjoseph/n-ject": "^1.1.6",
-        "@nivinjoseph/n-util": "^1.0.30",
-        "knex": "^0.16.3",
-        "pg": "^7.9.0",
+        "@nivinjoseph/n-ext": "^1.1.9",
+        "@nivinjoseph/n-ject": "^1.1.8",
+        "@nivinjoseph/n-util": "^1.0.31",
+        "knex": "^0.19.0",
+        "pg": "^7.11.0",
         "treeize": "^2.1.2"
     }
 }
