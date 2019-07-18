@@ -26,7 +26,8 @@ let KnexPgUnitOfWork = class KnexPgUnitOfWork {
         let promise = new Promise((resolve, reject) => {
             this._dbConnectionFactory.create()
                 .then((knex) => {
-                knex.transaction((trx) => {
+                knex
+                    .transaction((trx) => {
                     if (this._transactionScope) {
                         trx.rollback();
                         if (this._transactionScope.isCommitted || this._transactionScope.isRolledBack)
@@ -42,7 +43,9 @@ let KnexPgUnitOfWork = class KnexPgUnitOfWork {
                         };
                         resolve(this._transactionScope.trx);
                     }
-                });
+                })
+                    .then((...params) => console.log("knex transaction then", params))
+                    .catch((e) => console.warn("knex transaction catch", e));
             })
                 .catch(err => reject(err));
         });
