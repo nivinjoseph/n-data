@@ -58,8 +58,8 @@ export class KnexPgUnitOfWork implements UnitOfWork
                                 resolve(this._transactionScope.trx);
                             }
                         })
-                        .then((...params: any[]) => console.log("knex transaction then", params))
-                        .catch((e) => console.warn("knex transaction catch", e));
+                        .then(() => {})
+                        .catch(() => {});
                 })
                 .catch(err => reject(err));
         });
