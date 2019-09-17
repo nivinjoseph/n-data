@@ -8,4 +8,6 @@ const knex_pg_db_connection_factory_1 = require("./db-connection-factory/knex-pg
 exports.KnexPgDbConnectionFactory = knex_pg_db_connection_factory_1.KnexPgDbConnectionFactory;
 const knex_pg_unit_of_work_1 = require("./unit-of-work/knex-pg-unit-of-work");
 exports.KnexPgUnitOfWork = knex_pg_unit_of_work_1.KnexPgUnitOfWork;
+const db_migrator_1 = require("./migration/db-migrator");
+exports.DbMigrator = db_migrator_1.DbMigrator;
 //# sourceMappingURL=index.js.map
