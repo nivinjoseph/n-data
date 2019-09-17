@@ -10,10 +10,16 @@ import { TransactionProvider } from "./unit-of-work/transaction-provider";
 import { UnitOfWork } from "./unit-of-work/unit-of-work";
 import { KnexPgUnitOfWork } from "./unit-of-work/knex-pg-unit-of-work";
 
+import { DbMigrator } from "./migration/db-migrator";
+import { DbMigration } from "./migration/db-migration";
+import { DbVersionProvider } from "./migration/db-version-provider";
+
 
 export
 {
     Db, KnexPgDb, QueryResult,
     DbConnectionFactory, DbConnectionConfig, KnexPgDbConnectionFactory,
-    TransactionProvider, UnitOfWork, KnexPgUnitOfWork
+    TransactionProvider, UnitOfWork, KnexPgUnitOfWork,
+    
+    DbMigrator, DbMigration, DbVersionProvider
 };

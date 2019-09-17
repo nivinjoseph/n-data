@@ -48,6 +48,7 @@
         "@nivinjoseph/n-exception": "^1.0.18",
         "@nivinjoseph/n-ext": "^1.1.9",
         "@nivinjoseph/n-ject": "^1.1.8",
+        "@nivinjoseph/n-log": "^1.0.9",
         "@nivinjoseph/n-util": "^1.0.31",
         "knex": "^0.19.0",
         "pg": "^7.11.0",
