@@ -10,8 +10,8 @@ class KnexPgDbConnectionFactory {
         this._config = {
             client: "pg",
             pool: {
-                min: 2,
-                max: 10
+                min: 10,
+                max: 100
             }
         };
         this._isDisposed = false;
