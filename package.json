@@ -51,7 +51,7 @@
         "@nivinjoseph/n-ext": "^1.1.9",
         "@nivinjoseph/n-ject": "^1.1.8",
         "@nivinjoseph/n-log": "^1.0.9",
-        "@nivinjoseph/n-util": "^1.0.32",
+        "@nivinjoseph/n-util": "^1.0.34",
         "knex": "^0.19.4",
         "pg": "^7.12.1",
         "redis": "^2.8.0",
