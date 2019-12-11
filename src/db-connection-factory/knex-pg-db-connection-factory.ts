@@ -48,7 +48,7 @@ export class KnexPgDbConnectionFactory implements DbConnectionFactory
             
             this._config.connection = {
                 host: connectionConfig.host.trim(),
-                port: connectionConfig.port.trim(),
+                port: Number.parseInt(connectionConfig.port.trim()),
                 database: connectionConfig.database.trim(),
                 user: connectionConfig.username.trim(),
                 password: connectionConfig.password.trim()
