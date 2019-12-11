@@ -9,8 +9,8 @@ export declare class DbMigrator implements Disposable {
     private _dbVersionProviderClass;
     private _isDisposed;
     private _isBootstrapped;
-    readonly containerRegistry: Registry;
-    readonly serviceLocator: ServiceLocator;
+    get containerRegistry(): Registry;
+    get serviceLocator(): ServiceLocator;
     constructor();
     useLogger(logger: Logger): this;
     useInstaller(installer: ComponentInstaller): this;
