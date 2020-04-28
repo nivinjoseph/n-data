@@ -32,6 +32,7 @@ export class KnexPgDb implements Db
             this._dbConnectionFactory.create()
                 .then((knex: Knex) =>
                 {
+                    // tslint:disable-next-line: no-floating-promises
                     knex.raw(sql, params).asCallback((err: any, result: any) =>
                     {
                         if (err)
@@ -57,6 +58,7 @@ export class KnexPgDb implements Db
             this._dbConnectionFactory.create()
                 .then((knex: Knex) =>
                 {
+                    // tslint:disable-next-line: no-floating-promises
                     knex.raw(sql, params).asCallback((err: any, result: any) =>
                     {
                         if (err)
@@ -87,6 +89,7 @@ export class KnexPgDb implements Db
             transactionProvider.getTransactionScope()
                 .then((trx: Knex.Transaction) =>
                 {
+                    // tslint:disable-next-line: no-floating-promises
                     trx.raw(sql, params).asCallback((err: any, result: any) =>
                     {
                         if (err)
