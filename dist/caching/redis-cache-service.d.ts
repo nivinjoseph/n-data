@@ -4,7 +4,7 @@ export declare class RedisCacheService implements CacheService, Disposable {
     private readonly _client;
     private _isDisposed;
     private _disposePromise;
-    constructor();
+    constructor(redisUrl?: string);
     store<T>(key: string, value: T, expiry?: number): Promise<void>;
     retrieve<T>(key: string): Promise<T>;
     exists(key: string): Promise<boolean>;

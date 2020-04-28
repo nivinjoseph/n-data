@@ -3,11 +3,10 @@ Object.defineProperty(exports, "__esModule", { value: true });
 const Redis = require("redis");
 const n_defensive_1 = require("@nivinjoseph/n-defensive");
 const n_exception_1 = require("@nivinjoseph/n-exception");
-const n_config_1 = require("@nivinjoseph/n-config");
 class RedisCacheService {
-    constructor() {
-        this._client = n_config_1.ConfigurationManager.getConfig("env") === "dev"
-            ? Redis.createClient() : Redis.createClient(n_config_1.ConfigurationManager.getConfig("REDIS_URL"));
+    constructor(redisUrl) {
+        n_defensive_1.given(redisUrl, "redisUrl").ensureIsString();
+        this._client = Redis.createClient(redisUrl);
         this._isDisposed = false;
         this._disposePromise = null;
     }
