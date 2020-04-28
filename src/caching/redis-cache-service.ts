@@ -2,7 +2,6 @@ import { Disposable } from "@nivinjoseph/n-util";
 import * as Redis from "redis";
 import { given } from "@nivinjoseph/n-defensive";
 import { ObjectDisposedException } from "@nivinjoseph/n-exception";
-import { ConfigurationManager } from "@nivinjoseph/n-config";
 import { CacheService } from "./cache-service";
 
 
@@ -13,10 +12,10 @@ export class RedisCacheService implements CacheService, Disposable
     private _disposePromise: Promise<void> | null;
 
 
-    public constructor()
+    public constructor(redisUrl?: string)
     {
-        this._client = ConfigurationManager.getConfig<string>("env") === "dev"
-            ? Redis.createClient() : Redis.createClient(ConfigurationManager.getConfig<string>("REDIS_URL"));
+        given(redisUrl, "redisUrl").ensureIsString();
+        this._client = Redis.createClient(redisUrl);
 
         this._isDisposed = false;
         this._disposePromise = null;
