@@ -15,6 +15,7 @@ class KnexPgDbConnectionFactory {
             }
         };
         this._isDisposed = false;
+        this._disposePromise = null;
         if (config && typeof config === "string") {
             const connectionString = config;
             n_defensive_1.given(connectionString, "connectionString").ensureHasValue().ensureIsString();
@@ -47,14 +48,11 @@ class KnexPgDbConnectionFactory {
         return Promise.resolve(this._knex);
     }
     dispose() {
-        if (this._isDisposed)
-            return Promise.resolve();
-        this._isDisposed = true;
-        const knex = this._knex;
-        this._knex = null;
-        return new Promise((resolve, reject) => {
-            knex.destroy().then(() => resolve()).catch((err) => reject(err));
-        });
+        if (!this._isDisposed) {
+            this._isDisposed = true;
+            this._disposePromise = new Promise((resolve, reject) => this._knex.destroy().then(() => resolve()).catch((err) => reject(err)));
+        }
+        return this._disposePromise;
     }
 }
 exports.KnexPgDbConnectionFactory = KnexPgDbConnectionFactory;
