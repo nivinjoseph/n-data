@@ -17,9 +17,10 @@ export class KnexPgDbConnectionFactory implements DbConnectionFactory
         }
         // debug: true
     };
-
-    private _knex: Knex;
+    private readonly _knex: Knex;
+    
     private _isDisposed = false;
+    private _disposePromise: Promise<void> | null = null;
     
     
     public constructor(connectionString: string);
@@ -69,16 +70,13 @@ export class KnexPgDbConnectionFactory implements DbConnectionFactory
     
     public dispose(): Promise<void>
     {
-        if (this._isDisposed)
-            return Promise.resolve();    
-        
-        this._isDisposed = true;
-        
-        const knex = this._knex;
-        this._knex = null;
-        return new Promise<void>((resolve, reject) =>
+        if (!this._isDisposed)
         {
-            knex.destroy().then(() => resolve()).catch((err) => reject(err));
-        });
+            this._isDisposed = true;    
+            this._disposePromise = new Promise<void>((resolve, reject) =>
+                this._knex.destroy().then(() => resolve()).catch((err) => reject(err)));
+        }
+        
+        return this._disposePromise;
     }
 }
