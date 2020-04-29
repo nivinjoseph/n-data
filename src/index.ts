@@ -13,6 +13,7 @@ import { KnexPgUnitOfWork } from "./unit-of-work/knex-pg-unit-of-work";
 import { DbMigrator } from "./migration/db-migrator";
 import { DbMigration } from "./migration/db-migration";
 import { DbVersionProvider } from "./migration/db-version-provider";
+
 import { CacheService } from "./caching/cache-service";
 import { InMemoryCacheService } from "./caching/in-memory-cache-service";
 import { RedisCacheService } from "./caching/redis-cache-service";

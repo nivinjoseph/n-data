@@ -3,22 +3,21 @@ import * as Redis from "redis";
 import { given } from "@nivinjoseph/n-defensive";
 import { ObjectDisposedException } from "@nivinjoseph/n-exception";
 import { CacheService } from "./cache-service";
+import { inject } from "@nivinjoseph/n-ject";
 
 
+@inject("RedisClient")
 export class RedisCacheService implements CacheService, Disposable
 {
     private readonly _client: Redis.RedisClient;
-    private _isDisposed: boolean;
-    private _disposePromise: Promise<void> | null;
+    private _isDisposed = false;
+    private _disposePromise: Promise<void> | null = null;
 
 
-    public constructor(redisUrl?: string)
+    public constructor(redisClient: Redis.RedisClient)
     {
-        given(redisUrl, "redisUrl").ensureIsString();
-        this._client = Redis.createClient(redisUrl);
-
-        this._isDisposed = false;
-        this._disposePromise = null;
+        given(redisClient, "redisClient").ensureHasValue().ensureIsObject();
+        this._client = redisClient;
     }
 
 
@@ -145,9 +144,9 @@ export class RedisCacheService implements CacheService, Disposable
         if (!this._isDisposed)
         {
             this._isDisposed = true;
-            this._disposePromise = new Promise((resolve, _) => this._client.quit(() => resolve()));
+            this._disposePromise = Promise.resolve();
         }
 
-        return this._disposePromise as Promise<void>;
+        return this._disposePromise;
     }
 }
