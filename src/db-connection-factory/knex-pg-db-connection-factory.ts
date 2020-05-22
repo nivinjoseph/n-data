@@ -33,7 +33,10 @@ export class KnexPgDbConnectionFactory implements DbConnectionFactory
             given(connectionString, "connectionString").ensureHasValue().ensureIsString();
             this._config.connection = connectionString.trim();
             
-            Pg.defaults.ssl = true; // this is a workaround
+            // Pg.defaults.ssl = true; // this is a workaround
+            Pg.defaults.ssl = {
+                rejectUnauthorized: false
+            }; // this is a workaround
         }
         else
         {
