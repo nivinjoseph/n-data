@@ -9,6 +9,7 @@ var __awaiter = (this && this.__awaiter) || function (thisArg, _arguments, P, ge
     });
 };
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.DbMigrator = void 0;
 const n_ject_1 = require("@nivinjoseph/n-ject");
 const n_defensive_1 = require("@nivinjoseph/n-defensive");
 const n_log_1 = require("@nivinjoseph/n-log");

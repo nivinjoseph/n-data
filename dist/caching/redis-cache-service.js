@@ -9,105 +9,109 @@ var __metadata = (this && this.__metadata) || function (k, v) {
     if (typeof Reflect === "object" && typeof Reflect.metadata === "function") return Reflect.metadata(k, v);
 };
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.RedisCacheService = void 0;
 const Redis = require("redis");
 const n_defensive_1 = require("@nivinjoseph/n-defensive");
 const n_exception_1 = require("@nivinjoseph/n-exception");
 const n_ject_1 = require("@nivinjoseph/n-ject");
-let RedisCacheService = class RedisCacheService {
-    constructor(redisClient) {
-        this._isDisposed = false;
-        this._disposePromise = null;
-        n_defensive_1.given(redisClient, "redisClient").ensureHasValue().ensureIsObject();
-        this._client = redisClient;
-    }
-    store(key, value, expiry) {
-        return new Promise((resolve, reject) => {
-            n_defensive_1.given(key, "key").ensureHasValue().ensureIsString();
-            n_defensive_1.given(value, "value").ensureHasValue();
-            n_defensive_1.given(expiry, "expiry").ensureIsNumber().ensure(t => t > 0);
-            if (this._isDisposed) {
-                reject(new n_exception_1.ObjectDisposedException(this));
-                return;
-            }
-            if (expiry == null) {
-                this._client.set(key.trim(), JSON.stringify(value), (err) => {
-                    if (err) {
-                        reject(err);
-                        return;
-                    }
-                    resolve();
-                });
-            }
-            else {
-                this._client.setex(key.trim(), expiry, JSON.stringify(value), (err) => {
-                    if (err) {
-                        reject(err);
-                        return;
-                    }
-                    resolve();
-                });
-            }
-        });
-    }
-    retrieve(key) {
-        return new Promise((resolve, reject) => {
-            n_defensive_1.given(key, "key").ensureHasValue().ensureIsString();
-            if (this._isDisposed) {
-                reject(new n_exception_1.ObjectDisposedException(this));
-                return;
-            }
-            this._client.get(key.trim(), (err, value) => {
-                if (err) {
-                    reject(err);
-                    return;
-                }
-                resolve(JSON.parse(value));
-            });
-        });
-    }
-    exists(key) {
-        return new Promise((resolve, reject) => {
-            n_defensive_1.given(key, "key").ensureHasValue().ensureIsString();
-            if (this._isDisposed) {
-                reject(new n_exception_1.ObjectDisposedException(this));
-                return;
-            }
-            this._client.exists(key.trim(), (err, result) => {
-                if (err) {
-                    reject(err);
-                    return;
-                }
-                resolve(!!result);
-            });
-        });
-    }
-    remove(key) {
-        return new Promise((resolve, reject) => {
-            n_defensive_1.given(key, "key").ensureHasValue().ensureIsString();
-            if (this._isDisposed) {
-                reject(new n_exception_1.ObjectDisposedException(this));
-                return;
-            }
-            this._client.del(key.trim(), (err) => {
-                if (err) {
-                    reject(err);
-                    return;
-                }
-                resolve();
-            });
-        });
-    }
-    dispose() {
-        if (!this._isDisposed) {
-            this._isDisposed = true;
-            this._disposePromise = Promise.resolve();
+let RedisCacheService = (() => {
+    let RedisCacheService = class RedisCacheService {
+        constructor(redisClient) {
+            this._isDisposed = false;
+            this._disposePromise = null;
+            n_defensive_1.given(redisClient, "redisClient").ensureHasValue().ensureIsObject();
+            this._client = redisClient;
         }
-        return this._disposePromise;
-    }
-};
-RedisCacheService = __decorate([
-    n_ject_1.inject("RedisClient"),
-    __metadata("design:paramtypes", [Redis.RedisClient])
-], RedisCacheService);
+        store(key, value, expiry) {
+            return new Promise((resolve, reject) => {
+                n_defensive_1.given(key, "key").ensureHasValue().ensureIsString();
+                n_defensive_1.given(value, "value").ensureHasValue();
+                n_defensive_1.given(expiry, "expiry").ensureIsNumber().ensure(t => t > 0);
+                if (this._isDisposed) {
+                    reject(new n_exception_1.ObjectDisposedException(this));
+                    return;
+                }
+                if (expiry == null) {
+                    this._client.set(key.trim(), JSON.stringify(value), (err) => {
+                        if (err) {
+                            reject(err);
+                            return;
+                        }
+                        resolve();
+                    });
+                }
+                else {
+                    this._client.setex(key.trim(), expiry, JSON.stringify(value), (err) => {
+                        if (err) {
+                            reject(err);
+                            return;
+                        }
+                        resolve();
+                    });
+                }
+            });
+        }
+        retrieve(key) {
+            return new Promise((resolve, reject) => {
+                n_defensive_1.given(key, "key").ensureHasValue().ensureIsString();
+                if (this._isDisposed) {
+                    reject(new n_exception_1.ObjectDisposedException(this));
+                    return;
+                }
+                this._client.get(key.trim(), (err, value) => {
+                    if (err) {
+                        reject(err);
+                        return;
+                    }
+                    resolve(JSON.parse(value));
+                });
+            });
+        }
+        exists(key) {
+            return new Promise((resolve, reject) => {
+                n_defensive_1.given(key, "key").ensureHasValue().ensureIsString();
+                if (this._isDisposed) {
+                    reject(new n_exception_1.ObjectDisposedException(this));
+                    return;
+                }
+                this._client.exists(key.trim(), (err, result) => {
+                    if (err) {
+                        reject(err);
+                        return;
+                    }
+                    resolve(!!result);
+                });
+            });
+        }
+        remove(key) {
+            return new Promise((resolve, reject) => {
+                n_defensive_1.given(key, "key").ensureHasValue().ensureIsString();
+                if (this._isDisposed) {
+                    reject(new n_exception_1.ObjectDisposedException(this));
+                    return;
+                }
+                this._client.del(key.trim(), (err) => {
+                    if (err) {
+                        reject(err);
+                        return;
+                    }
+                    resolve();
+                });
+            });
+        }
+        dispose() {
+            if (!this._isDisposed) {
+                this._isDisposed = true;
+                this._disposePromise = Promise.resolve();
+            }
+            return this._disposePromise;
+        }
+    };
+    RedisCacheService = __decorate([
+        n_ject_1.inject("RedisClient"),
+        __metadata("design:paramtypes", [Redis.RedisClient])
+    ], RedisCacheService);
+    return RedisCacheService;
+})();
 exports.RedisCacheService = RedisCacheService;
 //# sourceMappingURL=redis-cache-service.js.map

@@ -1,5 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.DbException = void 0;
 const n_exception_1 = require("@nivinjoseph/n-exception");
 const operation_type_1 = require("./operation-type");
 const n_defensive_1 = require("@nivinjoseph/n-defensive");

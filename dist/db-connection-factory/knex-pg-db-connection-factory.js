@@ -1,5 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.KnexPgDbConnectionFactory = void 0;
 const n_defensive_1 = require("@nivinjoseph/n-defensive");
 require("@nivinjoseph/n-ext");
 const Knex = require("knex");
@@ -20,7 +21,9 @@ class KnexPgDbConnectionFactory {
             const connectionString = config;
             n_defensive_1.given(connectionString, "connectionString").ensureHasValue().ensureIsString();
             this._config.connection = connectionString.trim();
-            Pg.defaults.ssl = true;
+            Pg.defaults.ssl = {
+                rejectUnauthorized: false
+            };
         }
         else {
             const connectionConfig = config;
