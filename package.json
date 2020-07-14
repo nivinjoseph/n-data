@@ -44,13 +44,13 @@
         "typescript-tslint-plugin": "^0.5.5"
     },
     "dependencies": {
-        "@types/redis": "^2.8.25",
         "@nivinjoseph/n-defensive": "^1.0.33",
         "@nivinjoseph/n-exception": "^1.0.19",
         "@nivinjoseph/n-ext": "^1.1.19",
         "@nivinjoseph/n-ject": "^1.1.11",
         "@nivinjoseph/n-log": "^1.0.10",
-        "@nivinjoseph/n-util": "^1.0.53",
+        "@nivinjoseph/n-util": "^1.0.54",
+        "@types/redis": "^2.8.25",
         "knex": "^0.21.2",
         "pg": "^8.3.0",
         "redis": "^3.0.2",
