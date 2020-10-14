@@ -18,6 +18,9 @@ import { CacheService } from "./caching/cache-service";
 import { InMemoryCacheService } from "./caching/in-memory-cache-service";
 import { RedisCacheService } from "./caching/redis-cache-service";
 
+import { DistributedLock, DistributedLockService } from "./distributed-lock/distributed-lock-service";
+import { RedisDistributedLockService } from "./distributed-lock/redis-distributed-lock-service";
+
 
 export
 {
@@ -27,5 +30,7 @@ export
     
     DbMigrator, DbMigration, DbVersionProvider,
     
-    CacheService, InMemoryCacheService, RedisCacheService
+    CacheService, InMemoryCacheService, RedisCacheService,
+    
+    DistributedLockService, DistributedLock, RedisDistributedLockService
 };
