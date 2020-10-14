@@ -13,4 +13,6 @@ import { DbVersionProvider } from "./migration/db-version-provider";
 import { CacheService } from "./caching/cache-service";
 import { InMemoryCacheService } from "./caching/in-memory-cache-service";
 import { RedisCacheService } from "./caching/redis-cache-service";
-export { Db, KnexPgDb, QueryResult, DbConnectionFactory, DbConnectionConfig, KnexPgDbConnectionFactory, TransactionProvider, UnitOfWork, KnexPgUnitOfWork, DbMigrator, DbMigration, DbVersionProvider, CacheService, InMemoryCacheService, RedisCacheService };
+import { DistributedLock, DistributedLockService } from "./distributed-lock/distributed-lock-service";
+import { RedisDistributedLockService } from "./distributed-lock/redis-distributed-lock-service";
+export { Db, KnexPgDb, QueryResult, DbConnectionFactory, DbConnectionConfig, KnexPgDbConnectionFactory, TransactionProvider, UnitOfWork, KnexPgUnitOfWork, DbMigrator, DbMigration, DbVersionProvider, CacheService, InMemoryCacheService, RedisCacheService, DistributedLockService, DistributedLock, RedisDistributedLockService };

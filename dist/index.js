@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.RedisCacheService = exports.InMemoryCacheService = exports.DbMigrator = exports.KnexPgUnitOfWork = exports.KnexPgDbConnectionFactory = exports.QueryResult = exports.KnexPgDb = void 0;
+exports.RedisDistributedLockService = exports.RedisCacheService = exports.InMemoryCacheService = exports.DbMigrator = exports.KnexPgUnitOfWork = exports.KnexPgDbConnectionFactory = exports.QueryResult = exports.KnexPgDb = void 0;
 const knex_pg_db_1 = require("./db/knex-pg-db");
 Object.defineProperty(exports, "KnexPgDb", { enumerable: true, get: function () { return knex_pg_db_1.KnexPgDb; } });
 const query_result_1 = require("./db/query-result");
@@ -15,4 +15,6 @@ const in_memory_cache_service_1 = require("./caching/in-memory-cache-service");
 Object.defineProperty(exports, "InMemoryCacheService", { enumerable: true, get: function () { return in_memory_cache_service_1.InMemoryCacheService; } });
 const redis_cache_service_1 = require("./caching/redis-cache-service");
 Object.defineProperty(exports, "RedisCacheService", { enumerable: true, get: function () { return redis_cache_service_1.RedisCacheService; } });
+const redis_distributed_lock_service_1 = require("./distributed-lock/redis-distributed-lock-service");
+Object.defineProperty(exports, "RedisDistributedLockService", { enumerable: true, get: function () { return redis_distributed_lock_service_1.RedisDistributedLockService; } });
 //# sourceMappingURL=index.js.map
