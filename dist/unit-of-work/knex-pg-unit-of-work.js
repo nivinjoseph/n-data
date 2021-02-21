@@ -39,7 +39,9 @@ let KnexPgUnitOfWork = class KnexPgUnitOfWork {
                     else {
                         this._transactionScope = {
                             trx: trx,
+                            isCommitting: false,
                             isCommitted: false,
+                            isRollingBack: false,
                             isRolledBack: false
                         };
                         resolve(this._transactionScope.trx);
@@ -57,10 +59,15 @@ let KnexPgUnitOfWork = class KnexPgUnitOfWork {
             return Promise.resolve();
         if (this._transactionScope.isCommitted || this._transactionScope.isRolledBack)
             return Promise.reject(new n_exception_1.InvalidOperationException("committing completed UnitOfWork"));
-        this._transactionScope.isCommitted = true;
-        let promise = new Promise((resolve, reject) => {
+        if (this._transactionScope.isCommitting)
+            return Promise.reject(new n_exception_1.InvalidOperationException("double committing UnitOfWork"));
+        this._transactionScope.isCommitting = true;
+        const promise = new Promise((resolve, reject) => {
             this._transactionScope.trx.commit()
-                .then(() => resolve())
+                .then(() => {
+                this._transactionScope.isCommitted = true;
+                resolve();
+            })
                 .catch((err) => reject(err));
         });
         return promise;
@@ -70,10 +77,15 @@ let KnexPgUnitOfWork = class KnexPgUnitOfWork {
             return Promise.resolve();
         if (this._transactionScope.isCommitted || this._transactionScope.isRolledBack)
             return Promise.reject(new n_exception_1.InvalidOperationException("rolling back completed UnitOfWork"));
-        this._transactionScope.isRolledBack = true;
-        let promise = new Promise((resolve, reject) => {
+        if (this._transactionScope.isRollingBack)
+            return Promise.reject(new n_exception_1.InvalidOperationException("double rolling back UNitOfWork"));
+        this._transactionScope.isRollingBack = true;
+        const promise = new Promise((resolve, reject) => {
             this._transactionScope.trx.rollback("[DELIBERATE]")
-                .then(() => resolve())
+                .then(() => {
+                this._transactionScope.isRolledBack = true;
+                resolve();
+            })
                 .catch((err) => reject(err));
         });
         return promise;
