@@ -29,8 +29,8 @@ class Synchronized
             // if (ms === 3000)
             //     throw new Error("boom");
 
-            await Delay.milliseconds(ms);
             console.log(ms);
+            await Delay.milliseconds(ms);
             this._values.push(ms);
         }
         finally

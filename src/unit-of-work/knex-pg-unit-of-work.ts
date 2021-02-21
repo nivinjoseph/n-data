@@ -51,7 +51,9 @@ export class KnexPgUnitOfWork implements UnitOfWork
                             {
                                 this._transactionScope = {
                                     trx: trx,
+                                    isCommitting: false,
                                     isCommitted: false,
+                                    isRollingBack: false,
                                     isRolledBack: false
                                 };
 
@@ -74,12 +76,19 @@ export class KnexPgUnitOfWork implements UnitOfWork
 
         if (this._transactionScope.isCommitted || this._transactionScope.isRolledBack)
             return Promise.reject(new InvalidOperationException("committing completed UnitOfWork"));
+        
+        if (this._transactionScope.isCommitting)
+            return Promise.reject(new InvalidOperationException("double committing UnitOfWork"));
 
-        this._transactionScope.isCommitted = true;
-        let promise = new Promise<void>((resolve, reject) =>
+        this._transactionScope.isCommitting = true;
+        const promise = new Promise<void>((resolve, reject) =>
         {
             this._transactionScope.trx.commit()
-                .then(() => resolve())
+                .then(() =>
+                {
+                    this._transactionScope.isCommitted = true;
+                    resolve();
+                })
                 .catch((err) => reject(err));
         });
 
@@ -93,12 +102,19 @@ export class KnexPgUnitOfWork implements UnitOfWork
 
         if (this._transactionScope.isCommitted || this._transactionScope.isRolledBack)
             return Promise.reject(new InvalidOperationException("rolling back completed UnitOfWork"));
+        
+        if (this._transactionScope.isRollingBack)
+            return Promise.reject(new InvalidOperationException("double rolling back UNitOfWork"));
 
-        this._transactionScope.isRolledBack = true;
-        let promise = new Promise<void>((resolve, reject) =>
+        this._transactionScope.isRollingBack = true;
+        const promise = new Promise<void>((resolve, reject) =>
         {
             this._transactionScope.trx.rollback("[DELIBERATE]")
-                .then(() => resolve())
+                .then(() =>
+                {
+                    this._transactionScope.isRolledBack = true;
+                    resolve();
+                })
                 .catch((err) => reject(err));
         });
 
@@ -110,6 +126,8 @@ export class KnexPgUnitOfWork implements UnitOfWork
 interface TransactionScope
 {
     trx: Knex.Transaction;
+    isCommitting: boolean;
     isCommitted: boolean;
+    isRollingBack: boolean;
     isRolledBack: boolean;
 }
