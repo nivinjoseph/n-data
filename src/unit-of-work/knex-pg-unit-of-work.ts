@@ -1,7 +1,7 @@
 import { UnitOfWork } from "./unit-of-work";
 import { DbConnectionFactory } from "../db-connection-factory/db-connection-factory";
 import { given } from "@nivinjoseph/n-defensive";
-import * as Knex from "knex";
+import { Knex } from "knex";
 import { InvalidOperationException } from "@nivinjoseph/n-exception";
 import { inject } from "@nivinjoseph/n-ject";
 

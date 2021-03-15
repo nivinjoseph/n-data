@@ -1,7 +1,7 @@
 import { Db } from "./db";
 import { given } from "@nivinjoseph/n-defensive";
 import "@nivinjoseph/n-ext";
-import * as Knex from "knex";
+import { Knex } from "knex";
 import { DbException } from "../exceptions/db-exception";
 import { OperationType } from "../exceptions/operation-type";
 import { DbConnectionFactory } from "../db-connection-factory/db-connection-factory";
