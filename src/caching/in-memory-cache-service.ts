@@ -23,11 +23,11 @@ export class InMemoryCacheService implements CacheService, Disposable
     }
     
     
-    public async store<T>(key: string, value: T, expiry?: number): Promise<void>
+    public async store<T>(key: string, value: T, expirySeconds?: number): Promise<void>
     {
         given(key, "key").ensureHasValue().ensureIsString();
         given(value, "value").ensureHasValue();
-        given(expiry as number, "expiry").ensureIsNumber().ensure(t => t > 0);
+        given(expirySeconds as number, "expirySeconds").ensureIsNumber().ensure(t => t > 0);
         
         if (this._isDisposed)
             throw new ObjectDisposedException(this);
@@ -36,14 +36,14 @@ export class InMemoryCacheService implements CacheService, Disposable
         
         this._store.set(key, JSON.stringify(value));
         
-        if (expiry == null)
+        if (expirySeconds == null)
         {
             if (this._evictionTracking.has(key))
                 this._evictionTracking.delete(key);
         }
         else
         {
-            this._evictionTracking.set(key, Date.now() + Duration.fromSeconds(expiry));
+            this._evictionTracking.set(key, Date.now() + Duration.fromSeconds(expirySeconds));
         }
     }
     

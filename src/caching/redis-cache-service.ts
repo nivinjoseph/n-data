@@ -21,13 +21,13 @@ export class RedisCacheService implements CacheService, Disposable
     }
 
 
-    public store<T>(key: string, value: T, expiry?: number): Promise<void>
+    public store<T>(key: string, value: T, expirySeconds?: number): Promise<void>
     {
         return new Promise((resolve, reject) =>
         {
             given(key, "key").ensureHasValue().ensureIsString();
             given(value, "value").ensureHasValue();
-            given(expiry as number, "expiry").ensureIsNumber().ensure(t => t > 0);
+            given(expirySeconds as number, "expirySeconds").ensureIsNumber().ensure(t => t > 0);
 
             if (this._isDisposed)
             {
@@ -35,7 +35,7 @@ export class RedisCacheService implements CacheService, Disposable
                 return;
             }
 
-            if (expiry == null)
+            if (expirySeconds == null)
             {
                 this._client.set(key.trim(), JSON.stringify(value), (err) =>
                 {
@@ -50,7 +50,7 @@ export class RedisCacheService implements CacheService, Disposable
             }
             else
             {
-                this._client.setex(key.trim(), expiry, JSON.stringify(value), (err) =>
+                this._client.setex(key.trim(), expirySeconds, JSON.stringify(value), (err) =>
                 {
                     if (err)
                     {
