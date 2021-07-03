@@ -21,8 +21,17 @@ export class DbException extends Exception
         given(sql, "sql").ensureHasValue();
         given(params, "params").ensureHasValue();
         
-        let operation = operationType === OperationType.query ? "query" : "command";
-        let message = `Error during ${operation} operation with sql "${sql}" and params [${params}].`;
+        const operation = operationType === OperationType.query ? "query" : "command";
+        let paramsString = null;
+        try 
+        {
+            paramsString = JSON.stringify(params);
+        }
+        catch { }
+        if (paramsString == null)
+            paramsString = `[${params}]`;
+        
+        const  message = `Error during ${operation} operation with sql "${sql}" and params ${paramsString}.`;
         super(message, err);
         
         this._operation = operation;
