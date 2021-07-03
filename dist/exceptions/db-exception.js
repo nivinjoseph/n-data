@@ -9,8 +9,15 @@ class DbException extends n_exception_1.Exception {
         n_defensive_1.given(operationType, "operationType").ensureHasValue();
         n_defensive_1.given(sql, "sql").ensureHasValue();
         n_defensive_1.given(params, "params").ensureHasValue();
-        let operation = operationType === operation_type_1.OperationType.query ? "query" : "command";
-        let message = `Error during ${operation} operation with sql "${sql}" and params [${params}].`;
+        const operation = operationType === operation_type_1.OperationType.query ? "query" : "command";
+        let paramsString = null;
+        try {
+            paramsString = JSON.stringify(params);
+        }
+        catch (_a) { }
+        if (paramsString == null)
+            paramsString = `[${params}]`;
+        const message = `Error during ${operation} operation with sql "${sql}" and params ${paramsString}.`;
         super(message, err);
         this._operation = operation;
         this._sql = sql;
