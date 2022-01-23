@@ -16,7 +16,7 @@ export class KnexPgUnitOfWork implements UnitOfWork
 
     public constructor(dbConnectionFactory: DbConnectionFactory)
     {
-        given(dbConnectionFactory, "dbConnectionFactory").ensureHasValue();
+        given(dbConnectionFactory, "dbConnectionFactory").ensureHasValue().ensureIsObject();
 
         this._dbConnectionFactory = dbConnectionFactory;
     }

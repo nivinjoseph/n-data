@@ -19,7 +19,7 @@ export class KnexPgDb implements Db
     
     public constructor(dbConnectionFactory: DbConnectionFactory)
     {
-        given(dbConnectionFactory, "dbConnectionFactory").ensureHasValue();
+        given(dbConnectionFactory, "dbConnectionFactory").ensureHasValue().ensureIsObject();
         
         this._dbConnectionFactory = dbConnectionFactory;
     }
@@ -27,7 +27,7 @@ export class KnexPgDb implements Db
     
     public executeQuery<T>(sql: string, ...params: Array<any>): Promise<QueryResult<T>>
     {
-        let promise = new Promise<QueryResult<T>>((resolve, reject) =>
+        const promise = new Promise<QueryResult<T>>((resolve, reject) =>
         {
             this._dbConnectionFactory.create()
                 .then((knex: Knex) =>
@@ -53,7 +53,7 @@ export class KnexPgDb implements Db
     
     public executeCommand(sql: string, ...params: any[]): Promise<void>
     {
-        let promise = new Promise<void>((resolve, reject) =>
+        const promise = new Promise<void>((resolve, reject) =>
         {
             this._dbConnectionFactory.create()
                 .then((knex: Knex) =>
@@ -84,7 +84,7 @@ export class KnexPgDb implements Db
     
     public executeCommandWithinUnitOfWork(transactionProvider: TransactionProvider, sql: string, ...params: any[]): Promise<void>
     {        
-        let promise = new Promise<void>((resolve, reject) =>
+        const promise = new Promise<void>((resolve, reject) =>
         {
             transactionProvider.getTransactionScope()
                 .then((trx: Knex.Transaction) =>
@@ -115,8 +115,8 @@ export class KnexPgDb implements Db
     
     private validateCommandResult(result: any): boolean
     {
-        let command: string = result.command;
-        let rowCount: number = result.rowCount;
+        const command: string = result.command;
+        const rowCount: number = result.rowCount;
         
         let commands = ["INSERT", "UPDATE"];
         if (commands.some(t => t === command))

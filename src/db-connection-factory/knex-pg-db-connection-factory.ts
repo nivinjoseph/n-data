@@ -1,6 +1,5 @@
 import { DbConnectionFactory } from "./db-connection-factory";
 import { given } from "@nivinjoseph/n-defensive";
-import "@nivinjoseph/n-ext";
 import { Knex, knex } from "knex";
 import * as Pg from "pg";
 import { ObjectDisposedException } from "@nivinjoseph/n-exception";

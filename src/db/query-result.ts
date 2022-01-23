@@ -13,14 +13,14 @@ export class QueryResult<T>
     
     public constructor(rows: Array<T>)
     {
-        given(rows, "rows").ensureHasValue();
+        given(rows, "rows").ensureHasValue().ensureIsArray();
         this._rows = rows;
     }
     
     
     public toObjectTree<U>(): Array<U>
     {
-        let tree = new Treeize();
+        const tree = new Treeize();
         tree.grow(this._rows);
         return tree.getData();
     }

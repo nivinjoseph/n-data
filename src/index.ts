@@ -1,3 +1,5 @@
+import "@nivinjoseph/n-ext";
+
 export { Db } from "./db/db";
 export { KnexPgDb } from "./db/knex-pg-db";
 export { QueryResult } from "./db/query-result";
