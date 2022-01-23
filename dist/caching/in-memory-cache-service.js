@@ -19,13 +19,13 @@ class InMemoryCacheService {
         this._store = new Map();
         this._evictionTracking = new Map();
         this._isDisposed = false;
-        this._timer = timers_1.setInterval(() => this.evict(), n_util_1.Duration.fromMinutes(5));
+        this._timer = (0, timers_1.setInterval)(() => this.evict(), n_util_1.Duration.fromMinutes(5));
     }
     store(key, value, expirySeconds) {
         return __awaiter(this, void 0, void 0, function* () {
-            n_defensive_1.given(key, "key").ensureHasValue().ensureIsString();
-            n_defensive_1.given(value, "value").ensureHasValue();
-            n_defensive_1.given(expirySeconds, "expirySeconds").ensureIsNumber().ensure(t => t > 0);
+            (0, n_defensive_1.given)(key, "key").ensureHasValue().ensureIsString();
+            (0, n_defensive_1.given)(value, "value").ensureHasValue();
+            (0, n_defensive_1.given)(expirySeconds, "expirySeconds").ensureIsNumber().ensure(t => t > 0);
             if (this._isDisposed)
                 throw new n_exception_1.ObjectDisposedException(this);
             key = key.trim();
@@ -40,7 +40,7 @@ class InMemoryCacheService {
         });
     }
     retrieve(key) {
-        n_defensive_1.given(key, "key").ensureHasValue().ensureIsString();
+        (0, n_defensive_1.given)(key, "key").ensureHasValue().ensureIsString();
         if (this._isDisposed)
             throw new n_exception_1.ObjectDisposedException(this);
         key = key.trim();
@@ -48,7 +48,7 @@ class InMemoryCacheService {
     }
     exists(key) {
         return __awaiter(this, void 0, void 0, function* () {
-            n_defensive_1.given(key, "key").ensureHasValue().ensureIsString();
+            (0, n_defensive_1.given)(key, "key").ensureHasValue().ensureIsString();
             if (this._isDisposed)
                 throw new n_exception_1.ObjectDisposedException(this);
             return this._store.has(key.trim());
@@ -56,7 +56,7 @@ class InMemoryCacheService {
     }
     remove(key) {
         return __awaiter(this, void 0, void 0, function* () {
-            n_defensive_1.given(key, "key").ensureHasValue().ensureIsString();
+            (0, n_defensive_1.given)(key, "key").ensureHasValue().ensureIsString();
             if (this._isDisposed)
                 throw new n_exception_1.ObjectDisposedException(this);
             key = key.trim();
@@ -70,7 +70,7 @@ class InMemoryCacheService {
         if (this._isDisposed)
             return Promise.resolve();
         this._isDisposed = true;
-        timers_1.clearInterval(this._timer);
+        (0, timers_1.clearInterval)(this._timer);
         return Promise.resolve();
     }
     evict() {

@@ -2,7 +2,6 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.KnexPgDbConnectionFactory = void 0;
 const n_defensive_1 = require("@nivinjoseph/n-defensive");
-require("@nivinjoseph/n-ext");
 const knex_1 = require("knex");
 const Pg = require("pg");
 const n_exception_1 = require("@nivinjoseph/n-exception");
@@ -21,7 +20,7 @@ class KnexPgDbConnectionFactory {
         this._disposePromise = null;
         if (config && typeof config === "string") {
             const connectionString = config;
-            n_defensive_1.given(connectionString, "connectionString").ensureHasValue().ensureIsString();
+            (0, n_defensive_1.given)(connectionString, "connectionString").ensureHasValue().ensureIsString();
             this._config.connection = connectionString.trim();
             // Pg.defaults.ssl = true; // this is a workaround
             Pg.defaults.ssl = {
@@ -30,7 +29,7 @@ class KnexPgDbConnectionFactory {
         }
         else {
             const connectionConfig = config;
-            n_defensive_1.given(connectionConfig, "connectionConfig").ensureHasValue().ensureIsObject()
+            (0, n_defensive_1.given)(connectionConfig, "connectionConfig").ensureHasValue().ensureIsObject()
                 .ensureHasStructure({
                 host: "string",
                 port: "string",
@@ -46,7 +45,7 @@ class KnexPgDbConnectionFactory {
                 password: connectionConfig.password.trim()
             };
         }
-        this._knex = knex_1.knex(this._config);
+        this._knex = (0, knex_1.knex)(this._config);
     }
     create() {
         if (this._isDisposed)

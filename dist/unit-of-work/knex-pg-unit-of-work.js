@@ -16,7 +16,7 @@ const n_ject_1 = require("@nivinjoseph/n-ject");
 // public
 let KnexPgUnitOfWork = class KnexPgUnitOfWork {
     constructor(dbConnectionFactory) {
-        n_defensive_1.given(dbConnectionFactory, "dbConnectionFactory").ensureHasValue();
+        (0, n_defensive_1.given)(dbConnectionFactory, "dbConnectionFactory").ensureHasValue().ensureIsObject();
         this._dbConnectionFactory = dbConnectionFactory;
     }
     getTransactionScope() {
@@ -93,7 +93,7 @@ let KnexPgUnitOfWork = class KnexPgUnitOfWork {
     }
 };
 KnexPgUnitOfWork = __decorate([
-    n_ject_1.inject("DbConnectionFactory"),
+    (0, n_ject_1.inject)("DbConnectionFactory"),
     __metadata("design:paramtypes", [Object])
 ], KnexPgUnitOfWork);
 exports.KnexPgUnitOfWork = KnexPgUnitOfWork;

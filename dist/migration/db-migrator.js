@@ -26,31 +26,31 @@ class DbMigrator {
     get containerRegistry() { return this._container; }
     get serviceLocator() { return this._container; }
     useLogger(logger) {
-        n_defensive_1.given(logger, "logger").ensureHasValue().ensureIsObject();
-        n_defensive_1.given(this, "this").ensure(t => !t._isBootstrapped, "invoking method after bootstrap");
+        (0, n_defensive_1.given)(logger, "logger").ensureHasValue().ensureIsObject();
+        (0, n_defensive_1.given)(this, "this").ensure(t => !t._isBootstrapped, "invoking method after bootstrap");
         this._logger = logger;
         return this;
     }
     useInstaller(installer) {
-        n_defensive_1.given(installer, "installer").ensureHasValue().ensureIsObject();
-        n_defensive_1.given(this, "this").ensure(t => !t._isBootstrapped, "invoking method after bootstrap");
+        (0, n_defensive_1.given)(installer, "installer").ensureHasValue().ensureIsObject();
+        (0, n_defensive_1.given)(this, "this").ensure(t => !t._isBootstrapped, "invoking method after bootstrap");
         this._container.install(installer);
         return this;
     }
     registerDbVersionProvider(dbVersionProviderClass) {
-        n_defensive_1.given(dbVersionProviderClass, "dbVersionProviderClass").ensureHasValue().ensureIsFunction();
-        n_defensive_1.given(this, "this").ensure(t => !t._isBootstrapped, "invoking method after bootstrap");
+        (0, n_defensive_1.given)(dbVersionProviderClass, "dbVersionProviderClass").ensureHasValue().ensureIsFunction();
+        (0, n_defensive_1.given)(this, "this").ensure(t => !t._isBootstrapped, "invoking method after bootstrap");
         this._dbVersionProviderClass = dbVersionProviderClass;
         return this;
     }
     registerMigrations(...migrationClasses) {
-        n_defensive_1.given(migrationClasses, "migrationClasses").ensureHasValue().ensureIsArray().ensure(t => t.length > 0);
-        n_defensive_1.given(this, "this").ensure(t => !t._isBootstrapped, "invoking method after bootstrap");
+        (0, n_defensive_1.given)(migrationClasses, "migrationClasses").ensureHasValue().ensureIsArray().ensure(t => t.length > 0);
+        (0, n_defensive_1.given)(this, "this").ensure(t => !t._isBootstrapped, "invoking method after bootstrap");
         this._migrationRegistrations.push(...migrationClasses.map(t => new MigrationRegistration(t)));
         return this;
     }
     bootstrap() {
-        n_defensive_1.given(this, "this")
+        (0, n_defensive_1.given)(this, "this")
             .ensure(t => !t._isBootstrapped, "invoking method after bootstrap")
             .ensure(t => !!t._dbVersionProviderClass, "no DbVersionProvider registered")
             .ensure(t => t._migrationRegistrations.length > 0, "no migrations registered")
@@ -66,7 +66,7 @@ class DbMigrator {
     }
     runMigrations() {
         return __awaiter(this, void 0, void 0, function* () {
-            n_defensive_1.given(this, "this").ensure(t => t._isBootstrapped, "invoking method before bootstrap");
+            (0, n_defensive_1.given)(this, "this").ensure(t => t._isBootstrapped, "invoking method before bootstrap");
             const dbVersionProvider = this._container.resolve(this._dbVersionProviderKey);
             yield this.executeMigrations(dbVersionProvider);
         });
@@ -79,7 +79,7 @@ class DbMigrator {
     }
     executeMigrations(dbVersionProvider) {
         return __awaiter(this, void 0, void 0, function* () {
-            n_defensive_1.given(dbVersionProvider, "dbVersionProvider").ensureHasValue().ensureIsObject();
+            (0, n_defensive_1.given)(dbVersionProvider, "dbVersionProvider").ensureHasValue().ensureIsObject();
             const currentVersion = yield dbVersionProvider.getVersion();
             const migrationRegistrations = this._migrationRegistrations
                 .filter(t => t.version > currentVersion)
@@ -116,10 +116,10 @@ class DbMigrator {
 exports.DbMigrator = DbMigrator;
 class MigrationRegistration {
     constructor(migration) {
-        n_defensive_1.given(migration, "migration").ensureHasValue().ensureIsFunction();
+        (0, n_defensive_1.given)(migration, "migration").ensureHasValue().ensureIsFunction();
         const migrationName = migration.getTypeName();
         const errorMessage = `invalid migration name ${migrationName}`;
-        n_defensive_1.given(migrationName, "migrationName").ensureHasValue().ensureIsString()
+        (0, n_defensive_1.given)(migrationName, "migrationName").ensureHasValue().ensureIsString()
             .ensure(t => t.contains("_"), errorMessage)
             .ensure(t => t.split("_").length === 2, errorMessage)
             .ensure(t => Number.parseInt(t.split("_")[1]) > 0, errorMessage);

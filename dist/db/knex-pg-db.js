@@ -19,11 +19,11 @@ const query_result_1 = require("./query-result");
 // public
 let KnexPgDb = class KnexPgDb {
     constructor(dbConnectionFactory) {
-        n_defensive_1.given(dbConnectionFactory, "dbConnectionFactory").ensureHasValue();
+        (0, n_defensive_1.given)(dbConnectionFactory, "dbConnectionFactory").ensureHasValue().ensureIsObject();
         this._dbConnectionFactory = dbConnectionFactory;
     }
     executeQuery(sql, ...params) {
-        let promise = new Promise((resolve, reject) => {
+        const promise = new Promise((resolve, reject) => {
             this._dbConnectionFactory.create()
                 .then((knex) => {
                 // tslint:disable-next-line: no-floating-promises
@@ -41,7 +41,7 @@ let KnexPgDb = class KnexPgDb {
         return promise;
     }
     executeCommand(sql, ...params) {
-        let promise = new Promise((resolve, reject) => {
+        const promise = new Promise((resolve, reject) => {
             this._dbConnectionFactory.create()
                 .then((knex) => {
                 // tslint:disable-next-line: no-floating-promises
@@ -62,7 +62,7 @@ let KnexPgDb = class KnexPgDb {
         return promise;
     }
     executeCommandWithinUnitOfWork(transactionProvider, sql, ...params) {
-        let promise = new Promise((resolve, reject) => {
+        const promise = new Promise((resolve, reject) => {
             transactionProvider.getTransactionScope()
                 .then((trx) => {
                 // tslint:disable-next-line: no-floating-promises
@@ -83,8 +83,8 @@ let KnexPgDb = class KnexPgDb {
         return promise;
     }
     validateCommandResult(result) {
-        let command = result.command;
-        let rowCount = result.rowCount;
+        const command = result.command;
+        const rowCount = result.rowCount;
         let commands = ["INSERT", "UPDATE"];
         if (commands.some(t => t === command)) {
             if (rowCount === undefined || rowCount === null || Number.isNaN(rowCount) || rowCount <= 0)
@@ -94,7 +94,7 @@ let KnexPgDb = class KnexPgDb {
     }
 };
 KnexPgDb = __decorate([
-    n_ject_1.inject("DbConnectionFactory"),
+    (0, n_ject_1.inject)("DbConnectionFactory"),
     __metadata("design:paramtypes", [Object])
 ], KnexPgDb);
 exports.KnexPgDb = KnexPgDb;

@@ -28,7 +28,7 @@ let RedisDistributedLockService = class RedisDistributedLockService {
     constructor(redisClient) {
         this._isDisposed = false;
         this._disposePromise = null;
-        n_defensive_1.given(redisClient, "redisClient").ensureHasValue().ensureIsObject();
+        (0, n_defensive_1.given)(redisClient, "redisClient").ensureHasValue().ensureIsObject();
         this._client = redisClient;
         this._redLock = new RedLock([this._client], {
             // the expected clock drift; for more details
@@ -48,7 +48,7 @@ let RedisDistributedLockService = class RedisDistributedLockService {
     lock(key) {
         return __awaiter(this, void 0, void 0, function* () {
             return new Promise((resolve, reject) => {
-                n_defensive_1.given(key, "key").ensureHasValue().ensureIsString();
+                (0, n_defensive_1.given)(key, "key").ensureHasValue().ensureIsString();
                 key = `n-data-dlock-${key.trim().toLowerCase()}`;
                 if (this._isDisposed) {
                     reject(new n_exception_1.ObjectDisposedException(this));
@@ -69,13 +69,13 @@ let RedisDistributedLockService = class RedisDistributedLockService {
     }
 };
 RedisDistributedLockService = __decorate([
-    n_ject_1.inject("RedisClient"),
+    (0, n_ject_1.inject)("RedisClient"),
     __metadata("design:paramtypes", [Redis.RedisClient])
 ], RedisDistributedLockService);
 exports.RedisDistributedLockService = RedisDistributedLockService;
 class RedisDistributedLock {
     constructor(lock) {
-        n_defensive_1.given(lock, "lock").ensureHasValue();
+        (0, n_defensive_1.given)(lock, "lock").ensureHasValue();
         this._lock = lock;
     }
     release() {

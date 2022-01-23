@@ -18,14 +18,14 @@ let RedisCacheService = class RedisCacheService {
     constructor(redisClient) {
         this._isDisposed = false;
         this._disposePromise = null;
-        n_defensive_1.given(redisClient, "redisClient").ensureHasValue().ensureIsObject();
+        (0, n_defensive_1.given)(redisClient, "redisClient").ensureHasValue().ensureIsObject();
         this._client = redisClient;
     }
     store(key, value, expirySeconds) {
         return new Promise((resolve, reject) => {
-            n_defensive_1.given(key, "key").ensureHasValue().ensureIsString();
-            n_defensive_1.given(value, "value").ensureHasValue();
-            n_defensive_1.given(expirySeconds, "expirySeconds").ensureIsNumber().ensure(t => t > 0);
+            (0, n_defensive_1.given)(key, "key").ensureHasValue().ensureIsString();
+            (0, n_defensive_1.given)(value, "value").ensureHasValue();
+            (0, n_defensive_1.given)(expirySeconds, "expirySeconds").ensureIsNumber().ensure(t => t > 0);
             if (this._isDisposed) {
                 reject(new n_exception_1.ObjectDisposedException(this));
                 return;
@@ -52,7 +52,7 @@ let RedisCacheService = class RedisCacheService {
     }
     retrieve(key) {
         return new Promise((resolve, reject) => {
-            n_defensive_1.given(key, "key").ensureHasValue().ensureIsString();
+            (0, n_defensive_1.given)(key, "key").ensureHasValue().ensureIsString();
             if (this._isDisposed) {
                 reject(new n_exception_1.ObjectDisposedException(this));
                 return;
@@ -68,7 +68,7 @@ let RedisCacheService = class RedisCacheService {
     }
     exists(key) {
         return new Promise((resolve, reject) => {
-            n_defensive_1.given(key, "key").ensureHasValue().ensureIsString();
+            (0, n_defensive_1.given)(key, "key").ensureHasValue().ensureIsString();
             if (this._isDisposed) {
                 reject(new n_exception_1.ObjectDisposedException(this));
                 return;
@@ -84,7 +84,7 @@ let RedisCacheService = class RedisCacheService {
     }
     remove(key) {
         return new Promise((resolve, reject) => {
-            n_defensive_1.given(key, "key").ensureHasValue().ensureIsString();
+            (0, n_defensive_1.given)(key, "key").ensureHasValue().ensureIsString();
             if (this._isDisposed) {
                 reject(new n_exception_1.ObjectDisposedException(this));
                 return;
@@ -107,7 +107,7 @@ let RedisCacheService = class RedisCacheService {
     }
 };
 RedisCacheService = __decorate([
-    n_ject_1.inject("RedisClient"),
+    (0, n_ject_1.inject)("RedisClient"),
     __metadata("design:paramtypes", [Redis.RedisClient])
 ], RedisCacheService);
 exports.RedisCacheService = RedisCacheService;

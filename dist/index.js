@@ -1,6 +1,7 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.RedisDistributedLockService = exports.RedisCacheService = exports.InMemoryCacheService = exports.CacheDuration = exports.DbMigrator = exports.KnexPgUnitOfWork = exports.KnexPgDbConnectionFactory = exports.QueryResult = exports.KnexPgDb = void 0;
+require("@nivinjoseph/n-ext");
 var knex_pg_db_1 = require("./db/knex-pg-db");
 Object.defineProperty(exports, "KnexPgDb", { enumerable: true, get: function () { return knex_pg_db_1.KnexPgDb; } });
 var query_result_1 = require("./db/query-result");

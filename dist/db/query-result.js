@@ -6,12 +6,12 @@ const Treeize = require("treeize");
 // public
 class QueryResult {
     constructor(rows) {
-        n_defensive_1.given(rows, "rows").ensureHasValue();
+        (0, n_defensive_1.given)(rows, "rows").ensureHasValue().ensureIsArray();
         this._rows = rows;
     }
     get rows() { return this._rows; }
     toObjectTree() {
-        let tree = new Treeize();
+        const tree = new Treeize();
         tree.grow(this._rows);
         return tree.getData();
     }

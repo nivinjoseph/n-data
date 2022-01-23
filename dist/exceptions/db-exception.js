@@ -6,9 +6,9 @@ const operation_type_1 = require("./operation-type");
 const n_defensive_1 = require("@nivinjoseph/n-defensive");
 class DbException extends n_exception_1.Exception {
     constructor(operationType, sql, params, err) {
-        n_defensive_1.given(operationType, "operationType").ensureHasValue();
-        n_defensive_1.given(sql, "sql").ensureHasValue();
-        n_defensive_1.given(params, "params").ensureHasValue();
+        (0, n_defensive_1.given)(operationType, "operationType").ensureHasValue();
+        (0, n_defensive_1.given)(sql, "sql").ensureHasValue();
+        (0, n_defensive_1.given)(params, "params").ensureHasValue();
         const operation = operationType === operation_type_1.OperationType.query ? "query" : "command";
         let paramsString = null;
         try {
