@@ -1,11 +1,10 @@
 import { TransactionProvider } from "../unit-of-work/transaction-provider";
-import { QueryResult } from "./query-result";
+import { ReadDb } from "./read-db";
 
 
 // public
-export interface Db
+export interface Db extends ReadDb
 {
-    executeQuery<T>(sql: string, ...params: Array<any>): Promise<QueryResult<T>>;
     executeCommand(sql: string, ...params: Array<any>): Promise<void>;
     executeCommandWithinUnitOfWork(transactionProvider: TransactionProvider, sql: string, ...params: Array<any>): Promise<void>;
 }

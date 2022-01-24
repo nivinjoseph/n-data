@@ -1,61 +1,28 @@
 import { Db } from "./db";
-import { given } from "@nivinjoseph/n-defensive";
-import "@nivinjoseph/n-ext";
 import { Knex } from "knex";
 import { DbException } from "../exceptions/db-exception";
 import { OperationType } from "../exceptions/operation-type";
 import { DbConnectionFactory } from "../db-connection-factory/db-connection-factory";
 import { TransactionProvider } from "../unit-of-work/transaction-provider";
 import { inject } from "@nivinjoseph/n-ject";
-import { QueryResult } from "./query-result";
+import { KnexPgReadDb } from "./knex-pg-read-db";
 
 
 // public
 @inject("DbConnectionFactory")
-export class KnexPgDb implements Db
+export class KnexPgDb extends KnexPgReadDb implements Db
 {
-    private readonly _dbConnectionFactory: DbConnectionFactory;
-    
-    
     public constructor(dbConnectionFactory: DbConnectionFactory)
     {
-        given(dbConnectionFactory, "dbConnectionFactory").ensureHasValue().ensureIsObject();
-        
-        this._dbConnectionFactory = dbConnectionFactory;
+        super(dbConnectionFactory);
     }
     
-    
-    public executeQuery<T>(sql: string, ...params: Array<any>): Promise<QueryResult<T>>
-    {
-        const promise = new Promise<QueryResult<T>>((resolve, reject) =>
-        {
-            this._dbConnectionFactory.create()
-                .then((knex: Knex) =>
-                {
-                    // tslint:disable-next-line: no-floating-promises
-                    knex.raw(sql, params).asCallback((err: any, result: any) =>
-                    {
-                        if (err)
-                        {
-                            reject(new DbException(OperationType.query, sql, params, err));
-                        }
-                        else
-                        {
-                            resolve(new QueryResult<T>(result.rows));
-                        }
-                    });
-                })
-                .catch(err => reject(err));
-        });
-
-        return promise;
-    }
     
     public executeCommand(sql: string, ...params: any[]): Promise<void>
     {
         const promise = new Promise<void>((resolve, reject) =>
         {
-            this._dbConnectionFactory.create()
+            this.dbConnectionFactory.create()
                 .then((knex: Knex) =>
                 {
                     // tslint:disable-next-line: no-floating-promises
