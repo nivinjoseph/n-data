@@ -8,6 +8,15 @@ var __decorate = (this && this.__decorate) || function (decorators, target, key,
 var __metadata = (this && this.__metadata) || function (k, v) {
     if (typeof Reflect === "object" && typeof Reflect.metadata === "function") return Reflect.metadata(k, v);
 };
+var __awaiter = (this && this.__awaiter) || function (thisArg, _arguments, P, generator) {
+    function adopt(value) { return value instanceof P ? value : new P(function (resolve) { resolve(value); }); }
+    return new (P || (P = Promise))(function (resolve, reject) {
+        function fulfilled(value) { try { step(generator.next(value)); } catch (e) { reject(e); } }
+        function rejected(value) { try { step(generator["throw"](value)); } catch (e) { reject(e); } }
+        function step(result) { result.done ? resolve(result.value) : adopt(result.value).then(fulfilled, rejected); }
+        step((generator = generator.apply(thisArg, _arguments || [])).next());
+    });
+};
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.KnexPgUnitOfWork = void 0;
 const n_defensive_1 = require("@nivinjoseph/n-defensive");
@@ -16,6 +25,8 @@ const n_ject_1 = require("@nivinjoseph/n-ject");
 // public
 let KnexPgUnitOfWork = class KnexPgUnitOfWork {
     constructor(dbConnectionFactory) {
+        this._onCommits = new Array();
+        this._onRollbacks = new Array();
         (0, n_defensive_1.given)(dbConnectionFactory, "dbConnectionFactory").ensureHasValue().ensureIsObject();
         this._dbConnectionFactory = dbConnectionFactory;
     }
@@ -25,7 +36,7 @@ let KnexPgUnitOfWork = class KnexPgUnitOfWork {
                 return Promise.reject(new n_exception_1.InvalidOperationException("using completed UnitOfWork"));
             return Promise.resolve(this._transactionScope.trx);
         }
-        let promise = new Promise((resolve, reject) => {
+        const promise = new Promise((resolve, reject) => {
             this._dbConnectionFactory.create()
                 .then((knex) => {
                 knex
@@ -55,41 +66,63 @@ let KnexPgUnitOfWork = class KnexPgUnitOfWork {
         });
         return promise;
     }
+    onCommit(callback) {
+        (0, n_defensive_1.given)(callback, "callback").ensureHasValue().ensureIsFunction();
+        this._onCommits.push(callback);
+    }
     commit() {
-        if (!this._transactionScope)
-            return Promise.resolve();
-        if (this._transactionScope.isCommitted || this._transactionScope.isRolledBack)
-            return Promise.reject(new n_exception_1.InvalidOperationException("committing completed UnitOfWork"));
-        if (this._transactionScope.isCommitting)
-            return Promise.reject(new n_exception_1.InvalidOperationException("double committing UnitOfWork"));
-        this._transactionScope.isCommitting = true;
-        const promise = new Promise((resolve, reject) => {
-            this._transactionScope.trx.commit()
-                .then(() => {
-                this._transactionScope.isCommitted = true;
-                resolve();
-            })
-                .catch((err) => reject(err));
+        return __awaiter(this, void 0, void 0, function* () {
+            if (!this._transactionScope) {
+                if (this._onCommits.isNotEmpty)
+                    yield Promise.all(this._onCommits.map(t => t()));
+                return;
+            }
+            if (this._transactionScope.isCommitted || this._transactionScope.isRolledBack)
+                throw new n_exception_1.InvalidOperationException("committing completed UnitOfWork");
+            if (this._transactionScope.isCommitting)
+                throw new n_exception_1.InvalidOperationException("double committing UnitOfWork");
+            this._transactionScope.isCommitting = true;
+            const promise = new Promise((resolve, reject) => {
+                this._transactionScope.trx.commit()
+                    .then(() => {
+                    this._transactionScope.isCommitted = true;
+                    resolve();
+                })
+                    .catch((err) => reject(err));
+            });
+            yield promise;
+            if (this._onCommits.isNotEmpty)
+                yield Promise.all(this._onCommits.map(t => t()));
         });
-        return promise;
+    }
+    onRollback(callback) {
+        (0, n_defensive_1.given)(callback, "callback").ensureHasValue().ensureIsFunction();
+        this._onRollbacks.push(callback);
     }
     rollback() {
-        if (!this._transactionScope)
-            return Promise.resolve();
-        if (this._transactionScope.isCommitted || this._transactionScope.isRolledBack)
-            return Promise.reject(new n_exception_1.InvalidOperationException("rolling back completed UnitOfWork"));
-        if (this._transactionScope.isRollingBack)
-            return Promise.reject(new n_exception_1.InvalidOperationException("double rolling back UNitOfWork"));
-        this._transactionScope.isRollingBack = true;
-        const promise = new Promise((resolve, reject) => {
-            this._transactionScope.trx.rollback("[DELIBERATE]")
-                .then(() => {
-                this._transactionScope.isRolledBack = true;
-                resolve();
-            })
-                .catch((err) => reject(err));
+        return __awaiter(this, void 0, void 0, function* () {
+            if (!this._transactionScope) {
+                if (this._onRollbacks.isNotEmpty)
+                    yield Promise.all(this._onRollbacks.map(t => t()));
+                return;
+            }
+            if (this._transactionScope.isCommitted || this._transactionScope.isRolledBack)
+                throw new n_exception_1.InvalidOperationException("rolling back completed UnitOfWork");
+            if (this._transactionScope.isRollingBack)
+                throw new n_exception_1.InvalidOperationException("double rolling back UnitOfWork");
+            this._transactionScope.isRollingBack = true;
+            const promise = new Promise((resolve, reject) => {
+                this._transactionScope.trx.rollback("[DELIBERATE]")
+                    .then(() => {
+                    this._transactionScope.isRolledBack = true;
+                    resolve();
+                })
+                    .catch((err) => reject(err));
+            });
+            yield promise;
+            if (this._onRollbacks.isNotEmpty)
+                yield Promise.all(this._onRollbacks.map(t => t()));
         });
-        return promise;
     }
 };
 KnexPgUnitOfWork = __decorate([
