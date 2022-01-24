@@ -1,7 +1,9 @@
 import "@nivinjoseph/n-ext";
+export { ReadDb } from "./db/read-db";
+export { KnexPgReadDb } from "./db/knex-pg-read-db";
+export { QueryResult } from "./db/query-result";
 export { Db } from "./db/db";
 export { KnexPgDb } from "./db/knex-pg-db";
-export { QueryResult } from "./db/query-result";
 export { DbConnectionFactory } from "./db-connection-factory/db-connection-factory";
 export { DbConnectionConfig } from "./db-connection-factory/db-connection-config";
 export { KnexPgDbConnectionFactory } from "./db-connection-factory/knex-pg-db-connection-factory";

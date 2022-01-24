@@ -1,11 +1,13 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.RedisDistributedLockService = exports.RedisCacheService = exports.InMemoryCacheService = exports.CacheDuration = exports.DbMigrator = exports.KnexPgUnitOfWork = exports.KnexPgDbConnectionFactory = exports.QueryResult = exports.KnexPgDb = void 0;
+exports.RedisDistributedLockService = exports.RedisCacheService = exports.InMemoryCacheService = exports.CacheDuration = exports.DbMigrator = exports.KnexPgUnitOfWork = exports.KnexPgDbConnectionFactory = exports.KnexPgDb = exports.QueryResult = exports.KnexPgReadDb = void 0;
 require("@nivinjoseph/n-ext");
-var knex_pg_db_1 = require("./db/knex-pg-db");
-Object.defineProperty(exports, "KnexPgDb", { enumerable: true, get: function () { return knex_pg_db_1.KnexPgDb; } });
+var knex_pg_read_db_1 = require("./db/knex-pg-read-db");
+Object.defineProperty(exports, "KnexPgReadDb", { enumerable: true, get: function () { return knex_pg_read_db_1.KnexPgReadDb; } });
 var query_result_1 = require("./db/query-result");
 Object.defineProperty(exports, "QueryResult", { enumerable: true, get: function () { return query_result_1.QueryResult; } });
+var knex_pg_db_1 = require("./db/knex-pg-db");
+Object.defineProperty(exports, "KnexPgDb", { enumerable: true, get: function () { return knex_pg_db_1.KnexPgDb; } });
 var knex_pg_db_connection_factory_1 = require("./db-connection-factory/knex-pg-db-connection-factory");
 Object.defineProperty(exports, "KnexPgDbConnectionFactory", { enumerable: true, get: function () { return knex_pg_db_connection_factory_1.KnexPgDbConnectionFactory; } });
 var knex_pg_unit_of_work_1 = require("./unit-of-work/knex-pg-unit-of-work");
