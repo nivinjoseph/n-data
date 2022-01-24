@@ -11,6 +11,8 @@ import { inject } from "@nivinjoseph/n-ject";
 export class KnexPgUnitOfWork implements UnitOfWork
 {
     private readonly _dbConnectionFactory: DbConnectionFactory;
+    private readonly _onCommits = new Array<() => Promise<void>>();
+    private readonly _onRollbacks = new Array<() => Promise<void>>();
     private _transactionScope: TransactionScope;
 
 
@@ -20,6 +22,7 @@ export class KnexPgUnitOfWork implements UnitOfWork
 
         this._dbConnectionFactory = dbConnectionFactory;
     }
+    
 
     public getTransactionScope(): Promise<object>
     {
@@ -30,7 +33,7 @@ export class KnexPgUnitOfWork implements UnitOfWork
             return Promise.resolve(this._transactionScope.trx);
         }
 
-        let promise = new Promise<object>((resolve, reject) =>
+        const promise = new Promise<object>((resolve, reject) =>
         {
             this._dbConnectionFactory.create()
                 .then((knex: Knex) =>
@@ -68,17 +71,27 @@ export class KnexPgUnitOfWork implements UnitOfWork
 
         return promise;
     }
+    
+    public onCommit(callback: () => Promise<void>): void
+    {
+        given(callback, "callback").ensureHasValue().ensureIsFunction();
+        this._onCommits.push(callback);
+    }
 
-    public commit(): Promise<void>
+    public async commit(): Promise<void>
     {
         if (!this._transactionScope)
-            return Promise.resolve();
+        {
+            if (this._onCommits.isNotEmpty)
+                await Promise.all(this._onCommits.map(t => t()));
+            return;
+        }
 
         if (this._transactionScope.isCommitted || this._transactionScope.isRolledBack)
-            return Promise.reject(new InvalidOperationException("committing completed UnitOfWork"));
+            throw new InvalidOperationException("committing completed UnitOfWork");
         
         if (this._transactionScope.isCommitting)
-            return Promise.reject(new InvalidOperationException("double committing UnitOfWork"));
+            throw new InvalidOperationException("double committing UnitOfWork");
 
         this._transactionScope.isCommitting = true;
         const promise = new Promise<void>((resolve, reject) =>
@@ -92,19 +105,31 @@ export class KnexPgUnitOfWork implements UnitOfWork
                 .catch((err) => reject(err));
         });
 
-        return promise;
+        await promise;
+        if (this._onCommits.isNotEmpty)
+            await Promise.all(this._onCommits.map(t => t()));
+    }
+    
+    public onRollback(callback: () => Promise<void>): void
+    {
+        given(callback, "callback").ensureHasValue().ensureIsFunction();
+        this._onRollbacks.push(callback);
     }
 
-    public rollback(): Promise<void>
+    public async rollback(): Promise<void>
     {
         if (!this._transactionScope)
-            return Promise.resolve();
+        {
+            if (this._onRollbacks.isNotEmpty)
+                await Promise.all(this._onRollbacks.map(t => t()));
+            return;
+        }
 
         if (this._transactionScope.isCommitted || this._transactionScope.isRolledBack)
-            return Promise.reject(new InvalidOperationException("rolling back completed UnitOfWork"));
+            throw new InvalidOperationException("rolling back completed UnitOfWork");
         
         if (this._transactionScope.isRollingBack)
-            return Promise.reject(new InvalidOperationException("double rolling back UNitOfWork"));
+            throw new InvalidOperationException("double rolling back UnitOfWork");
 
         this._transactionScope.isRollingBack = true;
         const promise = new Promise<void>((resolve, reject) =>
@@ -118,7 +143,9 @@ export class KnexPgUnitOfWork implements UnitOfWork
                 .catch((err) => reject(err));
         });
 
-        return promise;
+        await promise;
+        if (this._onRollbacks.isNotEmpty)
+            await Promise.all(this._onRollbacks.map(t => t()));
     }
 }
 

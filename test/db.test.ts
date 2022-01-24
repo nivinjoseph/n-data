@@ -214,7 +214,11 @@ suite("Db tests", () =>
 
         test("commands should execute successfully if committed", async () =>
         {
-            let unitOfWork = new KnexPgUnitOfWork(dbConnectionFactory);
+            let isCommitted = false;
+            let isRolledback = false;
+            const unitOfWork = new KnexPgUnitOfWork(dbConnectionFactory);
+            unitOfWork.onCommit(async () => { isCommitted = true; });
+            unitOfWork.onRollback(async () => { isRolledback = true; });
             try 
             {
                 await db.executeCommandWithinUnitOfWork(unitOfWork, `insert into products(id, name) values(?, ?)`, 3, "milk");
@@ -229,11 +233,17 @@ suite("Db tests", () =>
             let result = await db.executeQuery(`select * from products where id in (3, 4)`);
             Assert.strictEqual(result.rows.length, 2);
             Assert.deepEqual(result.rows, [{ id: 3, name: "milk" }, { id: 4, name: "pasta" }]);
+            Assert.strictEqual(isCommitted, true);
+            Assert.strictEqual(isRolledback, false);
         });
 
         test("no commands should execute successfully if rolledback", async () =>
         {
-            let unitOfWork = new KnexPgUnitOfWork(dbConnectionFactory);
+            let isCommitted = false;
+            let isRolledback = false;
+            const unitOfWork = new KnexPgUnitOfWork(dbConnectionFactory);
+            unitOfWork.onCommit(async () => { isCommitted = true; });
+            unitOfWork.onRollback(async () => { isRolledback = true; });
             try 
             {
                 await db.executeCommandWithinUnitOfWork(unitOfWork, `insert into products(id, name) values(?, ?)`, 5, "fish");
@@ -247,6 +257,8 @@ suite("Db tests", () =>
 
             let result = await db.executeQuery<any>(`select cast(count(*) as int) from products where id in (5, 6)`);
             Assert.strictEqual(result.rows[0].count, 0);
+            Assert.strictEqual(isCommitted, false);
+            Assert.strictEqual(isRolledback, true);
         });
     });
 
