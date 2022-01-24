@@ -10,39 +10,18 @@ var __metadata = (this && this.__metadata) || function (k, v) {
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.KnexPgDb = void 0;
-const n_defensive_1 = require("@nivinjoseph/n-defensive");
-require("@nivinjoseph/n-ext");
 const db_exception_1 = require("../exceptions/db-exception");
 const operation_type_1 = require("../exceptions/operation-type");
 const n_ject_1 = require("@nivinjoseph/n-ject");
-const query_result_1 = require("./query-result");
+const knex_pg_read_db_1 = require("./knex-pg-read-db");
 // public
-let KnexPgDb = class KnexPgDb {
+let KnexPgDb = class KnexPgDb extends knex_pg_read_db_1.KnexPgReadDb {
     constructor(dbConnectionFactory) {
-        (0, n_defensive_1.given)(dbConnectionFactory, "dbConnectionFactory").ensureHasValue().ensureIsObject();
-        this._dbConnectionFactory = dbConnectionFactory;
-    }
-    executeQuery(sql, ...params) {
-        const promise = new Promise((resolve, reject) => {
-            this._dbConnectionFactory.create()
-                .then((knex) => {
-                // tslint:disable-next-line: no-floating-promises
-                knex.raw(sql, params).asCallback((err, result) => {
-                    if (err) {
-                        reject(new db_exception_1.DbException(operation_type_1.OperationType.query, sql, params, err));
-                    }
-                    else {
-                        resolve(new query_result_1.QueryResult(result.rows));
-                    }
-                });
-            })
-                .catch(err => reject(err));
-        });
-        return promise;
+        super(dbConnectionFactory);
     }
     executeCommand(sql, ...params) {
         const promise = new Promise((resolve, reject) => {
-            this._dbConnectionFactory.create()
+            this.dbConnectionFactory.create()
                 .then((knex) => {
                 // tslint:disable-next-line: no-floating-promises
                 knex.raw(sql, params).asCallback((err, result) => {
