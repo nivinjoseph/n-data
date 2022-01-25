@@ -11,8 +11,8 @@ class KnexPgDbConnectionFactory {
         this._config = {
             client: "pg",
             pool: {
-                min: 10,
-                max: 100
+                min: 5,
+                max: 25
             }
             // debug: true
         };
