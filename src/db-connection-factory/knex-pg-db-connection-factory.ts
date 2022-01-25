@@ -11,8 +11,8 @@ export class KnexPgDbConnectionFactory implements DbConnectionFactory
     private readonly _config: Knex.Config = {
         client: "pg",
         pool: {
-            min: 10,
-            max: 100
+            min: 5,
+            max: 25
         }
         // debug: true
     };
