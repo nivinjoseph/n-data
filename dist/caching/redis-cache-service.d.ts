@@ -11,4 +11,6 @@ export declare class RedisCacheService implements CacheService, Disposable {
     exists(key: string): Promise<boolean>;
     remove(key: string): Promise<void>;
     dispose(): Promise<void>;
+    private _compressData;
+    private _decompressData;
 }
