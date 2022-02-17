@@ -42,7 +42,7 @@ class Synchronized
 
 suite("DistributedLock tests", () =>
 {
-    let service: DistributedLockService;
+    let service: RedisDistributedLockService;
     let connectionDisposable: Disposable;
     
     
@@ -55,6 +55,7 @@ suite("DistributedLock tests", () =>
     
     suiteTeardown(async () =>
     {
+        await service.dispose();
         await connectionDisposable.dispose();   
     });
     

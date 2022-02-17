@@ -1,4 +1,4 @@
-import { Disposable } from "@nivinjoseph/n-util";
+import { Disposable, Duration } from "@nivinjoseph/n-util";
 import { DistributedLock, DistributedLockService } from "./distributed-lock-service";
 import * as Redis from "redis";
 import { given } from "@nivinjoseph/n-defensive";
@@ -54,7 +54,7 @@ export class RedisDistributedLockService implements DistributedLockService, Disp
                 return;
             }
 
-            this._redLock.lock(key, 8000)
+            this._redLock.lock(key, Duration.fromSeconds(30))
                 .then(lock => resolve(new RedisDistributedLock(lock)))
                 .catch(e => reject(e));
          });

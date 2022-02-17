@@ -1,12 +1,13 @@
-import { Disposable } from "@nivinjoseph/n-util";
+import { Disposable, Make } from "@nivinjoseph/n-util";
 import * as Redis from "redis";
 import { given } from "@nivinjoseph/n-defensive";
 import { ObjectDisposedException } from "@nivinjoseph/n-exception";
 import { CacheService } from "./cache-service";
 import { inject } from "@nivinjoseph/n-ject";
+import * as Zlib from "zlib";
 
 
-@inject("RedisClient")
+@inject("CacheRedisClient")
 export class RedisCacheService implements CacheService, Disposable
 {
     private readonly _client: Redis.RedisClient;
@@ -21,23 +22,24 @@ export class RedisCacheService implements CacheService, Disposable
     }
 
 
-    public store<T>(key: string, value: T, expirySeconds?: number): Promise<void>
+    public async store<T>(key: string, value: T, expirySeconds?: number): Promise<void>
     {
-        return new Promise((resolve, reject) =>
+        given(key, "key").ensureHasValue().ensureIsString();
+        given(value, "value").ensureHasValue();
+        given(expirySeconds as number, "expirySeconds").ensureIsNumber().ensure(t => t > 0);
+        
+        if (this._isDisposed)
+            throw new ObjectDisposedException(this);
+        
+        key = "bin_" + key.trim();
+        
+        const data = await this._compressData(value as any);
+        
+        await new Promise<void>((resolve, reject) =>
         {
-            given(key, "key").ensureHasValue().ensureIsString();
-            given(value, "value").ensureHasValue();
-            given(expirySeconds as number, "expirySeconds").ensureIsNumber().ensure(t => t > 0);
-
-            if (this._isDisposed)
-            {
-                reject(new ObjectDisposedException(this));
-                return;
-            }
-
             if (expirySeconds == null)
             {
-                this._client.set(key.trim(), JSON.stringify(value), (err) =>
+                this._client.set(key, data as any, (err) =>
                 {
                     if (err)
                     {
@@ -50,7 +52,7 @@ export class RedisCacheService implements CacheService, Disposable
             }
             else
             {
-                this._client.setex(key.trim(), expirySeconds, JSON.stringify(value), (err) =>
+                this._client.setex(key, expirySeconds, data as any, (err) =>
                 {
                     if (err)
                     {
@@ -64,19 +66,19 @@ export class RedisCacheService implements CacheService, Disposable
         });
     }
 
-    public retrieve<T>(key: string): Promise<T>
+    public async retrieve<T>(key: string): Promise<T>
     {
-        return new Promise((resolve, reject) =>
+        given(key, "key").ensureHasValue().ensureIsString();
+        
+        if (this._isDisposed)
+            throw new ObjectDisposedException(this);
+
+        key = "bin_" + key.trim();
+        
+        const buffer = await new Promise<Buffer>((resolve, reject) =>
         {
-            given(key, "key").ensureHasValue().ensureIsString();
 
-            if (this._isDisposed)
-            {
-                reject(new ObjectDisposedException(this));
-                return;
-            }
-
-            this._client.get(key.trim(), (err, value) =>
+            this._client.get(key, (err, value) =>
             {
                 if (err)
                 {
@@ -84,9 +86,14 @@ export class RedisCacheService implements CacheService, Disposable
                     return;
                 }
 
-                resolve(JSON.parse(value));
+                resolve(value as unknown as Buffer);
             });
         });
+        
+        if (buffer == null)
+            return null;
+        
+        return await this._decompressData(buffer) as unknown as T;
     }
 
     public exists(key: string): Promise<boolean>
@@ -100,8 +107,10 @@ export class RedisCacheService implements CacheService, Disposable
                 reject(new ObjectDisposedException(this));
                 return;
             }
+            
+            key = "bin_" + key.trim();
 
-            this._client.exists(key.trim(), (err, result) =>
+            this._client.exists(key, (err, result) =>
             {
                 if (err)
                 {
@@ -125,8 +134,10 @@ export class RedisCacheService implements CacheService, Disposable
                 reject(new ObjectDisposedException(this));
                 return;
             }
+            
+            key = "bin_" + key.trim();
 
-            this._client.del(key.trim(), (err) =>
+            this._client.del(key, (err) =>
             {
                 if (err)
                 {
@@ -148,5 +159,17 @@ export class RedisCacheService implements CacheService, Disposable
         }
 
         return this._disposePromise;
+    }
+    
+    private _compressData(data: object): Promise<Buffer>
+    {
+        return Make.callbackToPromise<Buffer>(Zlib.deflateRaw)(Buffer.from(JSON.stringify(data), "utf8"));
+    }
+    
+    private async _decompressData(data: Buffer): Promise<object>
+    {
+        const decompressed = await Make.callbackToPromise<Buffer>(Zlib.inflateRaw)(data);
+
+        return JSON.parse(decompressed.toString("utf8"));
     }
 }
