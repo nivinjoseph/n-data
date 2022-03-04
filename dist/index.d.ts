@@ -13,7 +13,7 @@ export { KnexPgUnitOfWork } from "./unit-of-work/knex-pg-unit-of-work";
 export { DbMigrator } from "./migration/db-migrator";
 export { DbMigration } from "./migration/db-migration";
 export { DbVersionProvider } from "./migration/db-version-provider";
-export { CacheDuration, CacheService } from "./caching/cache-service";
+export { CacheService } from "./caching/cache-service";
 export { InMemoryCacheService } from "./caching/in-memory-cache-service";
 export { RedisCacheService } from "./caching/redis-cache-service";
 export { DistributedLock, DistributedLockService } from "./distributed-lock/distributed-lock-service";

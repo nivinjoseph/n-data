@@ -32,17 +32,17 @@ let RedisCacheService = class RedisCacheService {
         (0, n_defensive_1.given)(redisClient, "redisClient").ensureHasValue().ensureIsObject();
         this._client = redisClient;
     }
-    store(key, value, expirySeconds) {
+    store(key, value, expiryDuration) {
         return __awaiter(this, void 0, void 0, function* () {
             (0, n_defensive_1.given)(key, "key").ensureHasValue().ensureIsString();
             (0, n_defensive_1.given)(value, "value").ensureHasValue();
-            (0, n_defensive_1.given)(expirySeconds, "expirySeconds").ensureIsNumber().ensure(t => t > 0);
+            (0, n_defensive_1.given)(expiryDuration, "expiryDuration").ensureIsInstanceOf(n_util_1.Duration);
             if (this._isDisposed)
                 throw new n_exception_1.ObjectDisposedException(this);
             key = "bin_" + key.trim();
             const data = yield this._compressData(value);
             yield new Promise((resolve, reject) => {
-                if (expirySeconds == null) {
+                if (expiryDuration == null) {
                     this._client.set(key, data, (err) => {
                         if (err) {
                             reject(err);
@@ -52,7 +52,7 @@ let RedisCacheService = class RedisCacheService {
                     });
                 }
                 else {
-                    this._client.setex(key, expirySeconds, data, (err) => {
+                    this._client.setex(key, expiryDuration.toSeconds(true), data, (err) => {
                         if (err) {
                             reject(err);
                             return;

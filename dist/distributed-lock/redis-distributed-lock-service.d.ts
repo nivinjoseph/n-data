@@ -1,4 +1,4 @@
-import { Disposable } from "@nivinjoseph/n-util";
+import { Disposable, Duration } from "@nivinjoseph/n-util";
 import { DistributedLock, DistributedLockService } from "./distributed-lock-service";
 import * as Redis from "redis";
 export declare class RedisDistributedLockService implements DistributedLockService, Disposable {
@@ -7,6 +7,6 @@ export declare class RedisDistributedLockService implements DistributedLockServi
     private _isDisposed;
     private _disposePromise;
     constructor(redisClient: Redis.RedisClient);
-    lock(key: string): Promise<DistributedLock>;
+    lock(key: string, ttlDuration?: Duration): Promise<DistributedLock>;
     dispose(): Promise<void>;
 }

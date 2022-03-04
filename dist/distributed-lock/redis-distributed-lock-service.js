@@ -46,7 +46,7 @@ let RedisDistributedLockService = class RedisDistributedLockService {
             retryJitter: 200 // time in ms
         });
     }
-    lock(key) {
+    lock(key, ttlDuration) {
         return __awaiter(this, void 0, void 0, function* () {
             return new Promise((resolve, reject) => {
                 (0, n_defensive_1.given)(key, "key").ensureHasValue().ensureIsString();
@@ -55,7 +55,7 @@ let RedisDistributedLockService = class RedisDistributedLockService {
                     reject(new n_exception_1.ObjectDisposedException(this));
                     return;
                 }
-                this._redLock.lock(key, n_util_1.Duration.fromSeconds(30))
+                this._redLock.lock(key, (ttlDuration !== null && ttlDuration !== void 0 ? ttlDuration : n_util_1.Duration.fromSeconds(30)).toMilliSeconds())
                     .then(lock => resolve(new RedisDistributedLock(lock)))
                     .catch(e => reject(e));
             });

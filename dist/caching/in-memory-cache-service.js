@@ -19,23 +19,23 @@ class InMemoryCacheService {
         this._store = new Map();
         this._evictionTracking = new Map();
         this._isDisposed = false;
-        this._timer = (0, timers_1.setInterval)(() => this.evict(), n_util_1.Duration.fromMinutes(5));
+        this._timer = (0, timers_1.setInterval)(() => this.evict(), n_util_1.Duration.fromMinutes(5).toMilliSeconds());
     }
-    store(key, value, expirySeconds) {
+    store(key, value, expiryDuration) {
         return __awaiter(this, void 0, void 0, function* () {
             (0, n_defensive_1.given)(key, "key").ensureHasValue().ensureIsString();
             (0, n_defensive_1.given)(value, "value").ensureHasValue();
-            (0, n_defensive_1.given)(expirySeconds, "expirySeconds").ensureIsNumber().ensure(t => t > 0);
+            (0, n_defensive_1.given)(expiryDuration, "expiryDuration").ensureIsInstanceOf(n_util_1.Duration);
             if (this._isDisposed)
                 throw new n_exception_1.ObjectDisposedException(this);
             key = key.trim();
             this._store.set(key, JSON.stringify(value));
-            if (expirySeconds == null) {
+            if (expiryDuration == null) {
                 if (this._evictionTracking.has(key))
                     this._evictionTracking.delete(key);
             }
             else {
-                this._evictionTracking.set(key, Date.now() + n_util_1.Duration.fromSeconds(expirySeconds));
+                this._evictionTracking.set(key, Date.now() + expiryDuration.toMilliSeconds());
             }
         });
     }
