@@ -41,7 +41,7 @@ export class RedisDistributedLockService implements DistributedLockService, Disp
     }
     
     
-    public async lock(key: string): Promise<DistributedLock>
+    public async lock(key: string, ttlDuration?: Duration): Promise<DistributedLock>
     {
         return new Promise((resolve, reject) =>
         {
@@ -54,7 +54,7 @@ export class RedisDistributedLockService implements DistributedLockService, Disp
                 return;
             }
 
-            this._redLock.lock(key, Duration.fromSeconds(30))
+            this._redLock.lock(key, (ttlDuration ?? Duration.fromSeconds(30)).toMilliSeconds())
                 .then(lock => resolve(new RedisDistributedLock(lock)))
                 .catch(e => reject(e));
          });

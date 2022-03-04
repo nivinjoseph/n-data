@@ -1,6 +1,6 @@
 import { RedisCacheService } from "../src";
 import * as Redis from "redis";
-import { Delay, DisposableWrapper } from "@nivinjoseph/n-util";
+import { Delay, DisposableWrapper, Duration } from "@nivinjoseph/n-util";
 import * as Assert from "assert";
 
 
@@ -56,7 +56,7 @@ suite("cache tests", () =>
         test("store number with exp", async () =>
         {
             const key = "testing_store_number_exp";
-            await cacheService.store(key, 0, 2);
+            await cacheService.store(key, 0, Duration.fromSeconds(2));
             
             let retrieved = await cacheService.retrieve(key);
             Assert.strictEqual(retrieved, 0);
@@ -102,7 +102,7 @@ suite("cache tests", () =>
         test("store string with exp", async () =>
         {
             const key = "testing_store_string_exp";
-            await cacheService.store(key, "foo", 2);
+            await cacheService.store(key, "foo", Duration.fromSeconds(2));
 
             let retrieved = await cacheService.retrieve(key);
             Assert.strictEqual(retrieved, "foo");
@@ -148,7 +148,7 @@ suite("cache tests", () =>
         test("store boolean with exp", async () =>
         {
             const key = "testing_store_boolean_exp";
-            await cacheService.store(key, false, 2);
+            await cacheService.store(key, false, Duration.fromSeconds(2));
 
             let retrieved = await cacheService.retrieve(key);
             Assert.strictEqual(retrieved, false);
@@ -195,7 +195,7 @@ suite("cache tests", () =>
         test("store object with exp", async () =>
         {
             const key = "testing_store_object_exp";
-            await cacheService.store(key, { foo: { bar: null } }, 2);
+            await cacheService.store(key, { foo: { bar: null } }, Duration.fromSeconds(2));
 
             let retrieved = await cacheService.retrieve(key);
             Assert.strictEqual(JSON.stringify(retrieved), JSON.stringify({ foo: { bar: null } }));

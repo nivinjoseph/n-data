@@ -1,4 +1,4 @@
-import { Disposable, Make } from "@nivinjoseph/n-util";
+import { Disposable, Duration, Make } from "@nivinjoseph/n-util";
 import * as Redis from "redis";
 import { given } from "@nivinjoseph/n-defensive";
 import { ObjectDisposedException } from "@nivinjoseph/n-exception";
@@ -22,11 +22,11 @@ export class RedisCacheService implements CacheService, Disposable
     }
 
 
-    public async store<T>(key: string, value: T, expirySeconds?: number): Promise<void>
+    public async store<T>(key: string, value: T, expiryDuration?: Duration): Promise<void>
     {
         given(key, "key").ensureHasValue().ensureIsString();
         given(value, "value").ensureHasValue();
-        given(expirySeconds as number, "expirySeconds").ensureIsNumber().ensure(t => t > 0);
+        given(expiryDuration as Duration, "expiryDuration").ensureIsInstanceOf(Duration);
         
         if (this._isDisposed)
             throw new ObjectDisposedException(this);
@@ -37,7 +37,7 @@ export class RedisCacheService implements CacheService, Disposable
         
         await new Promise<void>((resolve, reject) =>
         {
-            if (expirySeconds == null)
+            if (expiryDuration == null)
             {
                 this._client.set(key, data as any, (err) =>
                 {
@@ -52,7 +52,7 @@ export class RedisCacheService implements CacheService, Disposable
             }
             else
             {
-                this._client.setex(key, expirySeconds, data as any, (err) =>
+                this._client.setex(key, expiryDuration.toSeconds(true), data as any, (err) =>
                 {
                     if (err)
                     {

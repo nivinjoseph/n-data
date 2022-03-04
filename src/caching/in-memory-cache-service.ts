@@ -19,15 +19,15 @@ export class InMemoryCacheService implements CacheService, Disposable
         this._evictionTracking = new Map<string, number>();
         this._isDisposed = false;
         
-        this._timer = setInterval(() => this.evict(), Duration.fromMinutes(5));
+        this._timer = setInterval(() => this.evict(), Duration.fromMinutes(5).toMilliSeconds());
     }
     
     
-    public async store<T>(key: string, value: T, expirySeconds?: number): Promise<void>
+    public async store<T>(key: string, value: T, expiryDuration?: Duration): Promise<void>
     {
         given(key, "key").ensureHasValue().ensureIsString();
         given(value, "value").ensureHasValue();
-        given(expirySeconds as number, "expirySeconds").ensureIsNumber().ensure(t => t > 0);
+        given(expiryDuration as Duration, "expiryDuration").ensureIsInstanceOf(Duration);
         
         if (this._isDisposed)
             throw new ObjectDisposedException(this);
@@ -36,14 +36,14 @@ export class InMemoryCacheService implements CacheService, Disposable
         
         this._store.set(key, JSON.stringify(value));
         
-        if (expirySeconds == null)
+        if (expiryDuration == null)
         {
             if (this._evictionTracking.has(key))
                 this._evictionTracking.delete(key);
         }
         else
         {
-            this._evictionTracking.set(key, Date.now() + Duration.fromSeconds(expirySeconds));
+            this._evictionTracking.set(key, Date.now() + expiryDuration.toMilliSeconds());
         }
     }
     
