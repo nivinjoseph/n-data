@@ -69,7 +69,7 @@ export class RedisDistributedLockService implements DistributedLockService, Disp
             this._disposePromise = Promise.resolve();
         }
 
-        return this._disposePromise;
+        return this._disposePromise!;
     }
 }
 

@@ -13,7 +13,7 @@ export class KnexPgUnitOfWork implements UnitOfWork
     private readonly _dbConnectionFactory: DbConnectionFactory;
     private readonly _onCommits = new Array<() => Promise<void>>();
     private readonly _onRollbacks = new Array<() => Promise<void>>();
-    private _transactionScope: TransactionScope;
+    private _transactionScope: TransactionScope | null = null;
 
 
     public constructor(dbConnectionFactory: DbConnectionFactory)
@@ -36,14 +36,15 @@ export class KnexPgUnitOfWork implements UnitOfWork
         const promise = new Promise<object>((resolve, reject) =>
         {
             this._dbConnectionFactory.create()
-                .then((knex: Knex) =>
+                .then((knex: any) =>
                 {
 
-                    knex
+                    (<Knex>knex)
                         .transaction((trx: Knex.Transaction) =>
                         {
                             if (this._transactionScope)
                             {
+                                // eslint-disable-next-line @typescript-eslint/no-floating-promises
                                 trx.rollback();
                                 if (this._transactionScope.isCommitted || this._transactionScope.isRolledBack)
                                     reject(new InvalidOperationException("using completed UnitOfWork"));
@@ -63,8 +64,7 @@ export class KnexPgUnitOfWork implements UnitOfWork
                                 resolve(this._transactionScope.trx);
                             }
                         })
-                        .then(() => {})
-                        .catch(() => {});
+                        .catch(() => { /** */ });
                 })
                 .catch(err => reject(err));
         });
@@ -96,10 +96,10 @@ export class KnexPgUnitOfWork implements UnitOfWork
         this._transactionScope.isCommitting = true;
         const promise = new Promise<void>((resolve, reject) =>
         {
-            this._transactionScope.trx.commit()
+            this._transactionScope!.trx.commit()
                 .then(() =>
                 {
-                    this._transactionScope.isCommitted = true;
+                    this._transactionScope!.isCommitted = true;
                     resolve();
                 })
                 .catch((err) => reject(err));
@@ -134,10 +134,10 @@ export class KnexPgUnitOfWork implements UnitOfWork
         this._transactionScope.isRollingBack = true;
         const promise = new Promise<void>((resolve, reject) =>
         {
-            this._transactionScope.trx.rollback("[DELIBERATE]")
+            this._transactionScope!.trx.rollback("[DELIBERATE]")
                 .then(() =>
                 {
-                    this._transactionScope.isRolledBack = true;
+                    this._transactionScope!.isRolledBack = true;
                     resolve();
                 })
                 .catch((err) => reject(err));

@@ -31,10 +31,10 @@ export class KnexPgReadDb implements ReadDb
         const promise = new Promise<QueryResult<T>>((resolve, reject) =>
         {
             this._dbConnectionFactory.create()
-                .then((knex: Knex) =>
+                .then((knex: any) =>
                 {
-                    // tslint:disable-next-line: no-floating-promises
-                    knex.raw(sql, params).asCallback((err: any, result: any) =>
+                    // eslint-disable-next-line @typescript-eslint/no-floating-promises
+                    (<Knex>knex).raw(sql, params).asCallback((err: any, result: any) =>
                     {
                         if (err)
                         {

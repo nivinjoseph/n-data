@@ -66,7 +66,7 @@ export class RedisCacheService implements CacheService, Disposable
         });
     }
 
-    public async retrieve<T>(key: string): Promise<T>
+    public async retrieve<T>(key: string): Promise<T | null>
     {
         given(key, "key").ensureHasValue().ensureIsString();
         
@@ -90,6 +90,7 @@ export class RedisCacheService implements CacheService, Disposable
             });
         });
         
+        // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
         if (buffer == null)
             return null;
         
@@ -150,7 +151,7 @@ export class RedisCacheService implements CacheService, Disposable
         });
     }
 
-    public dispose(): Promise<void>
+    public async dispose(): Promise<void>
     {
         if (!this._isDisposed)
         {
@@ -158,7 +159,7 @@ export class RedisCacheService implements CacheService, Disposable
             this._disposePromise = Promise.resolve();
         }
 
-        return this._disposePromise;
+        return this._disposePromise!;
     }
     
     private _compressData(data: object): Promise<Buffer>
@@ -170,6 +171,6 @@ export class RedisCacheService implements CacheService, Disposable
     {
         const decompressed = await Make.callbackToPromise<Buffer>(Zlib.inflateRaw)(data);
 
-        return JSON.parse(decompressed.toString("utf8"));
+        return JSON.parse(decompressed.toString("utf8")) as object;
     }
 }

@@ -19,7 +19,7 @@ export class InMemoryCacheService implements CacheService, Disposable
         this._evictionTracking = new Map<string, number>();
         this._isDisposed = false;
         
-        this._timer = setInterval(() => this.evict(), Duration.fromMinutes(5).toMilliSeconds());
+        this._timer = setInterval(() => this._evict(), Duration.fromMinutes(5).toMilliSeconds());
     }
     
     
@@ -47,7 +47,7 @@ export class InMemoryCacheService implements CacheService, Disposable
         }
     }
     
-    public retrieve<T>(key: string): Promise<T>
+    public async retrieve<T>(key: string): Promise<T | null>
     {
         given(key, "key").ensureHasValue().ensureIsString();
         
@@ -56,7 +56,7 @@ export class InMemoryCacheService implements CacheService, Disposable
         
         key = key.trim();
         
-        return this._store.has(key) ? JSON.parse(this._store.get(key)) : null; 
+        return this._store.has(key) ? JSON.parse(this._store.get(key)!) as T : null; 
     }
     
     public async exists(key: string): Promise<boolean>
@@ -97,18 +97,18 @@ export class InMemoryCacheService implements CacheService, Disposable
         return Promise.resolve();
     }    
     
-    private evict(): void
+    private _evict(): void
     {
         if (this._isDisposed)
             return;
         
-        for (let entry of this._store.entries())
+        for (const entry of this._store.entries())
         {
             const key = entry[0];
             
             if (this._evictionTracking.has(key))
             {
-                const expiry = this._evictionTracking.get(key);
+                const expiry = this._evictionTracking.get(key) ?? 0;
                 if (expiry <= Date.now())
                 {
                     this._store.delete(key);

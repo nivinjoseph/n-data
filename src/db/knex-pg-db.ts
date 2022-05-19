@@ -18,15 +18,15 @@ export class KnexPgDb extends KnexPgReadDb implements Db
     }
     
     
-    public executeCommand(sql: string, ...params: any[]): Promise<void>
+    public executeCommand(sql: string, ...params: Array<any>): Promise<void>
     {
         const promise = new Promise<void>((resolve, reject) =>
         {
             this.dbConnectionFactory.create()
-                .then((knex: Knex) =>
+                .then((knex: any) =>
                 {
-                    // tslint:disable-next-line: no-floating-promises
-                    knex.raw(sql, params).asCallback((err: any, result: any) =>
+                    // eslint-disable-next-line @typescript-eslint/no-floating-promises
+                    (<Knex>knex).raw(sql, params).asCallback((err: any, result: any) =>
                     {
                         if (err)
                         {
@@ -34,7 +34,7 @@ export class KnexPgDb extends KnexPgReadDb implements Db
                             return;
                         }
                         
-                        if (!this.validateCommandResult(result))
+                        if (!this._validateCommandResult(result))
                         {
                             reject(new DbException(OperationType.command, sql, params, new Error("No rows were affected.")));
                             return;
@@ -49,15 +49,15 @@ export class KnexPgDb extends KnexPgReadDb implements Db
         return promise;
     }
     
-    public executeCommandWithinUnitOfWork(transactionProvider: TransactionProvider, sql: string, ...params: any[]): Promise<void>
+    public executeCommandWithinUnitOfWork(transactionProvider: TransactionProvider, sql: string, ...params: Array<any>): Promise<void>
     {        
         const promise = new Promise<void>((resolve, reject) =>
         {
             transactionProvider.getTransactionScope()
-                .then((trx: Knex.Transaction) =>
+                .then((trx: any) =>
                 {
-                    // tslint:disable-next-line: no-floating-promises
-                    trx.raw(sql, params).asCallback((err: any, result: any) =>
+                    // eslint-disable-next-line @typescript-eslint/no-floating-promises
+                    (<Knex.Transaction>trx).raw(sql, params).asCallback((err: any, result: any) =>
                     {
                         if (err)
                         {
@@ -65,7 +65,7 @@ export class KnexPgDb extends KnexPgReadDb implements Db
                             return;
                         }
 
-                        if (!this.validateCommandResult(result))
+                        if (!this._validateCommandResult(result))
                         {
                             reject(new DbException(OperationType.command, sql, params, new Error("No rows were affected.")));
                             return;
@@ -80,12 +80,12 @@ export class KnexPgDb extends KnexPgReadDb implements Db
         return promise;
     }
     
-    private validateCommandResult(result: any): boolean
+    private _validateCommandResult(result: any): boolean
     {
         const command: string = result.command;
-        const rowCount: number = result.rowCount;
+        const rowCount = result.rowCount;
         
-        let commands = ["INSERT", "UPDATE"];
+        const commands = ["INSERT", "UPDATE"];
         if (commands.some(t => t === command))
         {
             if (rowCount === undefined || rowCount === null || Number.isNaN(rowCount) || rowCount <= 0)

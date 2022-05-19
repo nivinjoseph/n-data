@@ -10,9 +10,9 @@ export class DbMigrator implements Disposable
 {
     private readonly _dbVersionProviderKey = "DbVersionProvider";
     private readonly _container: Container;
-    private _logger: Logger;
+    private _logger!: Logger;
     private readonly _migrationRegistrations: Array<MigrationRegistration>;
-    private _dbVersionProviderClass: Function;
+    private _dbVersionProviderClass!: Function;
     private _isDisposed: boolean;
     private _isBootstrapped: boolean;
     
@@ -24,9 +24,7 @@ export class DbMigrator implements Disposable
     public constructor()
     {
         this._container = new Container();
-        this._logger = null;
         this._migrationRegistrations = [];
-        this._dbVersionProviderClass = null;
         this._isDisposed = false;
         this._isBootstrapped = false;
     }
@@ -65,7 +63,7 @@ export class DbMigrator implements Disposable
         return this;
     }
     
-    public registerMigrations(...migrationClasses: Function[]): this
+    public registerMigrations(...migrationClasses: Array<Function>): this
     {
         given(migrationClasses, "migrationClasses").ensureHasValue().ensureIsArray().ensure(t => t.length > 0);
         
@@ -86,6 +84,7 @@ export class DbMigrator implements Disposable
             .ensure(t => t._migrationRegistrations.distinct(u => u.version).length === t._migrationRegistrations.length, "Duplicate registration versions detected.")
             ;
 
+        // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
         if (!this._logger)
             this._logger = new ConsoleLogger();
 
@@ -103,7 +102,7 @@ export class DbMigrator implements Disposable
         given(this, "this").ensure(t => t._isBootstrapped, "invoking method before bootstrap");
         
         const dbVersionProvider = this._container.resolve<DbVersionProvider>(this._dbVersionProviderKey);
-        await this.executeMigrations(dbVersionProvider);
+        await this._executeMigrations(dbVersionProvider);
     }
     
     public dispose(): Promise<void>
@@ -116,7 +115,7 @@ export class DbMigrator implements Disposable
         return this._container.dispose();
     }
     
-    private async executeMigrations(dbVersionProvider: DbVersionProvider): Promise<void>
+    private async _executeMigrations(dbVersionProvider: DbVersionProvider): Promise<void>
     {
         given(dbVersionProvider, "dbVersionProvider").ensureHasValue().ensureIsObject();
         

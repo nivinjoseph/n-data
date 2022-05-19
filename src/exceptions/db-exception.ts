@@ -12,6 +12,7 @@ export class DbException extends Exception
     
     public get operation(): string { return this._operation; }
     public get sql(): string { return this._sql; }
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-return
     public get params(): ReadonlyArray<any> { return this._params; }
     
     
@@ -27,7 +28,10 @@ export class DbException extends Exception
         {
             paramsString = JSON.stringify(params);
         }
-        catch { }
+        catch
+        {
+            // deliberate suppress?
+        }
         if (paramsString == null)
             paramsString = `[${params}]`;
         

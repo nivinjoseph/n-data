@@ -37,7 +37,6 @@ class TestDbVersionProvider implements DbVersionProvider
 }
 
 @inject("Logger")
-// tslint:disable-next-line: class-name
 class TestDbMigration_1 implements DbMigration
 {
     private readonly _logger: Logger;
@@ -57,7 +56,6 @@ class TestDbMigration_1 implements DbMigration
 }
 
 @inject("Logger")
-// tslint:disable-next-line: class-name
 class TestDbMigration_2 implements DbMigration
 {
     private readonly _logger: Logger;

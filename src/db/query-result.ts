@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-unsafe-call */
 import { given } from "@nivinjoseph/n-defensive";
 const Treeize = require("treeize");
 
@@ -22,6 +23,6 @@ export class QueryResult<T>
     {
         const tree = new Treeize();
         tree.grow(this._rows);
-        return tree.getData();
+        return tree.getData() as Array<U>;
     }
 }

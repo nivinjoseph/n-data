@@ -88,6 +88,6 @@ export class KnexPgDbConnectionFactory implements DbConnectionFactory
                 }));
         }
         
-        return this._disposePromise;
+        return this._disposePromise!;
     }
 }

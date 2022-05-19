@@ -14,7 +14,7 @@ suite("cache tests", () =>
         const cacheRedisClient = Redis.createClient({ return_buffers: true });
         cacheRedisClientDisposable = new DisposableWrapper(async () =>
         {
-            await (Delay.seconds(5));
+            await Delay.seconds(5);
             await new Promise<void>((resolve, _) => cacheRedisClient.quit(() => resolve()));
         });
         

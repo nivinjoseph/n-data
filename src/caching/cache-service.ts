@@ -10,7 +10,7 @@ export interface CacheService
      * @param expiryDuration
      */
     store<T>(key: string, value: T, expiryDuration?: Duration): Promise<void>;
-    retrieve<T>(key: string): Promise<T>;
+    retrieve<T>(key: string): Promise<T | null>;
     exists(key: string): Promise<boolean>;
     remove(key: string): Promise<void>;
 }
