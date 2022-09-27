@@ -5,6 +5,7 @@ import { inject, ComponentInstaller, Registry } from "@nivinjoseph/n-ject";
 import { Logger, ConsoleLogger, LogDateTimeZone } from "@nivinjoseph/n-log";
 import * as Assert from "assert";
 import { DbMigrator } from "../src/migration/db-migrator";
+import { MigrationDependencyKey } from "../src/migration/migration-dependency-key";
 
 
 class TestDbVersionProvider implements DbVersionProvider
@@ -97,7 +98,7 @@ suite("Migration tests", () =>
             .registerMigrations(TestDbMigration_2, TestDbMigration_1)
             .bootstrap();
         
-        const dbVersionProvider = testMigrator.serviceLocator.resolve<TestDbVersionProvider>("DbVersionProvider");
+        const dbVersionProvider = testMigrator.serviceLocator.resolve<TestDbVersionProvider>(MigrationDependencyKey.dbVersionProvider);
         
         await testMigrator.runMigrations();
         
