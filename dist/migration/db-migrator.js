@@ -59,7 +59,7 @@ class DbMigrator {
             .ensure(t => t._migrationRegistrations.distinct(u => u.name).length === t._migrationRegistrations.length, "Duplicate registration names detected.")
             .ensure(t => t._migrationRegistrations.distinct(u => u.version).length === t._migrationRegistrations.length, "Duplicate registration versions detected.");
         // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
-        if (this._logger != null)
+        if (this._logger == null)
             this._logger = new n_log_1.ConsoleLogger();
         if (this._dbVersionProviderClass != null)
             this._container.registerSingleton(migration_dependency_key_1.MigrationDependencyKey.dbVersionProvider, this._dbVersionProviderClass);
