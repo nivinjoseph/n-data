@@ -104,7 +104,7 @@ export class DbMigrator implements Disposable
             ;
 
         // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
-        if (this._logger != null)
+        if (this._logger == null)
             this._logger = new ConsoleLogger();
 
         if (this._dbVersionProviderClass != null)
