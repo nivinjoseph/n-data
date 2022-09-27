@@ -2,11 +2,11 @@ import { Disposable } from "@nivinjoseph/n-util";
 import { ComponentInstaller, Registry, ServiceLocator } from "@nivinjoseph/n-ject";
 import { Logger } from "@nivinjoseph/n-log";
 export declare class DbMigrator implements Disposable {
-    private readonly _dbVersionProviderKey;
     private readonly _container;
     private _logger;
     private readonly _migrationRegistrations;
     private _dbVersionProviderClass;
+    private _systemTableName;
     private _isDisposed;
     private _isBootstrapped;
     get containerRegistry(): Registry;
@@ -14,6 +14,7 @@ export declare class DbMigrator implements Disposable {
     constructor();
     useLogger(logger: Logger): this;
     useInstaller(installer: ComponentInstaller): this;
+    useSystemTable(systemTableName: string): this;
     registerDbVersionProvider(dbVersionProviderClass: Function): this;
     registerMigrations(...migrationClasses: Array<Function>): this;
     bootstrap(): this;

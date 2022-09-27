@@ -5,9 +5,13 @@ const tslib_1 = require("tslib");
 const n_ject_1 = require("@nivinjoseph/n-ject");
 const n_defensive_1 = require("@nivinjoseph/n-defensive");
 const n_log_1 = require("@nivinjoseph/n-log");
+const default_system_repository_1 = require("./system/default-system-repository");
+const default_db_version_provider_1 = require("./default-db-version-provider");
+const migration_dependency_key_1 = require("./migration-dependency-key");
 class DbMigrator {
     constructor() {
-        this._dbVersionProviderKey = "DbVersionProvider";
+        this._dbVersionProviderClass = null;
+        this._systemTableName = null;
         this._container = new n_ject_1.Container();
         this._migrationRegistrations = [];
         this._isDisposed = false;
@@ -27,6 +31,13 @@ class DbMigrator {
         this._container.install(installer);
         return this;
     }
+    useSystemTable(systemTableName) {
+        (0, n_defensive_1.given)(systemTableName, "systemTableName").ensureHasValue().ensureIsString()
+            .ensure(t => t.trim().toLowerCase() === t.trim(), "table name must be all lowercase");
+        (0, n_defensive_1.given)(this, "this").ensure(t => !t._isBootstrapped, "invoking method after bootstrap");
+        this._systemTableName = systemTableName.trim().toLowerCase();
+        return this;
+    }
     registerDbVersionProvider(dbVersionProviderClass) {
         (0, n_defensive_1.given)(dbVersionProviderClass, "dbVersionProviderClass").ensureHasValue().ensureIsFunction();
         (0, n_defensive_1.given)(this, "this").ensure(t => !t._isBootstrapped, "invoking method after bootstrap");
@@ -42,14 +53,22 @@ class DbMigrator {
     bootstrap() {
         (0, n_defensive_1.given)(this, "this")
             .ensure(t => !t._isBootstrapped, "invoking method after bootstrap")
-            .ensure(t => !!t._dbVersionProviderClass, "no DbVersionProvider registered")
+            .ensure(t => t._dbVersionProviderClass != null || t._systemTableName != null, "one of either DbVersionProvider or SystemTableName must be provided")
+            .ensure(t => t._dbVersionProviderClass == null || t._systemTableName == null, "cannot provide both DbVersionProvider and SystemTableName")
             .ensure(t => t._migrationRegistrations.length > 0, "no migrations registered")
             .ensure(t => t._migrationRegistrations.distinct(u => u.name).length === t._migrationRegistrations.length, "Duplicate registration names detected.")
             .ensure(t => t._migrationRegistrations.distinct(u => u.version).length === t._migrationRegistrations.length, "Duplicate registration versions detected.");
         // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
-        if (!this._logger)
+        if (this._logger != null)
             this._logger = new n_log_1.ConsoleLogger();
-        this._container.registerSingleton(this._dbVersionProviderKey, this._dbVersionProviderClass);
+        if (this._dbVersionProviderClass != null)
+            this._container.registerSingleton(migration_dependency_key_1.MigrationDependencyKey.dbVersionProvider, this._dbVersionProviderClass);
+        if (this._systemTableName != null) {
+            this._container
+                .registerInstance(migration_dependency_key_1.MigrationDependencyKey.dbSystemTablesProvider, { systemTableName: this._systemTableName })
+                .registerSingleton(migration_dependency_key_1.MigrationDependencyKey.dbSystemRepository, default_system_repository_1.DefaultSystemRepository)
+                .registerSingleton(migration_dependency_key_1.MigrationDependencyKey.dbVersionProvider, default_db_version_provider_1.DefaultDbVersionProvider);
+        }
         this._migrationRegistrations.forEach(t => this._container.registerScoped(t.name, t.migration));
         this._container.bootstrap();
         this._isBootstrapped = true;
@@ -58,7 +77,7 @@ class DbMigrator {
     runMigrations() {
         return tslib_1.__awaiter(this, void 0, void 0, function* () {
             (0, n_defensive_1.given)(this, "this").ensure(t => t._isBootstrapped, "invoking method before bootstrap");
-            const dbVersionProvider = this._container.resolve(this._dbVersionProviderKey);
+            const dbVersionProvider = this._container.resolve(migration_dependency_key_1.MigrationDependencyKey.dbVersionProvider);
             yield this._executeMigrations(dbVersionProvider);
         });
     }
