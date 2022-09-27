@@ -75,7 +75,7 @@ class TestDbMigration_2 implements DbMigration
     }
 }
 
-const logger = new ConsoleLogger(LogDateTimeZone.est);
+const logger = new ConsoleLogger({logDateTimeZone: LogDateTimeZone.est});
 
 class TestInstaller implements ComponentInstaller
 {
