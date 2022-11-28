@@ -34,6 +34,7 @@ let RedisDistributedLockService = class RedisDistributedLockService {
             return new Promise((resolve, reject) => {
                 (0, n_defensive_1.given)(key, "key").ensureHasValue().ensureIsString();
                 key = `n-data-dlock-${key.trim().toLowerCase()}`;
+                (0, n_defensive_1.given)(ttlDuration, "ttlDuration").ensureIsObject();
                 if (this._isDisposed) {
                     reject(new n_exception_1.ObjectDisposedException(this));
                     return;

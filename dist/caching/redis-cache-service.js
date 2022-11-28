@@ -19,7 +19,7 @@ let RedisCacheService = class RedisCacheService {
         return tslib_1.__awaiter(this, void 0, void 0, function* () {
             (0, n_defensive_1.given)(key, "key").ensureHasValue().ensureIsString();
             (0, n_defensive_1.given)(value, "value").ensureHasValue();
-            (0, n_defensive_1.given)(expiryDuration, "expiryDuration").ensureIsInstanceOf(n_util_1.Duration);
+            (0, n_defensive_1.given)(expiryDuration, "expiryDuration").ensureIsObject();
             if (this._isDisposed)
                 throw new n_exception_1.ObjectDisposedException(this);
             key = "bin_" + key.trim();
