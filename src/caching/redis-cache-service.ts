@@ -26,7 +26,7 @@ export class RedisCacheService implements CacheService, Disposable
     {
         given(key, "key").ensureHasValue().ensureIsString();
         given(value, "value").ensureHasValue();
-        given(expiryDuration as Duration, "expiryDuration").ensureIsInstanceOf(Duration);
+        given(expiryDuration as Duration, "expiryDuration").ensureIsObject();
         
         if (this._isDisposed)
             throw new ObjectDisposedException(this);

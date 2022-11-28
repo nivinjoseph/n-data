@@ -47,6 +47,8 @@ export class RedisDistributedLockService implements DistributedLockService, Disp
         {
             given(key, "key").ensureHasValue().ensureIsString();
             key = `n-data-dlock-${key.trim().toLowerCase()}`;
+            
+            given(ttlDuration, "ttlDuration").ensureIsObject();
 
             if (this._isDisposed)
             {
