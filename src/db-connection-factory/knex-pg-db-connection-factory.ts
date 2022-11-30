@@ -4,6 +4,7 @@ import { Knex, knex } from "knex";
 import * as Pg from "pg";
 import { ObjectDisposedException } from "@nivinjoseph/n-exception";
 import { DbConnectionConfig } from "./db-connection-config";
+import { Delay } from "@nivinjoseph/n-util";
 
 // public
 export class KnexPgDbConnectionFactory implements DbConnectionFactory
@@ -74,18 +75,21 @@ export class KnexPgDbConnectionFactory implements DbConnectionFactory
     {
         if (!this._isDisposed)
         {
-            this._isDisposed = true;    
-            this._disposePromise = new Promise<void>((resolve, reject) =>
-                this._knex.destroy((err: any) =>
-                {
-                    if (err)
+            this._isDisposed = true;
+            this._disposePromise = Delay.seconds(15).then(() =>
+            {
+                return new Promise<void>((resolve, reject) =>
+                    this._knex.destroy((err: any) =>
                     {
-                        reject(err);
-                        return;
-                    }
-                    
-                    resolve();
-                }));
+                        if (err)
+                        {
+                            reject(err);
+                            return;
+                        }
+
+                        resolve();
+                    }));
+            });
         }
         
         return this._disposePromise!;
