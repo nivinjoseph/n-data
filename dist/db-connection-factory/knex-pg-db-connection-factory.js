@@ -5,6 +5,7 @@ const n_defensive_1 = require("@nivinjoseph/n-defensive");
 const knex_1 = require("knex");
 const Pg = require("pg");
 const n_exception_1 = require("@nivinjoseph/n-exception");
+const n_util_1 = require("@nivinjoseph/n-util");
 // public
 class KnexPgDbConnectionFactory {
     constructor(config) {
@@ -55,13 +56,15 @@ class KnexPgDbConnectionFactory {
     dispose() {
         if (!this._isDisposed) {
             this._isDisposed = true;
-            this._disposePromise = new Promise((resolve, reject) => this._knex.destroy((err) => {
-                if (err) {
-                    reject(err);
-                    return;
-                }
-                resolve();
-            }));
+            this._disposePromise = n_util_1.Delay.seconds(15).then(() => {
+                return new Promise((resolve, reject) => this._knex.destroy((err) => {
+                    if (err) {
+                        reject(err);
+                        return;
+                    }
+                    resolve();
+                }));
+            });
         }
         return this._disposePromise;
     }
