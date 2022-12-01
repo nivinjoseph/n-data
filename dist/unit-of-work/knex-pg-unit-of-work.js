@@ -50,15 +50,23 @@ let KnexPgUnitOfWork = class KnexPgUnitOfWork {
         });
         return promise;
     }
-    onCommit(callback) {
+    onCommit(callback, priority) {
         (0, n_defensive_1.given)(callback, "callback").ensureHasValue().ensureIsFunction();
-        this._onCommits.push(callback);
+        (0, n_defensive_1.given)(priority, "priority").ensureIsNumber().ensure(t => t >= 0);
+        priority !== null && priority !== void 0 ? priority : (priority = 0);
+        this._onCommits.push({
+            callback,
+            priority
+        });
     }
     commit() {
         return tslib_1.__awaiter(this, void 0, void 0, function* () {
             if (!this._transactionScope) {
                 if (this._onCommits.isNotEmpty)
-                    yield Promise.all(this._onCommits.map(t => t()));
+                    yield this._onCommits
+                        .groupBy(t => t.priority.toString())
+                        .orderBy(t => Number.parseInt(t.key))
+                        .forEachAsync(t => Promise.all(t.values.map(v => v.callback())), 1);
                 return;
             }
             if (this._transactionScope.isCommitted || this._transactionScope.isRolledBack)
@@ -76,18 +84,29 @@ let KnexPgUnitOfWork = class KnexPgUnitOfWork {
             });
             yield promise;
             if (this._onCommits.isNotEmpty)
-                yield Promise.all(this._onCommits.map(t => t()));
+                yield this._onCommits
+                    .groupBy(t => t.priority.toString())
+                    .orderBy(t => Number.parseInt(t.key))
+                    .forEachAsync(t => Promise.all(t.values.map(v => v.callback())), 1);
         });
     }
-    onRollback(callback) {
+    onRollback(callback, priority) {
         (0, n_defensive_1.given)(callback, "callback").ensureHasValue().ensureIsFunction();
-        this._onRollbacks.push(callback);
+        (0, n_defensive_1.given)(priority, "priority").ensureIsNumber().ensure(t => t >= 0);
+        priority !== null && priority !== void 0 ? priority : (priority = 0);
+        this._onRollbacks.push({
+            callback,
+            priority
+        });
     }
     rollback() {
         return tslib_1.__awaiter(this, void 0, void 0, function* () {
             if (!this._transactionScope) {
                 if (this._onRollbacks.isNotEmpty)
-                    yield Promise.all(this._onRollbacks.map(t => t()));
+                    yield this._onRollbacks
+                        .groupBy(t => t.priority.toString())
+                        .orderBy(t => Number.parseInt(t.key))
+                        .forEachAsync(t => Promise.all(t.values.map(v => v.callback())), 1);
                 return;
             }
             if (this._transactionScope.isCommitted || this._transactionScope.isRolledBack)
@@ -105,7 +124,10 @@ let KnexPgUnitOfWork = class KnexPgUnitOfWork {
             });
             yield promise;
             if (this._onRollbacks.isNotEmpty)
-                yield Promise.all(this._onRollbacks.map(t => t()));
+                yield this._onRollbacks
+                    .groupBy(t => t.priority.toString())
+                    .orderBy(t => Number.parseInt(t.key))
+                    .forEachAsync(t => Promise.all(t.values.map(v => v.callback())), 1);
         });
     }
 };

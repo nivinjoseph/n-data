@@ -7,8 +7,8 @@ export declare class KnexPgUnitOfWork implements UnitOfWork {
     private _transactionScope;
     constructor(dbConnectionFactory: DbConnectionFactory);
     getTransactionScope(): Promise<object>;
-    onCommit(callback: () => Promise<void>): void;
+    onCommit(callback: () => Promise<void>, priority?: number): void;
     commit(): Promise<void>;
-    onRollback(callback: () => Promise<void>): void;
+    onRollback(callback: () => Promise<void>, priority?: number): void;
     rollback(): Promise<void>;
 }
