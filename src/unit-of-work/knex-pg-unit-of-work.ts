@@ -11,8 +11,8 @@ import { inject } from "@nivinjoseph/n-ject";
 export class KnexPgUnitOfWork implements UnitOfWork
 {
     private readonly _dbConnectionFactory: DbConnectionFactory;
-    private readonly _onCommits = new Array<() => Promise<void>>();
-    private readonly _onRollbacks = new Array<() => Promise<void>>();
+    private readonly _onCommits = new Array<PostTransactionExec>();
+    private readonly _onRollbacks = new Array<PostTransactionExec>();
     private _transactionScope: TransactionScope | null = null;
 
 
@@ -72,10 +72,16 @@ export class KnexPgUnitOfWork implements UnitOfWork
         return promise;
     }
     
-    public onCommit(callback: () => Promise<void>): void
+    public onCommit(callback: () => Promise<void>, priority?: number): void
     {
         given(callback, "callback").ensureHasValue().ensureIsFunction();
-        this._onCommits.push(callback);
+        given(priority, "priority").ensureIsNumber().ensure(t => t >= 0);
+        priority ??= 0;
+        
+        this._onCommits.push({
+            callback,
+            priority
+        });
     }
 
     public async commit(): Promise<void>
@@ -83,7 +89,11 @@ export class KnexPgUnitOfWork implements UnitOfWork
         if (!this._transactionScope)
         {
             if (this._onCommits.isNotEmpty)
-                await Promise.all(this._onCommits.map(t => t()));
+                await this._onCommits
+                    .groupBy(t => t.priority.toString())
+                    .orderBy(t => Number.parseInt(t.key))
+                    .forEachAsync(t => Promise.all(t.values.map(v => v.callback())) as unknown as Promise<void>, 1);
+            
             return;
         }
 
@@ -106,14 +116,24 @@ export class KnexPgUnitOfWork implements UnitOfWork
         });
 
         await promise;
+        
         if (this._onCommits.isNotEmpty)
-            await Promise.all(this._onCommits.map(t => t()));
+            await this._onCommits
+                .groupBy(t => t.priority.toString())
+                .orderBy(t => Number.parseInt(t.key))
+                .forEachAsync(t => Promise.all(t.values.map(v => v.callback())) as unknown as Promise<void>, 1);
     }
     
-    public onRollback(callback: () => Promise<void>): void
+    public onRollback(callback: () => Promise<void>, priority?: number): void
     {
         given(callback, "callback").ensureHasValue().ensureIsFunction();
-        this._onRollbacks.push(callback);
+        given(priority, "priority").ensureIsNumber().ensure(t => t >= 0);
+        priority ??= 0;
+        
+        this._onRollbacks.push({
+            callback,
+            priority
+        });
     }
 
     public async rollback(): Promise<void>
@@ -121,7 +141,11 @@ export class KnexPgUnitOfWork implements UnitOfWork
         if (!this._transactionScope)
         {
             if (this._onRollbacks.isNotEmpty)
-                await Promise.all(this._onRollbacks.map(t => t()));
+                await this._onRollbacks
+                    .groupBy(t => t.priority.toString())
+                    .orderBy(t => Number.parseInt(t.key))
+                    .forEachAsync(t => Promise.all(t.values.map(v => v.callback())) as unknown as Promise<void>, 1);
+            
             return;
         }
 
@@ -144,8 +168,12 @@ export class KnexPgUnitOfWork implements UnitOfWork
         });
 
         await promise;
+        
         if (this._onRollbacks.isNotEmpty)
-            await Promise.all(this._onRollbacks.map(t => t()));
+            await this._onRollbacks
+                .groupBy(t => t.priority.toString())
+                .orderBy(t => Number.parseInt(t.key))
+                .forEachAsync(t => Promise.all(t.values.map(v => v.callback())) as unknown as Promise<void>, 1);
     }
 }
 
@@ -157,4 +185,10 @@ interface TransactionScope
     isCommitted: boolean;
     isRollingBack: boolean;
     isRolledBack: boolean;
+}
+
+interface PostTransactionExec
+{
+    callback(): Promise<void>;
+    priority: number;
 }
