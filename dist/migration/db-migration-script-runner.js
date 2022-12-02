@@ -5,6 +5,7 @@ const tslib_1 = require("tslib");
 const n_defensive_1 = require("@nivinjoseph/n-defensive");
 const n_ject_1 = require("@nivinjoseph/n-ject");
 const child_process_1 = require("child_process");
+const Path = require("path");
 let DbMigrationScriptRunner = class DbMigrationScriptRunner {
     constructor(logger) {
         (0, n_defensive_1.given)(logger, "logger").ensureHasValue().ensureIsObject();
@@ -12,6 +13,9 @@ let DbMigrationScriptRunner = class DbMigrationScriptRunner {
     }
     runMigrations(migrationScriptPath) {
         return tslib_1.__awaiter(this, void 0, void 0, function* () {
+            (0, n_defensive_1.given)(migrationScriptPath, "migrationScriptPath").ensureHasValue().ensureIsString()
+                .ensure(t => Path.isAbsolute(t.trim()), "path must be absolute");
+            migrationScriptPath = migrationScriptPath.trim();
             const promise = new Promise((resolve, reject) => {
                 var _a, _b, _c, _d;
                 const child = (0, child_process_1.exec)(`node ${migrationScriptPath}`, 
