@@ -2,6 +2,7 @@ import { given } from "@nivinjoseph/n-defensive";
 import { inject } from "@nivinjoseph/n-ject";
 import { Logger } from "@nivinjoseph/n-log";
 import { exec } from "child_process";
+import * as Path from "path";
 
 
 @inject("Logger")
@@ -19,6 +20,10 @@ export class DbMigrationScriptRunner
     
     public async runMigrations(migrationScriptPath: string): Promise<void>
     {
+        given(migrationScriptPath, "migrationScriptPath").ensureHasValue().ensureIsString()
+            .ensure(t => Path.isAbsolute(t.trim()), "path must be absolute");
+        migrationScriptPath = migrationScriptPath.trim();
+        
         const promise = new Promise<void>((resolve, reject) =>
         {
             const child = exec(`node ${migrationScriptPath}`,
