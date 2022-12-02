@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.RedisDistributedLockService = exports.RedisCacheService = exports.InMemoryCacheService = exports.DbMigrator = exports.KnexPgUnitOfWork = exports.KnexPgDbConnectionFactory = exports.KnexPgDb = exports.QueryResult = exports.KnexPgReadDb = void 0;
+exports.RedisDistributedLockService = exports.RedisCacheService = exports.InMemoryCacheService = exports.DbMigrationScriptRunner = exports.DbMigrator = exports.KnexPgUnitOfWork = exports.KnexPgDbConnectionFactory = exports.KnexPgDb = exports.QueryResult = exports.KnexPgReadDb = void 0;
 require("@nivinjoseph/n-ext");
 var knex_pg_read_db_1 = require("./db/knex-pg-read-db");
 Object.defineProperty(exports, "KnexPgReadDb", { enumerable: true, get: function () { return knex_pg_read_db_1.KnexPgReadDb; } });
@@ -14,6 +14,8 @@ var knex_pg_unit_of_work_1 = require("./unit-of-work/knex-pg-unit-of-work");
 Object.defineProperty(exports, "KnexPgUnitOfWork", { enumerable: true, get: function () { return knex_pg_unit_of_work_1.KnexPgUnitOfWork; } });
 var db_migrator_1 = require("./migration/db-migrator");
 Object.defineProperty(exports, "DbMigrator", { enumerable: true, get: function () { return db_migrator_1.DbMigrator; } });
+var db_migration_script_runner_1 = require("./migration/db-migration-script-runner");
+Object.defineProperty(exports, "DbMigrationScriptRunner", { enumerable: true, get: function () { return db_migration_script_runner_1.DbMigrationScriptRunner; } });
 var in_memory_cache_service_1 = require("./caching/in-memory-cache-service");
 Object.defineProperty(exports, "InMemoryCacheService", { enumerable: true, get: function () { return in_memory_cache_service_1.InMemoryCacheService; } });
 var redis_cache_service_1 = require("./caching/redis-cache-service");
