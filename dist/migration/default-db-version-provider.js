@@ -16,7 +16,7 @@ let DefaultDbVersionProvider = class DefaultDbVersionProvider {
         return tslib_1.__awaiter(this, void 0, void 0, function* () {
             const isDbInitialized = yield this._systemRepository.checkIsInitialized();
             if (!isDbInitialized)
-                return 0;
+                yield this._systemRepository.initialize();
             const info = yield this._systemRepository.getDbInfo();
             return info.version;
         });

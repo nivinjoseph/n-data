@@ -7,6 +7,7 @@ export declare class DefaultSystemRepository implements SystemRepository {
     private readonly _systemTableName;
     constructor(db: Db, systemTablesProvider: SystemTablesProvider);
     checkIsInitialized(): Promise<boolean>;
+    initialize(): Promise<void>;
     getDbInfo(): Promise<DbInfo>;
     saveDbInfo(dbInfo: DbInfo): Promise<void>;
     private _checkIfKeyExists;

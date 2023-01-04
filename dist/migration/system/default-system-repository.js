@@ -6,6 +6,7 @@ const n_defensive_1 = require("@nivinjoseph/n-defensive");
 const n_ject_1 = require("@nivinjoseph/n-ject");
 const migration_dependency_key_1 = require("../migration-dependency-key");
 const db_info_1 = require("./db-info");
+const moment = require("moment");
 let DefaultSystemRepository = class DefaultSystemRepository {
     constructor(db, systemTablesProvider) {
         (0, n_defensive_1.given)(db, "db").ensureHasValue().ensureIsObject();
@@ -27,11 +28,25 @@ let DefaultSystemRepository = class DefaultSystemRepository {
             return result.rows[0].exists;
         });
     }
+    initialize() {
+        return tslib_1.__awaiter(this, void 0, void 0, function* () {
+            const sql = `
+        create table IF NOT EXISTS ${this._systemTableName}
+            (
+                key varchar(128) primary key,
+                data jsonb not null
+            );
+        `;
+            yield this._db.executeCommand(sql);
+        });
+    }
     getDbInfo() {
         return tslib_1.__awaiter(this, void 0, void 0, function* () {
             const key = "db_info";
             const sql = `select data from ${this._systemTableName} where key = ?`;
             const result = yield this._db.executeQuery(sql, key);
+            if (result.rows.isEmpty)
+                return new db_info_1.DbInfo(0, moment().format("YYYY-MM-DD"));
             return db_info_1.DbInfo.deserialize(result.rows[0].data);
         });
     }
