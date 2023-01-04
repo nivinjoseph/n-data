@@ -13,7 +13,7 @@ export class DbInfo
 
     public constructor(version: number, date: string)
     {
-        given(version, "version").ensureHasValue().ensureIsNumber().ensure(t => t > 0);
+        given(version, "version").ensureHasValue().ensureIsNumber().ensure(t => t >= 0);
         this._version = version;
 
         given(date, "date").ensureHasValue().ensureIsString();

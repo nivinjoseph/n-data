@@ -24,7 +24,7 @@ export class DefaultDbVersionProvider implements DbVersionProvider
     {
         const isDbInitialized = await this._systemRepository.checkIsInitialized();
         if (!isDbInitialized)
-            return 0;
+            await this._systemRepository.initialize();
 
         const info = await this._systemRepository.getDbInfo();
         return info.version;
