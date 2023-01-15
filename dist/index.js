@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.RedisDistributedLockService = exports.RedisCacheService = exports.InMemoryCacheService = exports.DbMigrationScriptRunner = exports.DbMigrator = exports.KnexPgUnitOfWork = exports.KnexPgDbConnectionFactory = exports.KnexPgDb = exports.QueryResult = exports.KnexPgReadDb = void 0;
+exports.S3FileStore = exports.StoredFile = exports.RedisDistributedLockService = exports.RedisCacheService = exports.InMemoryCacheService = exports.DbMigrationScriptRunner = exports.DbMigrator = exports.KnexPgUnitOfWork = exports.KnexPgDbConnectionFactory = exports.KnexPgDb = exports.QueryResult = exports.KnexPgReadDb = void 0;
 require("@nivinjoseph/n-ext");
 var knex_pg_read_db_1 = require("./db/knex-pg-read-db");
 Object.defineProperty(exports, "KnexPgReadDb", { enumerable: true, get: function () { return knex_pg_read_db_1.KnexPgReadDb; } });
@@ -22,4 +22,8 @@ var redis_cache_service_1 = require("./caching/redis-cache-service");
 Object.defineProperty(exports, "RedisCacheService", { enumerable: true, get: function () { return redis_cache_service_1.RedisCacheService; } });
 var redis_distributed_lock_service_1 = require("./distributed-lock/redis-distributed-lock-service");
 Object.defineProperty(exports, "RedisDistributedLockService", { enumerable: true, get: function () { return redis_distributed_lock_service_1.RedisDistributedLockService; } });
+var stored_file_1 = require("./file-store/stored-file");
+Object.defineProperty(exports, "StoredFile", { enumerable: true, get: function () { return stored_file_1.StoredFile; } });
+var s3_file_store_1 = require("./file-store/s3-file-store");
+Object.defineProperty(exports, "S3FileStore", { enumerable: true, get: function () { return s3_file_store_1.S3FileStore; } });
 //# sourceMappingURL=index.js.map

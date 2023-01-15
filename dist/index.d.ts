@@ -19,3 +19,7 @@ export { InMemoryCacheService } from "./caching/in-memory-cache-service";
 export { RedisCacheService } from "./caching/redis-cache-service";
 export { DistributedLock, DistributedLockService } from "./distributed-lock/distributed-lock-service";
 export { RedisDistributedLockService } from "./distributed-lock/redis-distributed-lock-service";
+export { FileStore } from "./file-store/file-store";
+export { StoredFile, StoredFileSchema } from "./file-store/stored-file";
+export { S3FileStoreConfig } from "./file-store/s3-file-store-config";
+export { S3FileStore } from "./file-store/s3-file-store";
