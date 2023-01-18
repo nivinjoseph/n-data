@@ -10,6 +10,7 @@ const s3_request_presigner_1 = require("@aws-sdk/s3-request-presigner");
 const Mime = require("mime-types");
 const n_sec_1 = require("@nivinjoseph/n-sec");
 const stored_file_1 = require("./stored-file");
+const n_util_1 = require("@nivinjoseph/n-util");
 const n_domain_1 = require("@nivinjoseph/n-domain");
 class S3FileStore {
     constructor(config) {
@@ -111,7 +112,15 @@ class S3FileStore {
             return file.updatePublicUrl(url);
         });
     }
-    createSignedUpload(fileName, fileSize, fileHash, expiry) {
+    /**
+     *
+     * @param fileName
+     * @param fileSize
+     * @param fileHash
+     * @param expiry default and max duration is 7 days
+     * @returns
+     */
+    createSignedUpload(fileName, fileSize, fileHash, expiry = n_util_1.Duration.fromDays(7)) {
         return tslib_1.__awaiter(this, void 0, void 0, function* () {
             (0, n_defensive_1.given)(fileName, "fileName").ensureHasValue().ensureIsString();
             (0, n_defensive_1.given)(fileSize, "fileSize").ensureHasValue().ensureIsNumber();
@@ -142,7 +151,13 @@ class S3FileStore {
             });
         });
     }
-    createSignedDownload(file, expiry) {
+    /**
+     *
+     * @param file
+     * @param expiry default and max duration is 7 days
+     * @returns
+     */
+    createSignedDownload(file, expiry = n_util_1.Duration.fromDays(7)) {
         return tslib_1.__awaiter(this, void 0, void 0, function* () {
             (0, n_defensive_1.given)(file, "file").ensureHasValue().ensureIsObject().ensureIsInstanceOf(stored_file_1.StoredFile);
             (0, n_defensive_1.given)(expiry, "expiry").ensureHasValue().ensureIsObject();

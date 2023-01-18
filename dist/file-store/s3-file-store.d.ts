@@ -15,8 +15,22 @@ export declare class S3FileStore implements FileStore, Disposable {
     store(fileName: string, fileData: Buffer): Promise<StoredFile>;
     retrieve(file: StoredFile): Promise<Buffer>;
     makePublic(file: StoredFile): Promise<StoredFile>;
-    createSignedUpload(fileName: string, fileSize: number, fileHash: string, expiry: Duration): Promise<StoredFile>;
-    createSignedDownload(file: StoredFile, expiry: Duration): Promise<StoredFile>;
+    /**
+     *
+     * @param fileName
+     * @param fileSize
+     * @param fileHash
+     * @param expiry default and max duration is 7 days
+     * @returns
+     */
+    createSignedUpload(fileName: string, fileSize: number, fileHash: string, expiry?: Duration): Promise<StoredFile>;
+    /**
+     *
+     * @param file
+     * @param expiry default and max duration is 7 days
+     * @returns
+     */
+    createSignedDownload(file: StoredFile, expiry?: Duration): Promise<StoredFile>;
     dispose(): Promise<void>;
     private _getFileExt;
     private _getContentType;
