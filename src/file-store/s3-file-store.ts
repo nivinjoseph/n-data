@@ -145,7 +145,15 @@ export class S3FileStore implements FileStore, Disposable
         return file.updatePublicUrl(url);
     }
 
-    public async createSignedUpload(fileName: string, fileSize: number, fileHash: string, expiry: Duration): Promise<StoredFile>
+    /**
+     * 
+     * @param fileName 
+     * @param fileSize 
+     * @param fileHash 
+     * @param expiry default and max duration is 7 days
+     * @returns 
+     */
+    public async createSignedUpload(fileName: string, fileSize: number, fileHash: string, expiry = Duration.fromDays(7)): Promise<StoredFile>
     {
         given(fileName, "fileName").ensureHasValue().ensureIsString();
         given(fileSize, "fileSize").ensureHasValue().ensureIsNumber();
@@ -183,7 +191,13 @@ export class S3FileStore implements FileStore, Disposable
         });
     }
 
-    public async createSignedDownload(file: StoredFile, expiry: Duration): Promise<StoredFile>
+    /**
+     * 
+     * @param file 
+     * @param expiry default and max duration is 7 days
+     * @returns 
+     */
+    public async createSignedDownload(file: StoredFile, expiry = Duration.fromDays(7)): Promise<StoredFile>
     {
         given(file, "file").ensureHasValue().ensureIsObject().ensureIsInstanceOf(StoredFile);
         given(expiry, "expiry").ensureHasValue().ensureIsObject();
