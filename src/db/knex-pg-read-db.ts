@@ -1,11 +1,11 @@
 import { given } from "@nivinjoseph/n-defensive";
 import { Knex } from "knex";
-import { DbException } from "../exceptions/db-exception";
-import { OperationType } from "../exceptions/operation-type";
-import { DbConnectionFactory } from "../db-connection-factory/db-connection-factory";
+import { DbException } from "../exceptions/db-exception.js";
+import { OperationType } from "../exceptions/operation-type.js";
+import { DbConnectionFactory } from "../db-connection-factory/db-connection-factory.js";
 import { inject } from "@nivinjoseph/n-ject";
-import { QueryResult } from "./query-result";
-import { ReadDb } from "./read-db";
+import { QueryResult } from "./query-result.js";
+import { ReadDb } from "./read-db.js";
 
 
 // public
@@ -13,8 +13,8 @@ import { ReadDb } from "./read-db";
 export class KnexPgReadDb implements ReadDb
 {
     private readonly _dbConnectionFactory: DbConnectionFactory;
-    
-    
+
+
     protected get dbConnectionFactory(): DbConnectionFactory { return this._dbConnectionFactory; }
 
 

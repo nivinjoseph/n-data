@@ -1,9 +1,10 @@
 import { given } from "@nivinjoseph/n-defensive";
 import { DomainEntity } from "@nivinjoseph/n-domain";
-import * as Crypto from "crypto";
 import { Schema, serialize } from "@nivinjoseph/n-util";
+import { createHash } from "node:crypto";
 
 
+@serialize
 export class StoredFile extends DomainEntity<StoredFileSchema>
 {
     private readonly _name: string;
@@ -77,7 +78,7 @@ export class StoredFile extends DomainEntity<StoredFileSchema>
     {
         given(fileData, "fileData").ensureHasValue().ensureIsObject().ensureIsType(Buffer);
 
-        return Crypto.createHash("md5").update(fileData).digest("base64");
+        return createHash("md5").update(fileData).digest("base64");
     }
 
 

@@ -1,5 +1,5 @@
-import { UnitOfWork } from "./unit-of-work";
-import { DbConnectionFactory } from "../db-connection-factory/db-connection-factory";
+import { UnitOfWork } from "./unit-of-work.js";
+import { DbConnectionFactory } from "../db-connection-factory/db-connection-factory.js";
 import { given } from "@nivinjoseph/n-defensive";
 import { Knex } from "knex";
 import { InvalidOperationException } from "@nivinjoseph/n-exception";
@@ -22,7 +22,7 @@ export class KnexPgUnitOfWork implements UnitOfWork
 
         this._dbConnectionFactory = dbConnectionFactory;
     }
-    
+
 
     public getTransactionScope(): Promise<object>
     {
@@ -71,13 +71,13 @@ export class KnexPgUnitOfWork implements UnitOfWork
 
         return promise;
     }
-    
+
     public onCommit(callback: () => Promise<void>, priority?: number): void
     {
         given(callback, "callback").ensureHasValue().ensureIsFunction();
         given(priority, "priority").ensureIsNumber().ensure(t => t >= 0);
         priority ??= 0;
-        
+
         this._onCommits.push({
             callback,
             priority
@@ -93,13 +93,13 @@ export class KnexPgUnitOfWork implements UnitOfWork
                     .groupBy(t => t.priority.toString())
                     .orderBy(t => Number.parseInt(t.key))
                     .forEachAsync(t => Promise.all(t.values.map(v => v.callback())) as unknown as Promise<void>, 1);
-            
+
             return;
         }
 
         if (this._transactionScope.isCommitted || this._transactionScope.isRolledBack)
             throw new InvalidOperationException("committing completed UnitOfWork");
-        
+
         if (this._transactionScope.isCommitting)
             throw new InvalidOperationException("double committing UnitOfWork");
 
@@ -116,20 +116,20 @@ export class KnexPgUnitOfWork implements UnitOfWork
         });
 
         await promise;
-        
+
         if (this._onCommits.isNotEmpty)
             await this._onCommits
                 .groupBy(t => t.priority.toString())
                 .orderBy(t => Number.parseInt(t.key))
                 .forEachAsync(t => Promise.all(t.values.map(v => v.callback())) as unknown as Promise<void>, 1);
     }
-    
+
     public onRollback(callback: () => Promise<void>, priority?: number): void
     {
         given(callback, "callback").ensureHasValue().ensureIsFunction();
         given(priority, "priority").ensureIsNumber().ensure(t => t >= 0);
         priority ??= 0;
-        
+
         this._onRollbacks.push({
             callback,
             priority
@@ -145,13 +145,13 @@ export class KnexPgUnitOfWork implements UnitOfWork
                     .groupBy(t => t.priority.toString())
                     .orderBy(t => Number.parseInt(t.key))
                     .forEachAsync(t => Promise.all(t.values.map(v => v.callback())) as unknown as Promise<void>, 1);
-            
+
             return;
         }
 
         if (this._transactionScope.isCommitted || this._transactionScope.isRolledBack)
             throw new InvalidOperationException("rolling back completed UnitOfWork");
-        
+
         if (this._transactionScope.isRollingBack)
             throw new InvalidOperationException("double rolling back UnitOfWork");
 
@@ -168,7 +168,7 @@ export class KnexPgUnitOfWork implements UnitOfWork
         });
 
         await promise;
-        
+
         if (this._onRollbacks.isNotEmpty)
             await this._onRollbacks
                 .groupBy(t => t.priority.toString())

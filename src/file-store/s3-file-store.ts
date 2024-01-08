@@ -1,21 +1,21 @@
 import { given } from "@nivinjoseph/n-defensive";
-import * as Path from "path";
 import { ApplicationException, ArgumentException } from "@nivinjoseph/n-exception";
 import { S3Client, PutObjectCommand, GetObjectCommand, CopyObjectCommand } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
-import * as Mime from "mime-types";
-import { FileStore } from "./file-store";
+import Mime from "mime-types";
+import { FileStore } from "./file-store.js";
 import { Hmac } from "@nivinjoseph/n-sec";
-import { StoredFile } from "./stored-file";
-import { S3FileStoreConfig } from "./s3-file-store-config";
+import { StoredFile } from "./stored-file.js";
+import { S3FileStoreConfig } from "./s3-file-store-config.js";
 import { Disposable, Duration } from "@nivinjoseph/n-util";
 import { DomainHelper } from "@nivinjoseph/n-domain";
+import { extname } from "node:path";
 
 
 export class S3FileStore implements FileStore, Disposable
 {
     private readonly _config: S3FileStoreConfig;
-    
+
     private readonly _privateBucket: string;
     private readonly _publicBucket: string;
     private readonly _publicBucketHasDot: boolean;
@@ -23,7 +23,7 @@ export class S3FileStore implements FileStore, Disposable
 
     // private readonly _supportedExts: ReadonlyArray<string>;
     private readonly _maxFileSize: number;
-    
+
     private _isDisposed = false;
 
 
@@ -42,13 +42,13 @@ export class S3FileStore implements FileStore, Disposable
             .ensureWhen(config.accessKeyId == null || config.secretAccessKey == null, t => t.accessKeyId == t.secretAccessKey,
                 "if provided then both accessKeyId and secretAccessKey must be provided");
         this._config = config;
-        
+
         this._privateBucket = this._config.privateBucket;
         this._publicBucket = this._config.publicBucket;
         this._publicBucketHasDot = this._publicBucket.contains(".");
-        
+
         this._config.idGenerator ??= (): string => DomainHelper.generateId("bsf");
-        
+
         this._connection = new S3Client({
             // signatureVersion: "v4",
             region: this._config.region,
@@ -85,7 +85,7 @@ export class S3FileStore implements FileStore, Disposable
             ContentType: fileMime,
             ContentMD5: fileHash
         });
-        
+
         await this._connection.send(command);
 
         return new StoredFile({
@@ -111,7 +111,7 @@ export class S3FileStore implements FileStore, Disposable
             Bucket: this._privateBucket,
             Key: file.id
         });
-        
+
         const retrieveResponse = await this._connection.send(command);
 
         const fileData = Buffer.from(await retrieveResponse.Body!.transformToByteArray());
@@ -135,23 +135,23 @@ export class S3FileStore implements FileStore, Disposable
             Key: file.id
             // ContentDisposition: "inline"
         });
-        
+
         await this._connection.send(command);
 
         const url = this._publicBucketHasDot
             ? `https://s3.${this._config.region}.amazonaws.com/${this._publicBucket}/${file.id}`
             : `https://${this._publicBucket}.s3.${this._config.region}.amazonaws.com/${file.id}`;
-        
+
         return file.updatePublicUrl(url);
     }
 
     /**
-     * 
-     * @param fileName 
-     * @param fileSize 
-     * @param fileHash 
+     *
+     * @param fileName
+     * @param fileSize
+     * @param fileHash
      * @param expiry default and max duration is 7 days
-     * @returns 
+     * @returns
      */
     public async createSignedUpload(fileName: string, fileSize: number, fileHash: string, expiry = Duration.fromDays(7)): Promise<StoredFile>
     {
@@ -177,7 +177,7 @@ export class S3FileStore implements FileStore, Disposable
         });
 
         const url = await getSignedUrl(this._connection, command, { expiresIn: expiry.toSeconds() });
-        
+
         return new StoredFile({
             id,
             name: fileName,
@@ -192,10 +192,10 @@ export class S3FileStore implements FileStore, Disposable
     }
 
     /**
-     * 
-     * @param file 
+     *
+     * @param file
      * @param expiry default and max duration is 7 days
-     * @returns 
+     * @returns
      */
     public async createSignedDownload(file: StoredFile, expiry = Duration.fromDays(7)): Promise<StoredFile>
     {
@@ -208,12 +208,12 @@ export class S3FileStore implements FileStore, Disposable
             Bucket: this._privateBucket,
             Key: file.id
         });
-        
+
         const url = await getSignedUrl(this._connection, command, { expiresIn: expiry.toSeconds() });
-        
+
         return file.updatePrivateUrl(url);
     }
-    
+
     public dispose(): Promise<void>
     {
         if (!this._isDisposed)
@@ -221,13 +221,13 @@ export class S3FileStore implements FileStore, Disposable
             this._connection.destroy();
             this._isDisposed = true;
         }
-        
+
         return Promise.resolve();
     }
 
     private _getFileExt(fileName: string): string
     {
-        let fileExt = Path.extname(fileName);
+        let fileExt = extname(fileName);
         fileExt = fileExt.isEmptyOrWhiteSpace() ? "UNKNOWN" : fileExt.trim().replace(".", "").toLowerCase();
         // if (this._supportedExts.every(t => t !== fileExt))
         //     throw new ArgumentException("fileName", "unsupported format");

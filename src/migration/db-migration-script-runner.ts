@@ -2,28 +2,28 @@ import { given } from "@nivinjoseph/n-defensive";
 import { inject } from "@nivinjoseph/n-ject";
 import { Logger } from "@nivinjoseph/n-log";
 import { exec } from "child_process";
-import * as Path from "path";
+import { isAbsolute } from "node:path";
 
 
 @inject("Logger")
 export class DbMigrationScriptRunner
 {
     private readonly _logger: Logger;
-    
-    
+
+
     public constructor(logger: Logger)
     {
         given(logger, "logger").ensureHasValue().ensureIsObject();
         this._logger = logger;
     }
-    
-    
+
+
     public async runMigrations(migrationScriptPath: string): Promise<void>
     {
         given(migrationScriptPath, "migrationScriptPath").ensureHasValue().ensureIsString()
-            .ensure(t => Path.isAbsolute(t.trim()), "path must be absolute");
+            .ensure(t => isAbsolute(t.trim()), "path must be absolute");
         migrationScriptPath = migrationScriptPath.trim();
-        
+
         const promise = new Promise<void>((resolve, reject) =>
         {
             const child = exec(`node ${migrationScriptPath}`,
@@ -70,7 +70,7 @@ export class DbMigrationScriptRunner
             });
         });
 
-        try 
+        try
         {
             await promise;
         }
