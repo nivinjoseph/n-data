@@ -262,8 +262,32 @@ type DistributedLockConfigInternal = Required<DistributedLockConfig>;
 
 export interface DistributedLockConfig
 {
+    /**
+     * The expected clock drift; for more details
+     * see http://redis.io/topics/distlock
+     *
+     * This is multiplied by lock ttl to determine drift time
+     * @default 0.01
+     */
     driftFactor?: number;
+
+    /**
+     * The max number of times the service will attempt to acquire the lock
+     * see http://redis.io/topics/distlock
+     *
+     * @default 25
+     */
     retryCount?: number;
+    /**
+     * The time in between each attempt to acquire lock
+     * @default 400ms
+     */
     retryDelay?: Duration;
+    /**
+     * To improve performance under high contention some random time is added along with `retryDelay`
+     * This is the max time that could be added.
+     * see https://www.awsarchitectureblog.com/2015/03/backoff.html
+     * @default 200ms
+     */
     retryJitter?: Duration;
 }

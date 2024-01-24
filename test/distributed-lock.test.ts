@@ -28,7 +28,7 @@ class Synchronized
     public async execute(ms: number): Promise<void>
     {
         const lock = await this._lockService.lock("testing");
-        console.log("hello");
+
         try
         {
             // if (ms === 3000)
@@ -115,8 +115,8 @@ await describe("DistributedLock tests", async () =>
 
     await test(`
             Given a lock
-            When acquired by 3 simultaneous operations the record the events
-            The events should be correct and in order
+            When acquired by 3 simultaneous operations that record the events 'Started 'opsNumber'' and 'Finished 'opsNumber''
+            Then the events should be correct and in order
             `, async () =>
     {
         const synchronized = new Synchronized(service);
@@ -194,7 +194,7 @@ await describe("DistributedLock tests", async () =>
     });
 
     await test(`
-        Given a long acquired long
+        Given a lock that was acquired with a very long ttl 
         When attempting to acquire the lock again with default delay and retries
         Then UnableToAcquireDistributedLockException should be thrown
     `, async () =>
