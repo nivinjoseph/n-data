@@ -1,4 +1,4 @@
-import { DbInfo } from "./db-info";
+import { DbInfo } from "./db-info.js";
 
 
 export interface SystemRepository

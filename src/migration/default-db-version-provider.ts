@@ -1,10 +1,10 @@
-import { SystemRepository } from "./system/system-repository";
+import { SystemRepository } from "./system/system-repository.js";
 import { given } from "@nivinjoseph/n-defensive";
-import * as moment from "moment";
-import { DbInfo } from "./system/db-info";
-import { DbVersionProvider } from "./db-version-provider";
+import { DbInfo } from "./system/db-info.js";
+import { DbVersionProvider } from "./db-version-provider.js";
 import { inject } from "@nivinjoseph/n-ject";
-import { MigrationDependencyKey } from "./migration-dependency-key";
+import { MigrationDependencyKey } from "./migration-dependency-key.js";
+import { DateTime } from "@nivinjoseph/n-util";
 
 
 @inject(MigrationDependencyKey.dbSystemRepository)
@@ -34,7 +34,7 @@ export class DefaultDbVersionProvider implements DbVersionProvider
     {
         given(version, "version").ensureHasValue().ensureIsNumber().ensure(t => t > 0);
 
-        const info = new DbInfo(version, moment().format("YYYY-MM-DD"));
+        const info = new DbInfo(version, DateTime.now().dateValue);
         await this._systemRepository.saveDbInfo(info);
     }
 }

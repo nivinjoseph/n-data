@@ -1,9 +1,9 @@
-import { DbConnectionFactory } from "./db-connection-factory";
+import { DbConnectionFactory } from "./db-connection-factory.js";
 import { given } from "@nivinjoseph/n-defensive";
-import { Knex, knex } from "knex";
-import * as Pg from "pg";
+import knex, { Knex } from "knex";
+import Pg from "pg";
 import { ObjectDisposedException } from "@nivinjoseph/n-exception";
-import { DbConnectionConfig } from "./db-connection-config";
+import { DbConnectionConfig } from "./db-connection-config.js";
 import { Delay } from "@nivinjoseph/n-util";
 
 // public
@@ -18,11 +18,11 @@ export class KnexPgDbConnectionFactory implements DbConnectionFactory
         // debug: true
     };
     private readonly _knex: Knex;
-    
+
     private _isDisposed = false;
     private _disposePromise: Promise<void> | null = null;
-    
-    
+
+
     public constructor(connectionString: string);
     public constructor(connectionConfig: DbConnectionConfig);
     public constructor(config: string | DbConnectionConfig)
@@ -32,7 +32,7 @@ export class KnexPgDbConnectionFactory implements DbConnectionFactory
             const connectionString = config;
             given(connectionString, "connectionString").ensureHasValue().ensureIsString();
             this._config.connection = connectionString.trim();
-            
+
             // Pg.defaults.ssl = true; // this is a workaround
             Pg.defaults.ssl = {
                 rejectUnauthorized: false
@@ -49,7 +49,7 @@ export class KnexPgDbConnectionFactory implements DbConnectionFactory
                     username: "string",
                     password: "string"
                 });
-            
+
             this._config.connection = {
                 host: connectionConfig.host.trim(),
                 port: Number.parseInt(connectionConfig.port.trim()),
@@ -61,16 +61,16 @@ export class KnexPgDbConnectionFactory implements DbConnectionFactory
 
         this._knex = knex(this._config);
     }
-    
-    
+
+
     public create(): Promise<object>
     {
         if (this._isDisposed)
             return Promise.reject(new ObjectDisposedException(this));
-        
+
         return Promise.resolve(this._knex);
     }
-    
+
     public dispose(): Promise<void>
     {
         if (!this._isDisposed)
@@ -91,7 +91,7 @@ export class KnexPgDbConnectionFactory implements DbConnectionFactory
                     }));
             });
         }
-        
+
         return this._disposePromise!;
     }
 }

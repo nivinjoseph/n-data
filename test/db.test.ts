@@ -1,18 +1,14 @@
-import * as Assert from "assert";
-import { DbConnectionFactory } from "../src/db-connection-factory/db-connection-factory";
-import { Db } from "../src/db/db";
-import { KnexPgDbConnectionFactory } from "../src/db-connection-factory/knex-pg-db-connection-factory";
-import { KnexPgDb } from "../src/db/knex-pg-db";
-import { KnexPgUnitOfWork } from "../src/unit-of-work/knex-pg-unit-of-work";
-import { DbConnectionConfig } from "../src/db-connection-factory/db-connection-config";
+import assert from "node:assert";
+import test, { after, before, describe } from "node:test";
+import { Db, DbConnectionConfig, DbConnectionFactory, KnexPgDb, KnexPgDbConnectionFactory, KnexPgUnitOfWork } from "../src/index.js";
 
 
-suite("Db tests", () =>
+await describe("Db tests", async () =>
 {
     let dbConnectionFactory: DbConnectionFactory;
     let db: Db;
 
-    suiteSetup(async () =>
+    before(async () =>
     {
         const config: DbConnectionConfig = {
             host: "localhost",
@@ -25,15 +21,15 @@ suite("Db tests", () =>
         db = new KnexPgDb(dbConnectionFactory);
     });
 
-    suiteTeardown(async () =>
+    after(async () =>
     {
         await dbConnectionFactory.dispose();
     });
 
 
-    suite("Query tests", () =>
+    await describe("Query tests", async () =>
     {
-        suiteSetup(async () =>
+        before(async () =>
         {
             await db.executeCommand(`
                 drop table if exists products;
@@ -45,44 +41,44 @@ suite("Db tests", () =>
             `);
         });
 
-        suiteTeardown(async () =>
+        after(async () =>
         {
             await db.executeCommand(`drop table if exists products`);
         });
 
 
-        test("query should return multiple results", async () =>
+        await test("query should return multiple results", async () =>
         {
             const result = await db.executeQuery(`select * from products`);
-            Assert.strictEqual(2, result.rows.length);
-            Assert.deepEqual(result.rows, [{ id: 1, name: "cheese" }, { id: 2, name: "wine" }]);
+            assert.strictEqual(2, result.rows.length);
+            assert.deepEqual(result.rows, [{ id: 1, name: "cheese" }, { id: 2, name: "wine" }]);
         });
 
-        test("query with filter should return one result", async () =>
+        await test("query with filter should return one result", async () =>
         {
             const result = await db.executeQuery(`select * from products where id = ?`, 1);
-            Assert.strictEqual(1, result.rows.length);
-            Assert.deepEqual(result.rows, [{ id: 1, name: "cheese" }]);
+            assert.strictEqual(1, result.rows.length);
+            assert.deepEqual(result.rows, [{ id: 1, name: "cheese" }]);
         });
 
-        test("query should return count", async () =>
+        await test("query should return count", async () =>
         {
             const result = await db.executeQuery<any>(`select cast(count(*) as int) from products`);
-            Assert.strictEqual(1, result.rows.length);
-            Assert.strictEqual(result.rows[0].count, 2);
+            assert.strictEqual(1, result.rows.length);
+            assert.strictEqual(result.rows[0].count, 2);
         });
-        
-        test("query with in clause should return results", async () =>
+
+        await test("query with in clause should return results", async () =>
         {
             const result = await db.executeQuery(`select * from products where id in (?, ?)`, 1, 2);
-            Assert.strictEqual(2, result.rows.length);
-            Assert.deepEqual(result.rows, [{ id: 1, name: "cheese" }, { id: 2, name: "wine" }]);
+            assert.strictEqual(2, result.rows.length);
+            assert.deepEqual(result.rows, [{ id: 1, name: "cheese" }, { id: 2, name: "wine" }]);
         });
     });
 
-    suite("Command tests", () =>
+    await describe("Command tests", async () =>
     {
-        suiteSetup(async () =>
+        before(async () =>
         {
             await db.executeCommand(`
                 drop table if exists products;
@@ -93,25 +89,25 @@ suite("Db tests", () =>
             `);
         });
 
-        suiteTeardown(async () =>
+        after(async () =>
         {
             await db.executeCommand(`drop table if exists products`);
         });
 
 
-        test("command should execute successfully", async () =>
+        await test("command should execute successfully", async () =>
         {
             await db.executeCommand(`insert into products(id, name) values(?, ?)`, 3, "milk");
             const result = await db.executeQuery("select * from products where id = ?", 3);
-            Assert.strictEqual(result.rows.length, 1);
-            Assert.deepEqual(result.rows, [{ id: 3, name: "milk" }]);
+            assert.strictEqual(result.rows.length, 1);
+            assert.deepEqual(result.rows, [{ id: 3, name: "milk" }]);
         });
 
-        test("multiple commands should execute independently", async () =>
+        await test("multiple commands should execute independently", async () =>
         {
             await db.executeCommand(`insert into products(id, name) values(?, ?)`, 4, "pasta");
 
-            try 
+            try
             {
                 await db.executeCommand(`insert into products(id, name) values(?, ?)`, 5, "012345678901234567890123456789012345678901234567890123456789");
             }
@@ -121,14 +117,14 @@ suite("Db tests", () =>
             }
 
             const result = await db.executeQuery("select * from products order by id");
-            Assert.strictEqual(result.rows.length, 2);
-            Assert.deepEqual(result.rows, [{ id: 3, name: "milk" }, { id: 4, name: "pasta" }]);
+            assert.strictEqual(result.rows.length, 2);
+            assert.deepEqual(result.rows, [{ id: 3, name: "milk" }, { id: 4, name: "pasta" }]);
         });
     });
-    
-    suite("Versioning tests", () =>
+
+    await describe("Versioning tests", async () =>
     {
-        suiteSetup(async () =>
+        before(async () =>
         {
             // console.log("creating table");
             await db.executeCommand(`
@@ -139,44 +135,44 @@ suite("Db tests", () =>
                     name varchar(100)
                 );
             `);
-            
+
             // console.log("Inserting 2");
             await db.executeCommand(`
                 insert into products(id, version, name) values(1, 1, 'cheese'), (2, 1, 'bread');
             `);
-            
+
             // console.log("updating 1");
             // await db.executeCommand(`update products set version = ?, name = ? where id = ? and version = ?;`,
             //     2, "brie cheese", 1, 1);
-            
+
             // console.log("updating 2");
             // await db.executeCommand(`update products set version = ? where id in (?, ?);`,
             //     3, 1, 2);
-            
+
             // console.log("deleting 1");
             // await db.executeCommand(`delete from products where id = 1;`);
         });
-        
+
         // test("nothing", () =>
         // {
-        //     Assert.ok(true);
+        //     assert.ok(true);
         // });
-        
-        test("Should successfully update record", async () =>
+
+        await test("Should successfully update record", async () =>
         {
             const sql = `update products set version = ?, name = ? where id = ? and version = ?;`;
             await db.executeCommand(sql, 2, "brie cheese", 1, 1);
             const result = await db.executeQuery("select * from products order by id;");
-            Assert.strictEqual(result.rows.length, 2);
-            Assert.deepEqual(result.rows, [{ id: 1, version: 2, name: "brie cheese" }, { id: 2, version: 1, name: "bread" }]);
+            assert.strictEqual(result.rows.length, 2);
+            assert.deepEqual(result.rows, [{ id: 1, version: 2, name: "brie cheese" }, { id: 2, version: 1, name: "bread" }]);
         });
-        
-        test("Should fail and not update the record", async () =>
+
+        await test("Should fail and not update the record", async () =>
         {
             const sql = `update products set version = ?, name = ? where id = ? and version = ?;`;
-            
+
             let exceptionThrown = false;
-            try 
+            try
             {
                 await db.executeCommand(sql, 2, "provolone cheese", 1, 1);
             }
@@ -185,17 +181,17 @@ suite("Db tests", () =>
                 exceptionThrown = true;
                 // console.log(error);
             }
-            
-            Assert.strictEqual(exceptionThrown, true);
+
+            assert.strictEqual(exceptionThrown, true);
             const result = await db.executeQuery("select * from products order by id;");
-            Assert.strictEqual(result.rows.length, 2);
-            Assert.deepEqual(result.rows, [{ id: 1, version: 2, name: "brie cheese" }, { id: 2, version: 1, name: "bread" }]);
+            assert.strictEqual(result.rows.length, 2);
+            assert.deepEqual(result.rows, [{ id: 1, version: 2, name: "brie cheese" }, { id: 2, version: 1, name: "bread" }]);
         });
     });
 
-    suite("UnitOfWork tests", () =>
+    await describe("UnitOfWork tests", async () =>
     {
-        suiteSetup(async () =>
+        before(async () =>
         {
             await db.executeCommand(`
                 drop table if exists products;
@@ -206,20 +202,20 @@ suite("Db tests", () =>
             `);
         });
 
-        suiteTeardown(async () =>
+        after(async () =>
         {
             await db.executeCommand(`drop table if exists products`);
         });
 
 
-        test("commands should execute successfully if committed", async () =>
+        await test("commands should execute successfully if committed", async () =>
         {
             let isCommitted = false;
             let isRolledback = false;
             const unitOfWork = new KnexPgUnitOfWork(dbConnectionFactory);
             unitOfWork.onCommit(async () => { isCommitted = true; });
             unitOfWork.onRollback(async () => { isRolledback = true; });
-            try 
+            try
             {
                 await db.executeCommandWithinUnitOfWork(unitOfWork, `insert into products(id, name) values(?, ?)`, 3, "milk");
                 await db.executeCommandWithinUnitOfWork(unitOfWork, `insert into products(id, name) values(?, ?)`, 4, "pasta");
@@ -231,20 +227,20 @@ suite("Db tests", () =>
             }
 
             const result = await db.executeQuery(`select * from products where id in (3, 4)`);
-            Assert.strictEqual(result.rows.length, 2);
-            Assert.deepEqual(result.rows, [{ id: 3, name: "milk" }, { id: 4, name: "pasta" }]);
-            Assert.strictEqual(isCommitted, true);
-            Assert.strictEqual(isRolledback, false);
+            assert.strictEqual(result.rows.length, 2);
+            assert.deepEqual(result.rows, [{ id: 3, name: "milk" }, { id: 4, name: "pasta" }]);
+            assert.strictEqual(isCommitted, true);
+            assert.strictEqual(isRolledback, false);
         });
 
-        test("no commands should execute successfully if rolledback", async () =>
+        await test("no commands should execute successfully if rolledback", async () =>
         {
             let isCommitted = false;
             let isRolledback = false;
             const unitOfWork = new KnexPgUnitOfWork(dbConnectionFactory);
             unitOfWork.onCommit(async () => { isCommitted = true; });
             unitOfWork.onRollback(async () => { isRolledback = true; });
-            try 
+            try
             {
                 await db.executeCommandWithinUnitOfWork(unitOfWork, `insert into products(id, name) values(?, ?)`, 5, "fish");
                 await db.executeCommandWithinUnitOfWork(unitOfWork, `insert into products(id, name) values(?, ?)`, 6, "012345678901234567890123456789012345678901234567890123456789");
@@ -256,15 +252,15 @@ suite("Db tests", () =>
             }
 
             const result = await db.executeQuery<any>(`select cast(count(*) as int) from products where id in (5, 6)`);
-            Assert.strictEqual(result.rows[0].count, 0);
-            Assert.strictEqual(isCommitted, false);
-            Assert.strictEqual(isRolledback, true);
+            assert.strictEqual(result.rows[0].count, 0);
+            assert.strictEqual(isCommitted, false);
+            assert.strictEqual(isRolledback, true);
         });
     });
 
-    suite("Object tree tests", () =>
+    await describe("Object tree tests", async () =>
     {
-        suiteSetup(async () =>
+        before(async () =>
         {
             await db.executeCommand(`
                     drop table if exists orders;
@@ -288,16 +284,16 @@ suite("Db tests", () =>
 
             await db.executeCommand(`
                     insert into customers(id, name) values(1, 'nivin');
-                    insert into orders(id, customer_id, amount) 
+                    insert into orders(id, customer_id, amount)
                         values(1, 1, 50.00), (2, 1, 30.00);
-                        
+
                     insert into customers(id, name) values(2, 'shrey');
-                    insert into orders(id, customer_id, amount) 
+                    insert into orders(id, customer_id, amount)
                         values(3, 2, 10.00), (4, 2, 20.00), (5, 2, 35.00);
                 `);
         });
 
-        suiteTeardown(async () =>
+        after(async () =>
         {
             await db.executeCommand(`
                 drop table if exists orders;
@@ -305,7 +301,7 @@ suite("Db tests", () =>
             `);
         });
 
-        test("Produce single object tree from query", async () =>
+        await test("Produce single object tree from query", async () =>
         {
             const result = await db.executeQuery(`
                     select c.id as id, c.name as name, o.id as "orders:id", o.amount as "orders:amount"
@@ -313,7 +309,7 @@ suite("Db tests", () =>
                 `);
 
             const data = result.toObjectTree();
-            Assert.deepEqual(data, [
+            assert.deepEqual(data, [
                 {
                     id: 1,
                     name: "nivin",
@@ -330,8 +326,8 @@ suite("Db tests", () =>
                 }
             ]);
         });
-        
-        test("Produce multiple object trees from query", async () =>
+
+        await test("Produce multiple object trees from query", async () =>
         {
             const result = await db.executeQuery(`
                     select c.id as id, c.name as name, o.id as "orders:id", o.amount as "orders:amount"
@@ -339,7 +335,7 @@ suite("Db tests", () =>
                 `);
 
             const data = result.toObjectTree();
-            Assert.deepEqual(data, [
+            assert.deepEqual(data, [
                 {
                     id: 1,
                     name: "nivin",
@@ -375,22 +371,22 @@ suite("Db tests", () =>
             ]);
         });
     });
-    
-    suite("JsonB query tests", () =>
+
+    await describe("JsonB query tests", async () =>
     {
         const createdOn = Date.now();
-        
-        suiteSetup(async () =>
+
+        before(async () =>
         {
             await db.executeCommand(`
                 drop table if exists assets;
-            
+
                 create table assets(
                     id int primary key,
                     body jsonb
                 );
             `);
-            
+
             await db.executeCommand(`
                 insert into assets(id, body)
                     values(?,?), (?,?)
@@ -398,7 +394,7 @@ suite("Db tests", () =>
                 {
                     name: "txt1.txt",
                     ext: "txt", createdOn:
-                    createdOn,
+                        createdOn,
                     tags: ["baz", "bar"]
                 },
                 2,
@@ -408,19 +404,19 @@ suite("Db tests", () =>
                     tags: ["foo", "bar"]
                 });
         });
-        
-        suiteTeardown(async () =>
+
+        after(async () =>
         {
             await db.executeCommand(`
                 drop table if exists assets;
             `);
         });
-        
-        test("successfully retrieve jsonb data when queried by id", async () =>
+
+        await test("successfully retrieve jsonb data when queried by id", async () =>
         {
             const result = await db.executeQuery("select * from assets where id = ?", 1);
-            Assert.strictEqual(result.rows.length, 1);
-            Assert.deepEqual(result.rows, [
+            assert.strictEqual(result.rows.length, 1);
+            assert.deepEqual(result.rows, [
                 {
                     id: 1,
                     body: {
@@ -431,12 +427,12 @@ suite("Db tests", () =>
                     }
                 }]);
         });
-        
-        test("successfully retrieve jsonb data when queried by jsonb scalar field", async () =>
+
+        await test("successfully retrieve jsonb data when queried by jsonb scalar field", async () =>
         {
-            const result = await db.executeQuery(`select * from assets where body @> ?;`, {ext: "xls"});
-            Assert.strictEqual(result.rows.length, 1);
-            Assert.deepEqual(result.rows, [
+            const result = await db.executeQuery(`select * from assets where body @> ?;`, { ext: "xls" });
+            assert.strictEqual(result.rows.length, 1);
+            assert.deepEqual(result.rows, [
                 {
                     id: 2,
                     body: {
@@ -446,12 +442,12 @@ suite("Db tests", () =>
                     }
                 }]);
         });
-        
-        test("successfully retrieve jsonb data when queried by jsonb array field", async () =>
+
+        await test("successfully retrieve jsonb data when queried by jsonb array field", async () =>
         {
             const result = await db.executeQuery(`select * from assets where body @> ?;`, { tags: ["bar"] });
-            Assert.strictEqual(result.rows.length, 2);
-            Assert.deepEqual(result.rows, [
+            assert.strictEqual(result.rows.length, 2);
+            assert.deepEqual(result.rows, [
                 {
                     id: 1,
                     body: {
@@ -471,39 +467,39 @@ suite("Db tests", () =>
                 }]);
         });
     });
-    
-    suite("JsonB command tests", () =>
+
+    await describe("JsonB command tests", async () =>
     {
-        suiteSetup(async () =>
+        before(async () =>
         {
             await db.executeCommand(`
                 drop table if exists assets;
-            
+
                 create table assets(
                     id int primary key,
                     body jsonb
                 );
-            `); 
+            `);
         });
 
-        suiteTeardown(async () =>
+        after(async () =>
         {
             await db.executeCommand(`
                 drop table if exists assets;
             `);
         });
-        
-        test("successfully insert jsonb data", async () =>
+
+        await test("successfully insert jsonb data", async () =>
         {
             await db.executeCommand(`
                 insert into assets(id, body)
                     values(?,?), (?,?)
             `, 1, { name: "txt1.txt", ext: "txt" }, 2, { name: "import.xls", ext: "xls" });
-            
+
             const result = await db.executeQuery("select * from assets");
-            Assert.strictEqual(result.rows.length, 2);
-            Assert.deepEqual(result.rows, [{ id: 1, body: { name: "txt1.txt", ext: "txt" } },
-                { id: 2, body: { name: "import.xls", ext: "xls" } }]);
+            assert.strictEqual(result.rows.length, 2);
+            assert.deepEqual(result.rows, [{ id: 1, body: { name: "txt1.txt", ext: "txt" } },
+            { id: 2, body: { name: "import.xls", ext: "xls" } }]);
         });
     });
 });

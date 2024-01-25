@@ -1,111 +1,113 @@
-import * as Assert from "assert";
-import { FileStore } from "../src/file-store/file-store";
-import { S3FileStore } from "../src/file-store/s3-file-store";
 import { ConfigurationManager } from "@nivinjoseph/n-config";
-import * as Fs from "fs";
-import * as Path from "path";
-import { StoredFile } from "../src/file-store/stored-file";
 import { Duration } from "@nivinjoseph/n-util";
+import { existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { test, after, before, describe } from "node:test";
+import { FileStore, S3FileStore, StoredFile } from "../src/index.js";
+import assert from "node:assert";
+import { fileURLToPath } from "node:url";
 
 
-suite("FileStore tests", () =>
+await describe("FileStore tests", async () =>
 {
     let fileStore: FileStore;
     let storedFile: StoredFile;
-    const testFilePath = Path.join(__dirname, "test.pdf");
+    const testFilePath = new URL("./test.pdf", import.meta.url);
 
-    suiteSetup(async () =>
+    before(async () =>
     {
-        if (Fs.existsSync(testFilePath))
-            Fs.unlinkSync(testFilePath);
-        
+        if (existsSync(testFilePath))
+            unlinkSync(testFilePath);
+
         fileStore = new S3FileStore({
-            region: ConfigurationManager.requireConfig("awsRegion"),
-            privateBucket: ConfigurationManager.requireConfig("privateBucket"),
-            publicBucket: ConfigurationManager.requireConfig("publicBucket"),
+            region: ConfigurationManager.requireStringConfig("awsRegion"),
+            privateBucket: ConfigurationManager.requireStringConfig("privateBucket"),
+            publicBucket: ConfigurationManager.requireStringConfig("publicBucket"),
             // idGenerator: (): string => DomainHelper.generateId("tst"),
-            storedFileSignatureKey: ConfigurationManager.requireConfig("storedFileSignatureKey"),
-            accessKeyId: ConfigurationManager.requireConfig("accessKeyId"),
-            secretAccessKey: ConfigurationManager.requireConfig("secretAccessKey")
+            storedFileSignatureKey: ConfigurationManager.requireStringConfig("storedFileSignatureKey"),
+            accessKeyId: ConfigurationManager.requireStringConfig("accessKeyId"),
+            secretAccessKey: ConfigurationManager.requireStringConfig("secretAccessKey")
         });
     });
 
-    suiteTeardown(async () =>
+    after(async () =>
     {
         await fileStore.dispose();
     });
 
 
-    suite("store", () =>
+    await describe("store", async () =>
     {
-        test("store pdf", async () =>
-        {        
-            const fileData = Fs.readFileSync(testFilePath.replace(".pdf", "-sample.pdf"));
-            
+        await test("store pdf", async () =>
+        {
+            // const fileData = readFileSync(testFilePath.replace(".pdf", "-sample.pdf"));
+            const file = new URL("./test-sample.pdf", testFilePath);
+            console.log(fileURLToPath(file));
+            const fileData = readFileSync(file);
+
             storedFile = await fileStore.store("test.pdf", fileData);
-            
+
             // console.log(storedFile.serialize());
-            
+
             // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
-            Assert.ok(storedFile != null);
-            Assert.ok(storedFile.id.startsWith("bsf_"));
-            Assert.strictEqual(storedFile.name, "test.pdf");
-            Assert.strictEqual(storedFile.ext, "pdf");
-            Assert.strictEqual(storedFile.size, fileData.byteLength);
-            Assert.strictEqual(storedFile.mime, "application/pdf");
-            Assert.ok(storedFile.privateUrl == null);
-            Assert.ok(storedFile.publicUrl == null);
+            assert.ok(storedFile != null);
+            assert.ok(storedFile.id.startsWith("bsf_"));
+            assert.strictEqual(storedFile.name, "test.pdf");
+            assert.strictEqual(storedFile.ext, "pdf");
+            assert.strictEqual(storedFile.size, fileData.byteLength);
+            assert.strictEqual(storedFile.mime, "application/pdf");
+            assert.ok(storedFile.privateUrl == null);
+            assert.ok(storedFile.publicUrl == null);
         });
     });
 
-    suite("retrieve", () =>
+    await describe("retrieve", async () =>
     {
-        test("retrieve pdf", async () =>
-        { 
+        await test("retrieve pdf", async () =>
+        {
             const data = await fileStore.retrieve(storedFile);
-            
-            Fs.writeFileSync(testFilePath, data);
-            
+
+            writeFileSync(testFilePath, data);
+
             // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
-            Assert.ok(data != null);
-            Assert.strictEqual(data.byteLength, storedFile.size);
-            Assert.strictEqual(StoredFile.createFileDataHash(data), storedFile.hash);
+            assert.ok(data != null);
+            assert.strictEqual(data.byteLength, storedFile.size);
+            assert.strictEqual(StoredFile.createFileDataHash(data), storedFile.hash);
         });
     });
 
-    suite("makePublic", () =>
+    await describe("makePublic", async () =>
     {
-        test("make pdf public", async () =>
+        await test("make pdf public", async () =>
         {
             storedFile = await fileStore.makePublic(storedFile);
-            
+
             console.log("Public url", storedFile.publicUrl);
-            
-            Assert.ok(storedFile.publicUrl != null);
+
+            assert.ok(storedFile.publicUrl != null);
         });
     });
-    
-    suite("createSignedUpload", () =>
+
+    await describe("createSignedUpload", async () =>
     {
-        test("create signed upload for pdf", async () =>
+        await test("create signed upload for pdf", async () =>
         {
             const myStoredFile = await fileStore.createSignedUpload("test.pdf", storedFile.size, storedFile.hash, Duration.fromSeconds(60));
-            
+
             console.log("Upload url", myStoredFile.privateUrl);
-            
-            Assert.ok(myStoredFile.privateUrl != null);
+
+            assert.ok(myStoredFile.privateUrl != null);
         });
     });
-    
-    suite("createSignedDownload", () =>
+
+    await describe("createSignedDownload", async () =>
     {
-        test("create signed download for pdf", async () =>
+        await test("create signed download for pdf", async () =>
         {
             const myStoredFile = await fileStore.createSignedDownload(storedFile, Duration.fromSeconds(60));
 
             console.log("Download Url", myStoredFile.privateUrl);
 
-            Assert.ok(myStoredFile.privateUrl != null);
+            assert.ok(myStoredFile.privateUrl != null);
         });
     });
 });
