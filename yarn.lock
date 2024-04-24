@@ -796,7 +796,6 @@ __metadata:
     "@types/mime-types": "npm:^2.1.4"
     "@types/node": "npm:^20.10"
     "@types/pg": "npm:^8.6.5"
-    "@types/redlock": "npm:^4.0.7"
     "@typescript-eslint/eslint-plugin": "npm:^6.15.0"
     "@typescript-eslint/parser": "npm:^6.15.0"
     eslint: "npm:^8.56.0"
@@ -805,7 +804,6 @@ __metadata:
     mime-types: "npm:^2.1.35"
     pg: "npm:^8.11.3"
     redis: "npm:^4.6.12"
-    redlock: "npm:^4.2.0"
     treeize: "npm:^2.1.2"
     typescript: "npm:^5.3.3"
   languageName: unknown
@@ -1668,13 +1666,6 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@types/bluebird@npm:*":
-  version: 3.5.42
-  resolution: "@types/bluebird@npm:3.5.42"
-  checksum: ce752a5e277bbc0cdee3dee9c875ac093d1331905a8a5175665ccb8cb76b7b95a84836f92bc46076c2fd1e384a107866893eeeb20f6fb33427482663879faf93
-  languageName: node
-  linkType: hard
-
 "@types/body-parser@npm:*":
   version: 1.19.5
   resolution: "@types/body-parser@npm:1.19.5"
@@ -1722,15 +1713,6 @@ __metadata:
   version: 2.0.4
   resolution: "@types/http-errors@npm:2.0.4"
   checksum: 494670a57ad4062fee6c575047ad5782506dd35a6b9ed3894cea65830a94367bd84ba302eb3dde331871f6d70ca287bfedb1b2cf658e6132cd2cbd427ab56836
-  languageName: node
-  linkType: hard
-
-"@types/ioredis@npm:^4.28.10":
-  version: 4.28.10
-  resolution: "@types/ioredis@npm:4.28.10"
-  dependencies:
-    "@types/node": "npm:*"
-  checksum: ff680fef6750721c465ee9d6060d3229e49e5b217d68503c4972c4b869b8f84b91cbd9b7d5195a40fb0bff6ab9a4f5e24a2cc17a368ddb0bfe2dfd4eb5fc1872
   languageName: node
   linkType: hard
 
@@ -1825,26 +1807,6 @@ __metadata:
   version: 1.2.7
   resolution: "@types/range-parser@npm:1.2.7"
   checksum: 361bb3e964ec5133fa40644a0b942279ed5df1949f21321d77de79f48b728d39253e5ce0408c9c17e4e0fd95ca7899da36841686393b9f7a1e209916e9381a3c
-  languageName: node
-  linkType: hard
-
-"@types/redis@npm:^2.8.0":
-  version: 2.8.32
-  resolution: "@types/redis@npm:2.8.32"
-  dependencies:
-    "@types/node": "npm:*"
-  checksum: 99fd52ffc1f4c2cbe3f1ec7a38f9a85a128a430fcbf8e241914d8687ea53555e90dc7b66b3ff1a0c9b74afa1c677551ee405b1f73926c944dadc6026e5e6a80a
-  languageName: node
-  linkType: hard
-
-"@types/redlock@npm:^4.0.7":
-  version: 4.0.7
-  resolution: "@types/redlock@npm:4.0.7"
-  dependencies:
-    "@types/bluebird": "npm:*"
-    "@types/ioredis": "npm:^4.28.10"
-    "@types/redis": "npm:^2.8.0"
-  checksum: f96f0f63aa12ea9b923be3d8d9d6881eccc70a6805202354c0b137cbef84508f1afc06f9f358efad8ad4227d0e75394d5b4e211bfcabe9c62f1481393c57a3d5
   languageName: node
   linkType: hard
 
@@ -2180,13 +2142,6 @@ __metadata:
   version: 1.5.1
   resolution: "base64-js@npm:1.5.1"
   checksum: f23823513b63173a001030fae4f2dabe283b99a9d324ade3ad3d148e218134676f1ee8568c877cd79ec1c53158dcf2d2ba527a97c606618928ba99dd930102bf
-  languageName: node
-  linkType: hard
-
-"bluebird@npm:^3.7.2":
-  version: 3.7.2
-  resolution: "bluebird@npm:3.7.2"
-  checksum: 680de03adc54ff925eaa6c7bb9a47a0690e8b5de60f4792604aae8ed618c65e6b63a7893b57ca924beaf53eee69c5af4f8314148c08124c550fe1df1add897d2
   languageName: node
   linkType: hard
 
@@ -4506,15 +4461,6 @@ __metadata:
     "@redis/search": "npm:1.1.6"
     "@redis/time-series": "npm:1.0.5"
   checksum: 5b0e865b3da218c75049ed66418f2c894733de0356c0ad331e2e8bfb55fbb84a5ba151c010dc89e9df668fb7a0e08ede6b3c64ae0b4536c2dc84e2a6da5b5be6
-  languageName: node
-  linkType: hard
-
-"redlock@npm:^4.2.0":
-  version: 4.2.0
-  resolution: "redlock@npm:4.2.0"
-  dependencies:
-    bluebird: "npm:^3.7.2"
-  checksum: 42850223216f3354d213bda7ff261446bdf03324d663000760ada29cfd0bd372fca6c7c757752e88fbee7a684ab92f0c561eb7ae6c00807cb57a1236cc3a6239
   languageName: node
   linkType: hard
 

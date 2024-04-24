@@ -1,72 +1,169 @@
-"use strict";
-Object.defineProperty(exports, "__esModule", { value: true });
-exports.RedisDistributedLockService = void 0;
-const tslib_1 = require("tslib");
-const n_util_1 = require("@nivinjoseph/n-util");
-const Redis = require("redis");
-const n_defensive_1 = require("@nivinjoseph/n-defensive");
-const n_exception_1 = require("@nivinjoseph/n-exception");
-const n_ject_1 = require("@nivinjoseph/n-ject");
-const RedLock = require("redlock");
-let RedisDistributedLockService = class RedisDistributedLockService {
-    constructor(redisClient) {
-        this._isDisposed = false;
-        this._disposePromise = null;
-        (0, n_defensive_1.given)(redisClient, "redisClient").ensureHasValue().ensureIsObject();
-        this._client = redisClient;
-        this._redLock = new RedLock([this._client], {
-            // the expected clock drift; for more details
-            // see http://redis.io/topics/distlock
-            driftFactor: 0.01,
-            // the max number of times Redlock will attempt
-            // to lock a resource before erroring
-            retryCount: 25,
-            // the time in ms between attempts
-            retryDelay: 400,
-            // the max time in ms randomly added to retries
-            // to improve performance under high contention
-            // see https://www.awsarchitectureblog.com/2015/03/backoff.html
-            retryJitter: 200 // time in ms
-        });
-    }
-    lock(key, ttlDuration) {
-        return tslib_1.__awaiter(this, void 0, void 0, function* () {
-            return new Promise((resolve, reject) => {
-                (0, n_defensive_1.given)(key, "key").ensureHasValue().ensureIsString();
-                key = `n-data-dlock-${key.trim().toLowerCase()}`;
-                (0, n_defensive_1.given)(ttlDuration, "ttlDuration").ensureIsObject();
-                if (this._isDisposed) {
-                    reject(new n_exception_1.ObjectDisposedException(this));
-                    return;
-                }
-                this._redLock.lock(key, (ttlDuration !== null && ttlDuration !== void 0 ? ttlDuration : n_util_1.Duration.fromSeconds(30)).toMilliSeconds())
-                    .then(lock => resolve(new RedisDistributedLock(lock)))
-                    .catch(e => reject(e));
+import { __esDecorate, __runInitializers, __setFunctionName } from "tslib";
+import { Delay, Duration, Make, Uuid } from "@nivinjoseph/n-util";
+import { given } from "@nivinjoseph/n-defensive";
+import { ApplicationException, ObjectDisposedException } from "@nivinjoseph/n-exception";
+import { inject } from "@nivinjoseph/n-ject";
+import { createHash } from "node:crypto";
+let RedisDistributedLockService = (() => {
+    let _classDecorators = [inject("RedisClient")];
+    let _classDescriptor;
+    let _classExtraInitializers = [];
+    let _classThis;
+    var RedisDistributedLockService = _classThis = class {
+        constructor(redisClient, config) {
+            this._defaultConfig = {
+                driftFactor: 0.01,
+                retryCount: 25,
+                retryDelay: Duration.fromMilliSeconds(400),
+                retryJitter: Duration.fromMilliSeconds(200)
+            };
+            this._isDisposed = false;
+            this._disposePromise = null;
+            given(redisClient, "redisClient").ensureHasValue().ensureIsObject();
+            given(config, "config").ensureIsObject().ensureHasStructure({
+                "driftFactor?": "number",
+                "retryCount?": "number",
+                "retryDelay?": "object",
+                "retryJitter?": "object"
             });
-        });
-    }
-    dispose() {
-        if (!this._isDisposed) {
-            this._isDisposed = true;
-            this._disposePromise = Promise.resolve();
+            this._executer = new _RedisScriptExecuter(redisClient, Object.assign(Object.assign({}, this._defaultConfig), config == null ? {} : config));
         }
-        return this._disposePromise;
-    }
-};
-RedisDistributedLockService = tslib_1.__decorate([
-    (0, n_ject_1.inject)("RedisClient"),
-    tslib_1.__metadata("design:paramtypes", [Redis.RedisClient])
-], RedisDistributedLockService);
-exports.RedisDistributedLockService = RedisDistributedLockService;
+        async lock(key, ttlDuration) {
+            given(key, "key").ensureHasValue().ensureIsString();
+            key = `n-data-dlock-${key.trim().toLowerCase()}`;
+            given(ttlDuration, "ttlDuration").ensureIsObject();
+            if (this._isDisposed)
+                throw new ObjectDisposedException(this);
+            return this._executer.lock(key, ttlDuration);
+        }
+        dispose() {
+            if (!this._isDisposed) {
+                this._isDisposed = true;
+                this._disposePromise = Promise.resolve();
+            }
+            return this._disposePromise;
+        }
+    };
+    __setFunctionName(_classThis, "RedisDistributedLockService");
+    (() => {
+        const _metadata = typeof Symbol === "function" && Symbol.metadata ? Object.create(null) : void 0;
+        __esDecorate(null, _classDescriptor = { value: _classThis }, _classDecorators, { kind: "class", name: _classThis.name, metadata: _metadata }, null, _classExtraInitializers);
+        RedisDistributedLockService = _classThis = _classDescriptor.value;
+        if (_metadata) Object.defineProperty(_classThis, Symbol.metadata, { enumerable: true, configurable: true, writable: true, value: _metadata });
+        __runInitializers(_classThis, _classExtraInitializers);
+    })();
+    return RedisDistributedLockService = _classThis;
+})();
+export { RedisDistributedLockService };
 class RedisDistributedLock {
-    constructor(lock) {
-        (0, n_defensive_1.given)(lock, "lock").ensureHasValue();
-        this._lock = lock;
+    get key() { return this._key; }
+    get value() { return this._value; }
+    get expiration() { return this._expiration; }
+    constructor(executer, key, value, expiration) {
+        given(executer, "executer").ensureHasValue().ensureIsObject();
+        this._executer = executer;
+        given(key, "key").ensureHasValue().ensureIsString();
+        this._key = key;
+        given(value, "value").ensureHasValue().ensureIsString();
+        this._value = value;
+        given(expiration, "expiration").ensureHasValue().ensureIsInstanceOf(Duration);
+        this._expiration = expiration;
     }
     release() {
-        return new Promise((resolve, reject) => {
-            this._lock.unlock().then(() => resolve()).catch((e) => reject(e));
-        });
+        return this._executer.release(this);
+    }
+}
+class _RedisScriptExecuter {
+    constructor(client, config) {
+        this._lockScript = `
+        -- Return 0 if an key already exists 1 otherwise.
+        -- ARGV[1] = value ARGV[2] = duration
+        if redis.call("exists", KEYS[1]) == 1 then
+            return 0
+        end
+
+        redis.call("set", KEYS[1], ARGV[1], "PX", ARGV[2])
+
+        return 1
+    `;
+        this._releaseScript = `
+        -- Return 0 if key is already deleted or expired 1 otherwise.
+        -- ARGV[1] = value for the key
+
+        if redis.call("get", KEYS[1]) == ARGV[1] then
+            return redis.call("del",KEYS[1])
+        else
+            return 0
+        end
+    `;
+        given(client, "client").ensureHasValue().ensureIsObject();
+        this._client = client;
+        given(config, "config").ensureHasValue().ensureIsObject();
+        this._config = config;
+        this._lockScriptHash = this._hashScript(this._lockScript);
+        this._releaseScriptHash = this._hashScript(this._releaseScript);
+    }
+    async lock(key, ttlDuration) {
+        given(key, "key").ensureHasValue().ensureIsString();
+        given(ttlDuration, "ttlDuration").ensureIsInstanceOf(Duration);
+        const randomValue = Uuid.create();
+        const duration = ttlDuration !== null && ttlDuration !== void 0 ? ttlDuration : Duration.fromSeconds(30);
+        let attempts = 0;
+        while (attempts < this._config.retryCount) {
+            const result = await this._executeScript(this._lockScriptHash, this._lockScript, key, randomValue, duration.toMilliSeconds().toString());
+            if (result)
+                return new RedisDistributedLock(this, key, randomValue, duration);
+            attempts++;
+            const delayDuration = this._config.retryDelay.toMilliSeconds()
+                + Make.randomInt(0, this._config.retryJitter.toMilliSeconds());
+            await Delay.milliseconds(delayDuration);
+        }
+        throw new UnableToAcquireDistributedLockException(key);
+    }
+    async release(lock) {
+        given(lock, "lock").ensureHasValue().ensureIsObject();
+        await this._executeScript(this._releaseScriptHash, this._releaseScript, lock.key, lock.value);
+    }
+    async _executeScript(scriptHash, script, key, ...args) {
+        given(scriptHash, "scriptHash").ensureHasValue().ensureIsString();
+        given(script, "script").ensureHasValue().ensureIsString();
+        given(key, "key").ensureHasValue().ensureIsString();
+        given(args, "args").ensureHasValue().ensureIsArray();
+        let result;
+        try {
+            // Attempt to evaluate the script by its hash.
+            const hashResult = await this._client.evalSha(scriptHash, {
+                keys: [key],
+                arguments: args
+            });
+            if (typeof hashResult !== "number")
+                throw new ApplicationException(`Unexpected result of type ${typeof hashResult} returned from redis when executing 'evalSha' ${hashResult}.`);
+            result = hashResult;
+        }
+        catch (error) {
+            if (error instanceof Error && error.message.startsWith("NOSCRIPT")) {
+                const rawResult = await this._client.eval(script, {
+                    keys: [key],
+                    arguments: args
+                });
+                if (typeof rawResult !== "number")
+                    throw new ApplicationException(`Unexpected result of type ${typeof rawResult} returned from redis when executing 'eval' ${rawResult}.`);
+                result = rawResult;
+            }
+            else
+                throw error;
+        }
+        return result === 1;
+    }
+    _hashScript(script) {
+        given(script, "script").ensureHasValue().ensureIsString();
+        return createHash("sha1")
+            .update(script).digest("hex");
+    }
+}
+export class UnableToAcquireDistributedLockException extends ApplicationException {
+    constructor(key) {
+        super(`Unable to acquire distributed lock for key '${key}'`);
     }
 }
 //# sourceMappingURL=redis-distributed-lock-service.js.map

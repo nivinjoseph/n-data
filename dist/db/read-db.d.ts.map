@@ -1,0 +1,1 @@
+{"version":3,"file":"read-db.d.ts","sourceRoot":"","sources":["../../src/db/read-db.ts"],"names":[],"mappings":"AAAA,OAAO,EAAE,WAAW,EAAE,MAAM,mBAAmB,CAAC;AAIhD,MAAM,WAAW,MAAM;IAEnB,YAAY,CAAC,CAAC,EAAE,GAAG,EAAE,MAAM,EAAE,GAAG,MAAM,EAAE,KAAK,CAAC,GAAG,CAAC,GAAG,OAAO,CAAC,WAAW,CAAC,CAAC,CAAC,CAAC,CAAC;CAChF"}

@@ -1,0 +1,1 @@
+{"version":3,"file":"s3-file-store-config.d.ts","sourceRoot":"","sources":["../../src/file-store/s3-file-store-config.ts"],"names":[],"mappings":"AAAA,MAAM,WAAW,iBAAiB;IAE9B,MAAM,EAAE,MAAM,CAAC;IACf,aAAa,EAAE,MAAM,CAAC;IACtB,YAAY,EAAE,MAAM,CAAC;IAErB,WAAW,CAAC,EAAE,MAAM,MAAM,CAAC;IAC3B,sBAAsB,EAAE,MAAM,CAAC;IAC/B,WAAW,CAAC,EAAE,MAAM,CAAC;IACrB,eAAe,CAAC,EAAE,MAAM,CAAC;CAC5B"}

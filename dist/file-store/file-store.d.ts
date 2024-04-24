@@ -1,6 +1,6 @@
-/// <reference types="node" />
+/// <reference types="node" resolution-mode="require"/>
 import { Disposable, Duration } from "@nivinjoseph/n-util";
-import { StoredFile } from "./stored-file";
+import { StoredFile } from "./stored-file.js";
 export interface FileStore extends Disposable {
     store(fileName: string, fileData: Buffer): Promise<StoredFile>;
     retrieve(file: StoredFile): Promise<Buffer>;
@@ -20,3 +20,4 @@ export interface FileStore extends Disposable {
      */
     createSignedDownload(file: StoredFile, expiry?: Duration): Promise<StoredFile>;
 }
+//# sourceMappingURL=file-store.d.ts.map

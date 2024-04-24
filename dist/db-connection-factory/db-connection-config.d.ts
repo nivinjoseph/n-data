@@ -5,3 +5,4 @@ export interface DbConnectionConfig {
     username: string;
     password: string;
 }
+//# sourceMappingURL=db-connection-config.d.ts.map

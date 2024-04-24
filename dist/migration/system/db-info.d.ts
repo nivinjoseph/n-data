@@ -12,3 +12,4 @@ interface Serialized {
     date: string;
 }
 export {};
+//# sourceMappingURL=db-info.d.ts.map
