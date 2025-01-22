@@ -1,5 +1,5 @@
-import { UnitOfWork } from "./unit-of-work";
-import { DbConnectionFactory } from "../db-connection-factory/db-connection-factory";
+import { UnitOfWork } from "./unit-of-work.js";
+import { DbConnectionFactory } from "../db-connection-factory/db-connection-factory.js";
 export declare class KnexPgUnitOfWork implements UnitOfWork {
     private readonly _dbConnectionFactory;
     private readonly _onCommits;
@@ -12,3 +12,4 @@ export declare class KnexPgUnitOfWork implements UnitOfWork {
     onRollback(callback: () => Promise<void>, priority?: number): void;
     rollback(): Promise<void>;
 }
+//# sourceMappingURL=knex-pg-unit-of-work.d.ts.map

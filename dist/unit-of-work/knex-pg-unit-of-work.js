@@ -1,78 +1,79 @@
-"use strict";
-Object.defineProperty(exports, "__esModule", { value: true });
-exports.KnexPgUnitOfWork = void 0;
-const tslib_1 = require("tslib");
-const n_defensive_1 = require("@nivinjoseph/n-defensive");
-const n_exception_1 = require("@nivinjoseph/n-exception");
-const n_ject_1 = require("@nivinjoseph/n-ject");
+import { __esDecorate, __runInitializers, __setFunctionName } from "tslib";
+import { given } from "@nivinjoseph/n-defensive";
+import { InvalidOperationException } from "@nivinjoseph/n-exception";
+import { inject } from "@nivinjoseph/n-ject";
 // public
-let KnexPgUnitOfWork = class KnexPgUnitOfWork {
-    constructor(dbConnectionFactory) {
-        this._onCommits = new Array();
-        this._onRollbacks = new Array();
-        this._transactionScope = null;
-        (0, n_defensive_1.given)(dbConnectionFactory, "dbConnectionFactory").ensureHasValue().ensureIsObject();
-        this._dbConnectionFactory = dbConnectionFactory;
-    }
-    getTransactionScope() {
-        if (this._transactionScope) {
-            if (this._transactionScope.isCommitted || this._transactionScope.isRolledBack)
-                return Promise.reject(new n_exception_1.InvalidOperationException("using completed UnitOfWork"));
-            return Promise.resolve(this._transactionScope.trx);
+let KnexPgUnitOfWork = (() => {
+    let _classDecorators = [inject("DbConnectionFactory")];
+    let _classDescriptor;
+    let _classExtraInitializers = [];
+    let _classThis;
+    var KnexPgUnitOfWork = _classThis = class {
+        constructor(dbConnectionFactory) {
+            this._onCommits = new Array();
+            this._onRollbacks = new Array();
+            this._transactionScope = null;
+            given(dbConnectionFactory, "dbConnectionFactory").ensureHasValue().ensureIsObject();
+            this._dbConnectionFactory = dbConnectionFactory;
         }
-        const promise = new Promise((resolve, reject) => {
-            this._dbConnectionFactory.create()
-                .then((knex) => {
-                knex
-                    .transaction((trx) => {
-                    if (this._transactionScope) {
-                        // eslint-disable-next-line @typescript-eslint/no-floating-promises
-                        trx.rollback();
-                        if (this._transactionScope.isCommitted || this._transactionScope.isRolledBack)
-                            reject(new n_exception_1.InvalidOperationException("using completed UnitOfWork"));
-                        else
+        getTransactionScope() {
+            if (this._transactionScope) {
+                if (this._transactionScope.isCommitted || this._transactionScope.isRolledBack)
+                    return Promise.reject(new InvalidOperationException("using completed UnitOfWork"));
+                return Promise.resolve(this._transactionScope.trx);
+            }
+            const promise = new Promise((resolve, reject) => {
+                this._dbConnectionFactory.create()
+                    .then((knex) => {
+                    knex
+                        .transaction((trx) => {
+                        if (this._transactionScope) {
+                            // eslint-disable-next-line @typescript-eslint/no-floating-promises
+                            trx.rollback();
+                            if (this._transactionScope.isCommitted || this._transactionScope.isRolledBack)
+                                reject(new InvalidOperationException("using completed UnitOfWork"));
+                            else
+                                resolve(this._transactionScope.trx);
+                        }
+                        else {
+                            this._transactionScope = {
+                                trx: trx,
+                                isCommitting: false,
+                                isCommitted: false,
+                                isRollingBack: false,
+                                isRolledBack: false
+                            };
                             resolve(this._transactionScope.trx);
-                    }
-                    else {
-                        this._transactionScope = {
-                            trx: trx,
-                            isCommitting: false,
-                            isCommitted: false,
-                            isRollingBack: false,
-                            isRolledBack: false
-                        };
-                        resolve(this._transactionScope.trx);
-                    }
+                        }
+                    })
+                        .catch(() => { });
                 })
-                    .catch(() => { });
-            })
-                .catch(err => reject(err));
-        });
-        return promise;
-    }
-    onCommit(callback, priority) {
-        (0, n_defensive_1.given)(callback, "callback").ensureHasValue().ensureIsFunction();
-        (0, n_defensive_1.given)(priority, "priority").ensureIsNumber().ensure(t => t >= 0);
-        priority !== null && priority !== void 0 ? priority : (priority = 0);
-        this._onCommits.push({
-            callback,
-            priority
-        });
-    }
-    commit() {
-        return tslib_1.__awaiter(this, void 0, void 0, function* () {
+                    .catch(err => reject(err));
+            });
+            return promise;
+        }
+        onCommit(callback, priority) {
+            given(callback, "callback").ensureHasValue().ensureIsFunction();
+            given(priority, "priority").ensureIsNumber().ensure(t => t >= 0);
+            priority !== null && priority !== void 0 ? priority : (priority = 0);
+            this._onCommits.push({
+                callback,
+                priority
+            });
+        }
+        async commit() {
             if (!this._transactionScope) {
                 if (this._onCommits.isNotEmpty)
-                    yield this._onCommits
+                    await this._onCommits
                         .groupBy(t => t.priority.toString())
                         .orderBy(t => Number.parseInt(t.key))
                         .forEachAsync(t => Promise.all(t.values.map(v => v.callback())), 1);
                 return;
             }
             if (this._transactionScope.isCommitted || this._transactionScope.isRolledBack)
-                throw new n_exception_1.InvalidOperationException("committing completed UnitOfWork");
+                throw new InvalidOperationException("committing completed UnitOfWork");
             if (this._transactionScope.isCommitting)
-                throw new n_exception_1.InvalidOperationException("double committing UnitOfWork");
+                throw new InvalidOperationException("double committing UnitOfWork");
             this._transactionScope.isCommitting = true;
             const promise = new Promise((resolve, reject) => {
                 this._transactionScope.trx.commit()
@@ -82,37 +83,35 @@ let KnexPgUnitOfWork = class KnexPgUnitOfWork {
                 })
                     .catch((err) => reject(err));
             });
-            yield promise;
+            await promise;
             if (this._onCommits.isNotEmpty)
-                yield this._onCommits
+                await this._onCommits
                     .groupBy(t => t.priority.toString())
                     .orderBy(t => Number.parseInt(t.key))
                     .forEachAsync(t => Promise.all(t.values.map(v => v.callback())), 1);
-        });
-    }
-    onRollback(callback, priority) {
-        (0, n_defensive_1.given)(callback, "callback").ensureHasValue().ensureIsFunction();
-        (0, n_defensive_1.given)(priority, "priority").ensureIsNumber().ensure(t => t >= 0);
-        priority !== null && priority !== void 0 ? priority : (priority = 0);
-        this._onRollbacks.push({
-            callback,
-            priority
-        });
-    }
-    rollback() {
-        return tslib_1.__awaiter(this, void 0, void 0, function* () {
+        }
+        onRollback(callback, priority) {
+            given(callback, "callback").ensureHasValue().ensureIsFunction();
+            given(priority, "priority").ensureIsNumber().ensure(t => t >= 0);
+            priority !== null && priority !== void 0 ? priority : (priority = 0);
+            this._onRollbacks.push({
+                callback,
+                priority
+            });
+        }
+        async rollback() {
             if (!this._transactionScope) {
                 if (this._onRollbacks.isNotEmpty)
-                    yield this._onRollbacks
+                    await this._onRollbacks
                         .groupBy(t => t.priority.toString())
                         .orderBy(t => Number.parseInt(t.key))
                         .forEachAsync(t => Promise.all(t.values.map(v => v.callback())), 1);
                 return;
             }
             if (this._transactionScope.isCommitted || this._transactionScope.isRolledBack)
-                throw new n_exception_1.InvalidOperationException("rolling back completed UnitOfWork");
+                throw new InvalidOperationException("rolling back completed UnitOfWork");
             if (this._transactionScope.isRollingBack)
-                throw new n_exception_1.InvalidOperationException("double rolling back UnitOfWork");
+                throw new InvalidOperationException("double rolling back UnitOfWork");
             this._transactionScope.isRollingBack = true;
             const promise = new Promise((resolve, reject) => {
                 this._transactionScope.trx.rollback("[DELIBERATE]")
@@ -122,18 +121,23 @@ let KnexPgUnitOfWork = class KnexPgUnitOfWork {
                 })
                     .catch((err) => reject(err));
             });
-            yield promise;
+            await promise;
             if (this._onRollbacks.isNotEmpty)
-                yield this._onRollbacks
+                await this._onRollbacks
                     .groupBy(t => t.priority.toString())
                     .orderBy(t => Number.parseInt(t.key))
                     .forEachAsync(t => Promise.all(t.values.map(v => v.callback())), 1);
-        });
-    }
-};
-KnexPgUnitOfWork = tslib_1.__decorate([
-    (0, n_ject_1.inject)("DbConnectionFactory"),
-    tslib_1.__metadata("design:paramtypes", [Object])
-], KnexPgUnitOfWork);
-exports.KnexPgUnitOfWork = KnexPgUnitOfWork;
+        }
+    };
+    __setFunctionName(_classThis, "KnexPgUnitOfWork");
+    (() => {
+        const _metadata = typeof Symbol === "function" && Symbol.metadata ? Object.create(null) : void 0;
+        __esDecorate(null, _classDescriptor = { value: _classThis }, _classDecorators, { kind: "class", name: _classThis.name, metadata: _metadata }, null, _classExtraInitializers);
+        KnexPgUnitOfWork = _classThis = _classDescriptor.value;
+        if (_metadata) Object.defineProperty(_classThis, Symbol.metadata, { enumerable: true, configurable: true, writable: true, value: _metadata });
+        __runInitializers(_classThis, _classExtraInitializers);
+    })();
+    return KnexPgUnitOfWork = _classThis;
+})();
+export { KnexPgUnitOfWork };
 //# sourceMappingURL=knex-pg-unit-of-work.js.map

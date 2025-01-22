@@ -1,35 +1,34 @@
-"use strict";
-Object.defineProperty(exports, "__esModule", { value: true });
-exports.DefaultSystemRepository = void 0;
-const tslib_1 = require("tslib");
-const n_defensive_1 = require("@nivinjoseph/n-defensive");
-const n_ject_1 = require("@nivinjoseph/n-ject");
-const migration_dependency_key_1 = require("../migration-dependency-key");
-const db_info_1 = require("./db-info");
-const moment = require("moment");
-let DefaultSystemRepository = class DefaultSystemRepository {
-    constructor(db, systemTablesProvider) {
-        (0, n_defensive_1.given)(db, "db").ensureHasValue().ensureIsObject();
-        this._db = db;
-        (0, n_defensive_1.given)(systemTablesProvider, "systemTablesProvider").ensureHasValue().ensureIsObject();
-        this._systemTableName = systemTablesProvider.systemTableName.trim().toLowerCase();
-    }
-    checkIsInitialized() {
-        return tslib_1.__awaiter(this, void 0, void 0, function* () {
+import { __esDecorate, __runInitializers, __setFunctionName } from "tslib";
+import { given } from "@nivinjoseph/n-defensive";
+import { inject } from "@nivinjoseph/n-ject";
+import { MigrationDependencyKey } from "../migration-dependency-key.js";
+import { DbInfo } from "./db-info.js";
+import { DateTime } from "@nivinjoseph/n-util";
+let DefaultSystemRepository = (() => {
+    let _classDecorators = [inject("Db", MigrationDependencyKey.dbSystemTablesProvider)];
+    let _classDescriptor;
+    let _classExtraInitializers = [];
+    let _classThis;
+    var DefaultSystemRepository = _classThis = class {
+        constructor(db, systemTablesProvider) {
+            given(db, "db").ensureHasValue().ensureIsObject();
+            this._db = db;
+            given(systemTablesProvider, "systemTablesProvider").ensureHasValue().ensureIsObject();
+            this._systemTableName = systemTablesProvider.systemTableName.trim().toLowerCase();
+        }
+        async checkIsInitialized() {
             const sql = `
         SELECT EXISTS (
             SELECT 1
-            FROM   information_schema.tables 
+            FROM   information_schema.tables
             WHERE  table_schema = 'public'
             AND    table_name = '${this._systemTableName}'
             );
         `;
-            const result = yield this._db.executeQuery(sql);
+            const result = await this._db.executeQuery(sql);
             return result.rows[0].exists;
-        });
-    }
-    initialize() {
-        return tslib_1.__awaiter(this, void 0, void 0, function* () {
+        }
+        async initialize() {
             const sql = `
         create table IF NOT EXISTS ${this._systemTableName}
             (
@@ -37,29 +36,25 @@ let DefaultSystemRepository = class DefaultSystemRepository {
                 data jsonb not null
             );
         `;
-            yield this._db.executeCommand(sql);
-        });
-    }
-    getDbInfo() {
-        return tslib_1.__awaiter(this, void 0, void 0, function* () {
+            await this._db.executeCommand(sql);
+        }
+        async getDbInfo() {
             const key = "db_info";
             const sql = `select data from ${this._systemTableName} where key = ?`;
-            const result = yield this._db.executeQuery(sql, key);
+            const result = await this._db.executeQuery(sql, key);
             if (result.rows.isEmpty)
-                return new db_info_1.DbInfo(0, moment().format("YYYY-MM-DD"));
-            return db_info_1.DbInfo.deserialize(result.rows[0].data);
-        });
-    }
-    saveDbInfo(dbInfo) {
-        return tslib_1.__awaiter(this, void 0, void 0, function* () {
-            (0, n_defensive_1.given)(dbInfo, "dbInfo").ensureHasValue().ensureIsObject();
+                return new DbInfo(0, DateTime.now().dateValue);
+            return DbInfo.deserialize(result.rows[0].data);
+        }
+        async saveDbInfo(dbInfo) {
+            given(dbInfo, "dbInfo").ensureHasValue().ensureIsObject();
             const key = "db_info";
-            const exists = yield this._checkIfKeyExists(key);
+            const exists = await this._checkIfKeyExists(key);
             let sql = "";
             const params = [];
             if (!exists) {
                 sql = `
-                insert into ${this._systemTableName} 
+                insert into ${this._systemTableName}
                     (key, data)
                     values(?, ?);
             `;
@@ -67,27 +62,30 @@ let DefaultSystemRepository = class DefaultSystemRepository {
             }
             else {
                 sql = `
-                update ${this._systemTableName} 
+                update ${this._systemTableName}
                     set data = ?
-                    where key = ?; 
+                    where key = ?;
             `;
                 params.push(dbInfo.serialize(), key);
             }
-            yield this._db.executeCommand(sql, ...params);
-        });
-    }
-    _checkIfKeyExists(key) {
-        return tslib_1.__awaiter(this, void 0, void 0, function* () {
-            (0, n_defensive_1.given)(key, "key").ensureHasValue().ensureIsString();
+            await this._db.executeCommand(sql, ...params);
+        }
+        async _checkIfKeyExists(key) {
+            given(key, "key").ensureHasValue().ensureIsString();
             const sql = `select exists (select 1 from ${this._systemTableName} where key = ?);`;
-            const result = yield this._db.executeQuery(sql, key);
+            const result = await this._db.executeQuery(sql, key);
             return result.rows[0].exists;
-        });
-    }
-};
-DefaultSystemRepository = tslib_1.__decorate([
-    (0, n_ject_1.inject)("Db", migration_dependency_key_1.MigrationDependencyKey.dbSystemTablesProvider),
-    tslib_1.__metadata("design:paramtypes", [Object, Object])
-], DefaultSystemRepository);
-exports.DefaultSystemRepository = DefaultSystemRepository;
+        }
+    };
+    __setFunctionName(_classThis, "DefaultSystemRepository");
+    (() => {
+        const _metadata = typeof Symbol === "function" && Symbol.metadata ? Object.create(null) : void 0;
+        __esDecorate(null, _classDescriptor = { value: _classThis }, _classDecorators, { kind: "class", name: _classThis.name, metadata: _metadata }, null, _classExtraInitializers);
+        DefaultSystemRepository = _classThis = _classDescriptor.value;
+        if (_metadata) Object.defineProperty(_classThis, Symbol.metadata, { enumerable: true, configurable: true, writable: true, value: _metadata });
+        __runInitializers(_classThis, _classExtraInitializers);
+    })();
+    return DefaultSystemRepository = _classThis;
+})();
+export { DefaultSystemRepository };
 //# sourceMappingURL=default-system-repository.js.map

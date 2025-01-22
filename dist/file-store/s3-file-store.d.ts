@@ -1,7 +1,7 @@
-/// <reference types="node" />
-import { FileStore } from "./file-store";
-import { StoredFile } from "./stored-file";
-import { S3FileStoreConfig } from "./s3-file-store-config";
+/// <reference types="node" resolution-mode="require"/>
+import { FileStore } from "./file-store.js";
+import { StoredFile } from "./stored-file.js";
+import { S3FileStoreConfig } from "./s3-file-store-config.js";
 import { Disposable, Duration } from "@nivinjoseph/n-util";
 export declare class S3FileStore implements FileStore, Disposable {
     private readonly _config;
@@ -36,3 +36,4 @@ export declare class S3FileStore implements FileStore, Disposable {
     private _getContentType;
     private _verifyStoredFileIntegrity;
 }
+//# sourceMappingURL=s3-file-store.d.ts.map

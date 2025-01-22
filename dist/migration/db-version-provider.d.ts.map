@@ -1,0 +1,1 @@
+{"version":3,"file":"db-version-provider.d.ts","sourceRoot":"","sources":["../../src/migration/db-version-provider.ts"],"names":[],"mappings":"AAAA,MAAM,WAAW,iBAAiB;IAE9B,UAAU,IAAI,OAAO,CAAC,MAAM,CAAC,CAAC;IAC9B,UAAU,CAAC,OAAO,EAAE,MAAM,GAAG,OAAO,CAAC,IAAI,CAAC,CAAC;CAC9C"}
