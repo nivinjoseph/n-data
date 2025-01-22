@@ -22,3 +22,4 @@ export declare class DbMigrator implements Disposable {
     dispose(): Promise<void>;
     private _executeMigrations;
 }
+//# sourceMappingURL=db-migrator.d.ts.map

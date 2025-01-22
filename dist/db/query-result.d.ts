@@ -4,3 +4,4 @@ export declare class QueryResult<T> {
     constructor(rows: Array<T>);
     toObjectTree<U>(): Array<U>;
 }
+//# sourceMappingURL=query-result.d.ts.map

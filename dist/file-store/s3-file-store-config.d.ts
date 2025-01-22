@@ -7,3 +7,4 @@ export interface S3FileStoreConfig {
     accessKeyId?: string;
     secretAccessKey?: string;
 }
+//# sourceMappingURL=s3-file-store-config.d.ts.map
