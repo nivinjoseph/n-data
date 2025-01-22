@@ -19,7 +19,7 @@
         "setup-db": "docker run -it --rm -e PGPASSWORD=p@ssw0rd postgres:12.2 psql -h 172.17.0.1 -U postgres -c 'create database testdb;'",
         "setup-redis-server": "docker run --name test-redis -p 6379:6379 -d redis:7.0",
         "setup-test-env": "yarn ts-build && yarn setup-db-server && yarn setup-db",
-        "test": "yarn setup-test-env && node --test --enable-source-maps ./test || true && yarn teardown-test-env",
+        "test": "yarn setup-test-env && node --test --enable-source-maps ./test/*.test.js || true && yarn teardown-test-env",
         "teardown-test-env": "docker stop test-postgres && docker rm test-postgres && docker stop test-redis && docker rm test-redis",
         "publish-package": "yarn ts-build-dist && git add . && git commit -m 'preparing to publish new version' && npm version patch && git push && npm publish --access=public"
     },
