@@ -4,4 +4,3 @@ export declare class DbMigrationScriptRunner {
     constructor(logger: Logger);
     runMigrations(migrationScriptPath: string): Promise<void>;
 }
-//# sourceMappingURL=db-migration-script-runner.d.ts.map

@@ -1,5 +1,5 @@
-import { DbConnectionFactory } from "./db-connection-factory.js";
-import { DbConnectionConfig } from "./db-connection-config.js";
+import { DbConnectionFactory } from "./db-connection-factory";
+import { DbConnectionConfig } from "./db-connection-config";
 export declare class KnexPgDbConnectionFactory implements DbConnectionFactory {
     private readonly _config;
     private readonly _knex;
@@ -10,4 +10,3 @@ export declare class KnexPgDbConnectionFactory implements DbConnectionFactory {
     create(): Promise<object>;
     dispose(): Promise<void>;
 }
-//# sourceMappingURL=knex-pg-db-connection-factory.d.ts.map

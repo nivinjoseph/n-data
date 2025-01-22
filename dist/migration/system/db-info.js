@@ -1,15 +1,18 @@
-import { given } from "@nivinjoseph/n-defensive";
-export class DbInfo {
-    get version() { return this._version; }
-    get date() { return this._date; }
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.DbInfo = void 0;
+const n_defensive_1 = require("@nivinjoseph/n-defensive");
+class DbInfo {
     constructor(version, date) {
-        given(version, "version").ensureHasValue().ensureIsNumber().ensure(t => t >= 0);
+        (0, n_defensive_1.given)(version, "version").ensureHasValue().ensureIsNumber().ensure(t => t >= 0);
         this._version = version;
-        given(date, "date").ensureHasValue().ensureIsString();
+        (0, n_defensive_1.given)(date, "date").ensureHasValue().ensureIsString();
         this._date = date;
     }
+    get version() { return this._version; }
+    get date() { return this._date; }
     static deserialize(data) {
-        given(data, "data").ensureHasValue().ensureIsObject();
+        (0, n_defensive_1.given)(data, "data").ensureHasValue().ensureIsObject();
         return new DbInfo(data.version, data.date);
     }
     serialize() {
@@ -19,4 +22,5 @@ export class DbInfo {
         };
     }
 }
+exports.DbInfo = DbInfo;
 //# sourceMappingURL=db-info.js.map

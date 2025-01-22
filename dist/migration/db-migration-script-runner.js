@@ -1,25 +1,24 @@
-import { __esDecorate, __runInitializers, __setFunctionName } from "tslib";
-import { given } from "@nivinjoseph/n-defensive";
-import { inject } from "@nivinjoseph/n-ject";
-import { exec } from "child_process";
-import { isAbsolute } from "node:path";
-let DbMigrationScriptRunner = (() => {
-    let _classDecorators = [inject("Logger")];
-    let _classDescriptor;
-    let _classExtraInitializers = [];
-    let _classThis;
-    var DbMigrationScriptRunner = _classThis = class {
-        constructor(logger) {
-            given(logger, "logger").ensureHasValue().ensureIsObject();
-            this._logger = logger;
-        }
-        async runMigrations(migrationScriptPath) {
-            given(migrationScriptPath, "migrationScriptPath").ensureHasValue().ensureIsString()
-                .ensure(t => isAbsolute(t.trim()), "path must be absolute");
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.DbMigrationScriptRunner = void 0;
+const tslib_1 = require("tslib");
+const n_defensive_1 = require("@nivinjoseph/n-defensive");
+const n_ject_1 = require("@nivinjoseph/n-ject");
+const child_process_1 = require("child_process");
+const Path = require("path");
+let DbMigrationScriptRunner = class DbMigrationScriptRunner {
+    constructor(logger) {
+        (0, n_defensive_1.given)(logger, "logger").ensureHasValue().ensureIsObject();
+        this._logger = logger;
+    }
+    runMigrations(migrationScriptPath) {
+        return tslib_1.__awaiter(this, void 0, void 0, function* () {
+            (0, n_defensive_1.given)(migrationScriptPath, "migrationScriptPath").ensureHasValue().ensureIsString()
+                .ensure(t => Path.isAbsolute(t.trim()), "path must be absolute");
             migrationScriptPath = migrationScriptPath.trim();
             const promise = new Promise((resolve, reject) => {
                 var _a, _b, _c, _d;
-                const child = exec(`node ${migrationScriptPath}`, 
+                const child = (0, child_process_1.exec)(`node ${migrationScriptPath}`, 
                 // @ts-expect-error: cuz of unused params
                 (error, stdout, stderr) => {
                     // if (error)
@@ -52,23 +51,18 @@ let DbMigrationScriptRunner = (() => {
                 });
             });
             try {
-                await promise;
+                yield promise;
             }
             catch (error) {
-                await this._logger.logError(error);
+                yield this._logger.logError(error);
                 throw error;
             }
-        }
-    };
-    __setFunctionName(_classThis, "DbMigrationScriptRunner");
-    (() => {
-        const _metadata = typeof Symbol === "function" && Symbol.metadata ? Object.create(null) : void 0;
-        __esDecorate(null, _classDescriptor = { value: _classThis }, _classDecorators, { kind: "class", name: _classThis.name, metadata: _metadata }, null, _classExtraInitializers);
-        DbMigrationScriptRunner = _classThis = _classDescriptor.value;
-        if (_metadata) Object.defineProperty(_classThis, Symbol.metadata, { enumerable: true, configurable: true, writable: true, value: _metadata });
-        __runInitializers(_classThis, _classExtraInitializers);
-    })();
-    return DbMigrationScriptRunner = _classThis;
-})();
-export { DbMigrationScriptRunner };
+        });
+    }
+};
+DbMigrationScriptRunner = tslib_1.__decorate([
+    (0, n_ject_1.inject)("Logger"),
+    tslib_1.__metadata("design:paramtypes", [Object])
+], DbMigrationScriptRunner);
+exports.DbMigrationScriptRunner = DbMigrationScriptRunner;
 //# sourceMappingURL=db-migration-script-runner.js.map

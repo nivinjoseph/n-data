@@ -1,82 +1,72 @@
-import { __esDecorate, __runInitializers, __setFunctionName } from "tslib";
-import { DbException } from "../exceptions/db-exception.js";
-import { OperationType } from "../exceptions/operation-type.js";
-import { inject } from "@nivinjoseph/n-ject";
-import { KnexPgReadDb } from "./knex-pg-read-db.js";
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.KnexPgDb = void 0;
+const tslib_1 = require("tslib");
+const db_exception_1 = require("../exceptions/db-exception");
+const operation_type_1 = require("../exceptions/operation-type");
+const n_ject_1 = require("@nivinjoseph/n-ject");
+const knex_pg_read_db_1 = require("./knex-pg-read-db");
 // public
-let KnexPgDb = (() => {
-    let _classDecorators = [inject("DbConnectionFactory")];
-    let _classDescriptor;
-    let _classExtraInitializers = [];
-    let _classThis;
-    let _classSuper = KnexPgReadDb;
-    var KnexPgDb = _classThis = class extends _classSuper {
-        constructor(dbConnectionFactory) {
-            super(dbConnectionFactory);
+let KnexPgDb = class KnexPgDb extends knex_pg_read_db_1.KnexPgReadDb {
+    constructor(dbConnectionFactory) {
+        super(dbConnectionFactory);
+    }
+    executeCommand(sql, ...params) {
+        const promise = new Promise((resolve, reject) => {
+            this.dbConnectionFactory.create()
+                .then((knex) => {
+                // eslint-disable-next-line @typescript-eslint/no-floating-promises
+                knex.raw(sql, params).asCallback((err, result) => {
+                    if (err) {
+                        reject(new db_exception_1.DbException(operation_type_1.OperationType.command, sql, params, err));
+                        return;
+                    }
+                    if (!this._validateCommandResult(result)) {
+                        reject(new db_exception_1.DbException(operation_type_1.OperationType.command, sql, params, new Error("No rows were affected.")));
+                        return;
+                    }
+                    resolve();
+                });
+            })
+                .catch(err => reject(err));
+        });
+        return promise;
+    }
+    executeCommandWithinUnitOfWork(transactionProvider, sql, ...params) {
+        const promise = new Promise((resolve, reject) => {
+            transactionProvider.getTransactionScope()
+                .then((trx) => {
+                // eslint-disable-next-line @typescript-eslint/no-floating-promises
+                trx.raw(sql, params).asCallback((err, result) => {
+                    if (err) {
+                        reject(new db_exception_1.DbException(operation_type_1.OperationType.command, sql, params, err));
+                        return;
+                    }
+                    if (!this._validateCommandResult(result)) {
+                        reject(new db_exception_1.DbException(operation_type_1.OperationType.command, sql, params, new Error("No rows were affected.")));
+                        return;
+                    }
+                    resolve();
+                });
+            })
+                .catch(err => reject(err));
+        });
+        return promise;
+    }
+    _validateCommandResult(result) {
+        const command = result.command;
+        const rowCount = result.rowCount;
+        const commands = ["INSERT", "UPDATE"];
+        if (commands.some(t => t === command)) {
+            if (rowCount === undefined || rowCount === null || Number.isNaN(rowCount) || rowCount <= 0)
+                return false;
         }
-        executeCommand(sql, ...params) {
-            const promise = new Promise((resolve, reject) => {
-                this.dbConnectionFactory.create()
-                    .then((knex) => {
-                    // eslint-disable-next-line @typescript-eslint/no-floating-promises
-                    knex.raw(sql, params).asCallback((err, result) => {
-                        if (err) {
-                            reject(new DbException(OperationType.command, sql, params, err));
-                            return;
-                        }
-                        if (!this._validateCommandResult(result)) {
-                            reject(new DbException(OperationType.command, sql, params, new Error("No rows were affected.")));
-                            return;
-                        }
-                        resolve();
-                    });
-                })
-                    .catch(err => reject(err));
-            });
-            return promise;
-        }
-        executeCommandWithinUnitOfWork(transactionProvider, sql, ...params) {
-            const promise = new Promise((resolve, reject) => {
-                transactionProvider.getTransactionScope()
-                    .then((trx) => {
-                    // eslint-disable-next-line @typescript-eslint/no-floating-promises
-                    trx.raw(sql, params).asCallback((err, result) => {
-                        if (err) {
-                            reject(new DbException(OperationType.command, sql, params, err));
-                            return;
-                        }
-                        if (!this._validateCommandResult(result)) {
-                            reject(new DbException(OperationType.command, sql, params, new Error("No rows were affected.")));
-                            return;
-                        }
-                        resolve();
-                    });
-                })
-                    .catch(err => reject(err));
-            });
-            return promise;
-        }
-        _validateCommandResult(result) {
-            const command = result.command;
-            const rowCount = result.rowCount;
-            const commands = ["INSERT", "UPDATE"];
-            if (commands.some(t => t === command)) {
-                if (rowCount === undefined || rowCount === null || Number.isNaN(rowCount) || rowCount <= 0)
-                    return false;
-            }
-            return true;
-        }
-    };
-    __setFunctionName(_classThis, "KnexPgDb");
-    (() => {
-        var _a;
-        const _metadata = typeof Symbol === "function" && Symbol.metadata ? Object.create((_a = _classSuper[Symbol.metadata]) !== null && _a !== void 0 ? _a : null) : void 0;
-        __esDecorate(null, _classDescriptor = { value: _classThis }, _classDecorators, { kind: "class", name: _classThis.name, metadata: _metadata }, null, _classExtraInitializers);
-        KnexPgDb = _classThis = _classDescriptor.value;
-        if (_metadata) Object.defineProperty(_classThis, Symbol.metadata, { enumerable: true, configurable: true, writable: true, value: _metadata });
-        __runInitializers(_classThis, _classExtraInitializers);
-    })();
-    return KnexPgDb = _classThis;
-})();
-export { KnexPgDb };
+        return true;
+    }
+};
+KnexPgDb = tslib_1.__decorate([
+    (0, n_ject_1.inject)("DbConnectionFactory"),
+    tslib_1.__metadata("design:paramtypes", [Object])
+], KnexPgDb);
+exports.KnexPgDb = KnexPgDb;
 //# sourceMappingURL=knex-pg-db.js.map

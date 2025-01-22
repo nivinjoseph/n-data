@@ -1,4 +1,4 @@
-import { CacheService } from "./cache-service.js";
+import { CacheService } from "./cache-service";
 import { Disposable, Duration } from "@nivinjoseph/n-util";
 export declare class InMemoryCacheService implements CacheService, Disposable {
     private readonly _store;
@@ -13,4 +13,3 @@ export declare class InMemoryCacheService implements CacheService, Disposable {
     dispose(): Promise<void>;
     private _evict;
 }
-//# sourceMappingURL=in-memory-cache-service.d.ts.map

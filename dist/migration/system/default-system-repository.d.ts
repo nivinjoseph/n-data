@@ -1,7 +1,7 @@
-import { Db } from "../../db/db.js";
-import { DbInfo } from "./db-info.js";
-import { SystemRepository } from "./system-repository.js";
-import { SystemTablesProvider } from "./system-tables-provider.js";
+import { Db } from "../../db/db";
+import { DbInfo } from "./db-info";
+import { SystemRepository } from "./system-repository";
+import { SystemTablesProvider } from "./system-tables-provider";
 export declare class DefaultSystemRepository implements SystemRepository {
     private readonly _db;
     private readonly _systemTableName;
@@ -12,4 +12,3 @@ export declare class DefaultSystemRepository implements SystemRepository {
     saveDbInfo(dbInfo: DbInfo): Promise<void>;
     private _checkIfKeyExists;
 }
-//# sourceMappingURL=default-system-repository.d.ts.map

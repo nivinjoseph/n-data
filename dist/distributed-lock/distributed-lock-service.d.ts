@@ -5,4 +5,3 @@ export interface DistributedLockService {
 export interface DistributedLock {
     release(): Promise<void>;
 }
-//# sourceMappingURL=distributed-lock-service.d.ts.map

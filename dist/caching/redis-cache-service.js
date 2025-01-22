@@ -1,86 +1,128 @@
-import { __esDecorate, __runInitializers, __setFunctionName } from "tslib";
-import { Make } from "@nivinjoseph/n-util";
-import { given } from "@nivinjoseph/n-defensive";
-import { ObjectDisposedException } from "@nivinjoseph/n-exception";
-import { inject } from "@nivinjoseph/n-ject";
-import { deflateRaw, inflateRaw } from "zlib";
-import { commandOptions } from "redis";
-let RedisCacheService = (() => {
-    let _classDecorators = [inject("CacheRedisClient")];
-    let _classDescriptor;
-    let _classExtraInitializers = [];
-    let _classThis;
-    var RedisCacheService = _classThis = class {
-        constructor(redisClient) {
-            this._isDisposed = false;
-            this._disposePromise = null;
-            given(redisClient, "redisClient").ensureHasValue().ensureIsObject();
-            this._client = redisClient;
-        }
-        async store(key, value, expiryDuration) {
-            given(key, "key").ensureHasValue().ensureIsString();
-            given(value, "value").ensureHasValue();
-            given(expiryDuration, "expiryDuration").ensureIsObject();
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.RedisCacheService = void 0;
+const tslib_1 = require("tslib");
+const n_util_1 = require("@nivinjoseph/n-util");
+const Redis = require("redis");
+const n_defensive_1 = require("@nivinjoseph/n-defensive");
+const n_exception_1 = require("@nivinjoseph/n-exception");
+const n_ject_1 = require("@nivinjoseph/n-ject");
+const Zlib = require("zlib");
+let RedisCacheService = class RedisCacheService {
+    constructor(redisClient) {
+        this._isDisposed = false;
+        this._disposePromise = null;
+        (0, n_defensive_1.given)(redisClient, "redisClient").ensureHasValue().ensureIsObject();
+        this._client = redisClient;
+    }
+    store(key, value, expiryDuration) {
+        return tslib_1.__awaiter(this, void 0, void 0, function* () {
+            (0, n_defensive_1.given)(key, "key").ensureHasValue().ensureIsString();
+            (0, n_defensive_1.given)(value, "value").ensureHasValue();
+            (0, n_defensive_1.given)(expiryDuration, "expiryDuration").ensureIsObject();
             if (this._isDisposed)
-                throw new ObjectDisposedException(this);
+                throw new n_exception_1.ObjectDisposedException(this);
             key = "bin_" + key.trim();
-            const data = await this._compressData(value);
-            if (expiryDuration == null)
-                await this._client.set(key, data);
-            else
-                await this._client.setEx(key, expiryDuration.toSeconds(true), data);
-        }
-        async retrieve(key) {
-            given(key, "key").ensureHasValue().ensureIsString();
+            const data = yield this._compressData(value);
+            yield new Promise((resolve, reject) => {
+                if (expiryDuration == null) {
+                    this._client.set(key, data, (err) => {
+                        if (err) {
+                            reject(err);
+                            return;
+                        }
+                        resolve();
+                    });
+                }
+                else {
+                    this._client.setex(key, expiryDuration.toSeconds(true), data, (err) => {
+                        if (err) {
+                            reject(err);
+                            return;
+                        }
+                        resolve();
+                    });
+                }
+            });
+        });
+    }
+    retrieve(key) {
+        return tslib_1.__awaiter(this, void 0, void 0, function* () {
+            (0, n_defensive_1.given)(key, "key").ensureHasValue().ensureIsString();
             if (this._isDisposed)
-                throw new ObjectDisposedException(this);
+                throw new n_exception_1.ObjectDisposedException(this);
             key = "bin_" + key.trim();
-            const buffer = await this._client.get(commandOptions({
-                returnBuffers: true
-            }), key);
+            const buffer = yield new Promise((resolve, reject) => {
+                this._client.get(key, (err, value) => {
+                    if (err) {
+                        reject(err);
+                        return;
+                    }
+                    resolve(value);
+                });
+            });
+            // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
             if (buffer == null)
                 return null;
-            return await this._decompressData(buffer);
-        }
-        async exists(key) {
-            given(key, "key").ensureHasValue().ensureIsString();
-            if (this._isDisposed)
-                throw new ObjectDisposedException(this);
+            return yield this._decompressData(buffer);
+        });
+    }
+    exists(key) {
+        return new Promise((resolve, reject) => {
+            (0, n_defensive_1.given)(key, "key").ensureHasValue().ensureIsString();
+            if (this._isDisposed) {
+                reject(new n_exception_1.ObjectDisposedException(this));
+                return;
+            }
             key = "bin_" + key.trim();
-            const val = await this._client.exists(key);
-            return !!val;
-        }
-        async remove(key) {
-            given(key, "key").ensureHasValue().ensureIsString();
-            if (this._isDisposed)
-                throw new ObjectDisposedException(this);
+            this._client.exists(key, (err, result) => {
+                if (err) {
+                    reject(err);
+                    return;
+                }
+                resolve(!!result);
+            });
+        });
+    }
+    remove(key) {
+        return new Promise((resolve, reject) => {
+            (0, n_defensive_1.given)(key, "key").ensureHasValue().ensureIsString();
+            if (this._isDisposed) {
+                reject(new n_exception_1.ObjectDisposedException(this));
+                return;
+            }
             key = "bin_" + key.trim();
-            await this._client.del(key);
-        }
-        async dispose() {
+            this._client.del(key, (err) => {
+                if (err) {
+                    reject(err);
+                    return;
+                }
+                resolve();
+            });
+        });
+    }
+    dispose() {
+        return tslib_1.__awaiter(this, void 0, void 0, function* () {
             if (!this._isDisposed) {
                 this._isDisposed = true;
                 this._disposePromise = Promise.resolve();
             }
             return this._disposePromise;
-        }
-        _compressData(data) {
-            return Make.callbackToPromise(deflateRaw)(Buffer.from(JSON.stringify(data), "utf8"));
-        }
-        async _decompressData(data) {
-            const decompressed = await Make.callbackToPromise(inflateRaw)(data);
+        });
+    }
+    _compressData(data) {
+        return n_util_1.Make.callbackToPromise(Zlib.deflateRaw)(Buffer.from(JSON.stringify(data), "utf8"));
+    }
+    _decompressData(data) {
+        return tslib_1.__awaiter(this, void 0, void 0, function* () {
+            const decompressed = yield n_util_1.Make.callbackToPromise(Zlib.inflateRaw)(data);
             return JSON.parse(decompressed.toString("utf8"));
-        }
-    };
-    __setFunctionName(_classThis, "RedisCacheService");
-    (() => {
-        const _metadata = typeof Symbol === "function" && Symbol.metadata ? Object.create(null) : void 0;
-        __esDecorate(null, _classDescriptor = { value: _classThis }, _classDecorators, { kind: "class", name: _classThis.name, metadata: _metadata }, null, _classExtraInitializers);
-        RedisCacheService = _classThis = _classDescriptor.value;
-        if (_metadata) Object.defineProperty(_classThis, Symbol.metadata, { enumerable: true, configurable: true, writable: true, value: _metadata });
-        __runInitializers(_classThis, _classExtraInitializers);
-    })();
-    return RedisCacheService = _classThis;
-})();
-export { RedisCacheService };
+        });
+    }
+};
+RedisCacheService = tslib_1.__decorate([
+    (0, n_ject_1.inject)("CacheRedisClient"),
+    tslib_1.__metadata("design:paramtypes", [Redis.RedisClient])
+], RedisCacheService);
+exports.RedisCacheService = RedisCacheService;
 //# sourceMappingURL=redis-cache-service.js.map

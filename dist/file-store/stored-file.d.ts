@@ -1,4 +1,4 @@
-/// <reference types="node" resolution-mode="require"/>
+/// <reference types="node" />
 import { DomainEntity } from "@nivinjoseph/n-domain";
 import { Schema } from "@nivinjoseph/n-util";
 export declare class StoredFile extends DomainEntity<StoredFileSchema> {
@@ -23,5 +23,4 @@ export declare class StoredFile extends DomainEntity<StoredFileSchema> {
     updatePublicUrl(url: string): StoredFile;
     updatePrivateUrl(url: string): StoredFile;
 }
-export type StoredFileSchema = Schema<StoredFile, "id" | "name" | "ext" | "size" | "mime" | "hash" | "signature" | "publicUrl" | "privateUrl">;
-//# sourceMappingURL=stored-file.d.ts.map
+export declare type StoredFileSchema = Schema<StoredFile, "id" | "name" | "ext" | "size" | "mime" | "hash" | "signature" | "publicUrl" | "privateUrl">;

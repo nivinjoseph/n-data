@@ -1,11 +1,11 @@
 import { Disposable, Duration } from "@nivinjoseph/n-util";
-import { CacheService } from "./cache-service.js";
-import { RedisClientType } from "redis";
+import * as Redis from "redis";
+import { CacheService } from "./cache-service";
 export declare class RedisCacheService implements CacheService, Disposable {
     private readonly _client;
     private _isDisposed;
     private _disposePromise;
-    constructor(redisClient: RedisClientType<any, any, any>);
+    constructor(redisClient: Redis.RedisClient);
     store<T>(key: string, value: T, expiryDuration?: Duration): Promise<void>;
     retrieve<T>(key: string): Promise<T | null>;
     exists(key: string): Promise<boolean>;
@@ -14,4 +14,3 @@ export declare class RedisCacheService implements CacheService, Disposable {
     private _compressData;
     private _decompressData;
 }
-//# sourceMappingURL=redis-cache-service.d.ts.map
