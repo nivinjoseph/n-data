@@ -90,7 +90,7 @@ class RedisDistributedLock implements DistributedLock
         given(value, "value").ensureHasValue().ensureIsString();
         this._value = value;
 
-        given(expiration, "expiration").ensureHasValue().ensureIsInstanceOf(Duration);
+        given(expiration, "expiration").ensureHasValue().ensureIsObject();
         this._expiration = expiration;
     }
 
@@ -151,7 +151,7 @@ class _RedisScriptExecuter
     public async lock(key: string, ttlDuration?: Duration): Promise<RedisDistributedLock>
     {
         given(key, "key").ensureHasValue().ensureIsString();
-        given(ttlDuration, "ttlDuration").ensureIsInstanceOf(Duration);
+        given(ttlDuration, "ttlDuration").ensureIsObject();
 
         const randomValue = Uuid.create();
         const duration = ttlDuration ?? Duration.fromSeconds(30);
