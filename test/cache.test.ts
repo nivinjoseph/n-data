@@ -16,7 +16,7 @@ await describe("cache tests", async () =>
         cacheRedisClientDisposable = new DisposableWrapper(async () =>
         {
             await Delay.seconds(5);
-            await cacheRedisClient.quit();
+            await cacheRedisClient.close();
         });
 
         cacheService = new RedisCacheService(cacheRedisClient);

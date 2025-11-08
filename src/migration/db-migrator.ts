@@ -15,6 +15,7 @@ export class DbMigrator implements Disposable
     private readonly _container: Container;
     private _logger!: Logger;
     private readonly _migrationRegistrations: Array<MigrationRegistration>;
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-function-type
     private _dbVersionProviderClass: Function | null = null;
     private _systemTableName: string | null = null;
     private _isDisposed: boolean;
@@ -68,6 +69,7 @@ export class DbMigrator implements Disposable
         return this;
     }
 
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-function-type
     public registerDbVersionProvider(dbVersionProviderClass: Function): this
     {
         given(dbVersionProviderClass, "dbVersionProviderClass").ensureHasValue().ensureIsFunction();
@@ -79,6 +81,7 @@ export class DbMigrator implements Disposable
         return this;
     }
 
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-function-type
     public registerMigrations(...migrationClasses: Array<Function>): this
     {
         given(migrationClasses, "migrationClasses").ensureHasValue().ensureIsArray().ensure(t => t.length > 0);
@@ -201,14 +204,17 @@ class MigrationRegistration
 {
     private readonly _name: string;
     private readonly _version: number;
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-function-type
     private readonly _migration: Function;
 
 
     public get name(): string { return this._name; }
     public get version(): number { return this._version; }
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-function-type
     public get migration(): Function { return this._migration; }
 
 
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-function-type
     public constructor(migration: Function)
     {
         given(migration, "migration").ensureHasValue().ensureIsFunction();

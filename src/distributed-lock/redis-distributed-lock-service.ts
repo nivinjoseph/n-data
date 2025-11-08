@@ -24,7 +24,7 @@ export class RedisDistributedLockService implements DistributedLockService, Disp
     private _disposePromise: Promise<void> | null = null;
 
 
-    public constructor(redisClient: RedisClientType<any, any, any>, config?: DistributedLockConfig)
+    public constructor(redisClient: RedisClientType<any, any, any, any, any>, config?: DistributedLockConfig)
     {
         given(redisClient, "redisClient").ensureHasValue().ensureIsObject();
         given(config, "config").ensureIsObject().ensureHasStructure({
@@ -131,11 +131,11 @@ class _RedisScriptExecuter
     private readonly _releaseScriptHash: string;
 
 
-    private readonly _client: RedisClientType<any, any, any>;
+    private readonly _client: RedisClientType<any, any, any, any, any>;
     private readonly _config: DistributedLockConfigInternal;
 
 
-    public constructor(client: RedisClientType<any, any, any>, config: DistributedLockConfigInternal)
+    public constructor(client: RedisClientType<any, any, any, any, any>, config: DistributedLockConfigInternal)
     {
         given(client, "client").ensureHasValue().ensureIsObject();
         this._client = client;

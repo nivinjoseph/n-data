@@ -55,12 +55,12 @@ await describe("DistributedLock tests", async () =>
 
     before(async () =>
     {
-        const redisClient = await createClient().connect();
+        const redisClient = await createClient<any, any, any, any, any>().connect();
         service = new RedisDistributedLockService(redisClient);
         connectionDisposable = new DisposableWrapper(async () =>
         {
             await service.dispose();
-            await redisClient.quit();
+            await redisClient.close();
         });
     });
 
@@ -81,6 +81,7 @@ await describe("DistributedLock tests", async () =>
         {
             console.log("exec", i);
             promises.push(synchronized.execute(i * 1000));
+            await Delay.milliseconds(200);
         }
 
         await Promise.all(promises);

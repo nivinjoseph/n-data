@@ -4,21 +4,27 @@ import { ObjectDisposedException } from "@nivinjoseph/n-exception";
 import { CacheService } from "./cache-service.js";
 import { inject } from "@nivinjoseph/n-ject";
 import { deflateRaw, inflateRaw } from "zlib";
-import { RedisClientType, commandOptions } from "redis";
+import { RedisClientType, RESP_TYPES } from "redis";
 
 
 @inject("CacheRedisClient")
 export class RedisCacheService implements CacheService, Disposable
 {
-    private readonly _client: RedisClientType<any, any, any>;
+    // private readonly _client: RedisClientType<any, any, any>;
+    private readonly _proxyClient: RedisClientType<any, any, any>;
     private _isDisposed = false;
     private _disposePromise: Promise<void> | null = null;
 
 
-    public constructor(redisClient: RedisClientType<any, any, any>)
+    public constructor(redisClient: RedisClientType<any, any, any, any, any>)
     {
         given(redisClient, "redisClient").ensureHasValue().ensureIsObject();
-        this._client = redisClient;
+        // this._client = redisClient;
+        this._proxyClient = redisClient.withCommandOptions({
+            typeMapping: {
+                [RESP_TYPES.BLOB_STRING]: Buffer
+            }
+        });
     }
 
 
@@ -36,9 +42,9 @@ export class RedisCacheService implements CacheService, Disposable
         const data = await this._compressData(value as any);
 
         if (expiryDuration == null)
-            await this._client.set(key, data);
+            await this._proxyClient.set(key, data);
         else
-            await this._client.setEx(key, expiryDuration.toSeconds(true), data);
+            await this._proxyClient.setEx(key, expiryDuration.toSeconds(true), data);
     }
 
     public async retrieve<T>(key: string): Promise<T | null>
@@ -50,9 +56,7 @@ export class RedisCacheService implements CacheService, Disposable
 
         key = "bin_" + key.trim();
 
-        const buffer = await this._client.get(commandOptions({
-            returnBuffers: true
-        }), key);
+        const buffer = await this._proxyClient.get(key) as Buffer | null;
 
         if (buffer == null)
             return null;
@@ -69,7 +73,7 @@ export class RedisCacheService implements CacheService, Disposable
 
         key = "bin_" + key.trim();
 
-        const val = await this._client.exists(key);
+        const val = await this._proxyClient.exists(key);
 
         return !!val;
     }
@@ -83,7 +87,7 @@ export class RedisCacheService implements CacheService, Disposable
 
         key = "bin_" + key.trim();
 
-        await this._client.del(key);
+        await this._proxyClient.del(key);
     }
 
     public async dispose(): Promise<void>

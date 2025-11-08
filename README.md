@@ -144,7 +144,7 @@ await cacheService.remove('number-key');
 
 // Cleanup
 await cacheService.dispose();
-await redisClient.quit();
+await redisClient.close();
 ```
 
 ### File Storage
