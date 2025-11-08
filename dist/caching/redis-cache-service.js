@@ -4,7 +4,7 @@ import { given } from "@nivinjoseph/n-defensive";
 import { ObjectDisposedException } from "@nivinjoseph/n-exception";
 import { inject } from "@nivinjoseph/n-ject";
 import { deflateRaw, inflateRaw } from "zlib";
-import { commandOptions } from "redis";
+import { RESP_TYPES } from "redis";
 let RedisCacheService = (() => {
     let _classDecorators = [inject("CacheRedisClient")];
     let _classDescriptor;
@@ -15,7 +15,12 @@ let RedisCacheService = (() => {
             this._isDisposed = false;
             this._disposePromise = null;
             given(redisClient, "redisClient").ensureHasValue().ensureIsObject();
-            this._client = redisClient;
+            // this._client = redisClient;
+            this._proxyClient = redisClient.withCommandOptions({
+                typeMapping: {
+                    [RESP_TYPES.BLOB_STRING]: Buffer
+                }
+            });
         }
         async store(key, value, expiryDuration) {
             given(key, "key").ensureHasValue().ensureIsString();
@@ -26,18 +31,16 @@ let RedisCacheService = (() => {
             key = "bin_" + key.trim();
             const data = await this._compressData(value);
             if (expiryDuration == null)
-                await this._client.set(key, data);
+                await this._proxyClient.set(key, data);
             else
-                await this._client.setEx(key, expiryDuration.toSeconds(true), data);
+                await this._proxyClient.setEx(key, expiryDuration.toSeconds(true), data);
         }
         async retrieve(key) {
             given(key, "key").ensureHasValue().ensureIsString();
             if (this._isDisposed)
                 throw new ObjectDisposedException(this);
             key = "bin_" + key.trim();
-            const buffer = await this._client.get(commandOptions({
-                returnBuffers: true
-            }), key);
+            const buffer = await this._proxyClient.get(key);
             if (buffer == null)
                 return null;
             return await this._decompressData(buffer);
@@ -47,7 +50,7 @@ let RedisCacheService = (() => {
             if (this._isDisposed)
                 throw new ObjectDisposedException(this);
             key = "bin_" + key.trim();
-            const val = await this._client.exists(key);
+            const val = await this._proxyClient.exists(key);
             return !!val;
         }
         async remove(key) {
@@ -55,7 +58,7 @@ let RedisCacheService = (() => {
             if (this._isDisposed)
                 throw new ObjectDisposedException(this);
             key = "bin_" + key.trim();
-            await this._client.del(key);
+            await this._proxyClient.del(key);
         }
         async dispose() {
             if (!this._isDisposed) {

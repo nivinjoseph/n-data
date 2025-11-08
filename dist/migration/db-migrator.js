@@ -8,6 +8,7 @@ export class DbMigrator {
     get containerRegistry() { return this._container; }
     get serviceLocator() { return this._container; }
     constructor() {
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-function-type
         this._dbVersionProviderClass = null;
         this._systemTableName = null;
         this._container = new Container();
@@ -34,12 +35,14 @@ export class DbMigrator {
         this._systemTableName = systemTableName.trim().toLowerCase();
         return this;
     }
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-function-type
     registerDbVersionProvider(dbVersionProviderClass) {
         given(dbVersionProviderClass, "dbVersionProviderClass").ensureHasValue().ensureIsFunction();
         given(this, "this").ensure(t => !t._isBootstrapped, "invoking method after bootstrap");
         this._dbVersionProviderClass = dbVersionProviderClass;
         return this;
     }
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-function-type
     registerMigrations(...migrationClasses) {
         given(migrationClasses, "migrationClasses").ensureHasValue().ensureIsArray().ensure(t => t.length > 0);
         given(this, "this").ensure(t => !t._isBootstrapped, "invoking method after bootstrap");
@@ -118,7 +121,9 @@ export class DbMigrator {
 class MigrationRegistration {
     get name() { return this._name; }
     get version() { return this._version; }
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-function-type
     get migration() { return this._migration; }
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-function-type
     constructor(migration) {
         given(migration, "migration").ensureHasValue().ensureIsFunction();
         const migrationName = migration.getTypeName();

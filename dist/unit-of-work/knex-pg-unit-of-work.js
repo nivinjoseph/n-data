@@ -28,7 +28,6 @@ let KnexPgUnitOfWork = (() => {
                     knex
                         .transaction((trx) => {
                         if (this._transactionScope) {
-                            // eslint-disable-next-line @typescript-eslint/no-floating-promises
                             trx.rollback();
                             if (this._transactionScope.isCommitted || this._transactionScope.isRolledBack)
                                 reject(new InvalidOperationException("using completed UnitOfWork"));

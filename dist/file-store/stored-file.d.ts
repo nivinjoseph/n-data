@@ -1,4 +1,3 @@
-/// <reference types="node" resolution-mode="require"/>
 import { DomainEntity } from "@nivinjoseph/n-domain";
 import { Schema } from "@nivinjoseph/n-util";
 export declare class StoredFile extends DomainEntity<StoredFileSchema> {

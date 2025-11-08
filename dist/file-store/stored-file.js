@@ -29,7 +29,7 @@ let StoredFile = (() => {
         get privateUrl() { return this._privateUrl; } // gets used for signed upload and download
         constructor(data) {
             super(data);
-            this._name = (__runInitializers(this, _instanceExtraInitializers), void 0);
+            this._name = __runInitializers(this, _instanceExtraInitializers);
             const { name, ext, size, mime, hash, signature, publicUrl, privateUrl } = data;
             given(name, "fileName").ensureHasValue().ensureIsString();
             this._name = name;

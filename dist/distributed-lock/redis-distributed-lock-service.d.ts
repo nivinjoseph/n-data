@@ -7,7 +7,7 @@ export declare class RedisDistributedLockService implements DistributedLockServi
     private readonly _executer;
     private _isDisposed;
     private _disposePromise;
-    constructor(redisClient: RedisClientType<any, any, any>, config?: DistributedLockConfig);
+    constructor(redisClient: RedisClientType<any, any, any, any, any>, config?: DistributedLockConfig);
     lock(key: string, ttlDuration?: Duration): Promise<DistributedLock>;
     dispose(): Promise<void>;
 }

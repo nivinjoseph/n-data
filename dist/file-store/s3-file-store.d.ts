@@ -1,4 +1,3 @@
-/// <reference types="node" resolution-mode="require"/>
 import { FileStore } from "./file-store.js";
 import { StoredFile } from "./stored-file.js";
 import { S3FileStoreConfig } from "./s3-file-store-config.js";
