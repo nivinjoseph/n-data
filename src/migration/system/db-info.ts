@@ -44,3 +44,8 @@ interface Serialized
     version: number;
     date: string;
 }
+
+export function getCurrentDateValue(): string
+{
+    return new Date().toISOString().split("T")[0];
+}

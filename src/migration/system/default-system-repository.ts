@@ -2,10 +2,9 @@ import { given } from "@nivinjoseph/n-defensive";
 import { inject } from "@nivinjoseph/n-ject";
 import { Db } from "../../db/db.js";
 import { MigrationDependencyKey } from "../migration-dependency-key.js";
-import { DbInfo } from "./db-info.js";
+import { DbInfo, getCurrentDateValue } from "./db-info.js";
 import { SystemRepository } from "./system-repository.js";
 import { SystemTablesProvider } from "./system-tables-provider.js";
-import { DateTime } from "@nivinjoseph/n-util";
 
 
 @inject("Db", MigrationDependencyKey.dbSystemTablesProvider)
@@ -61,7 +60,7 @@ export class DefaultSystemRepository implements SystemRepository
         const result = await this._db.executeQuery<any>(sql, key);
 
         if (result.rows.isEmpty)
-            return new DbInfo(0, DateTime.now().dateValue);
+            return new DbInfo(0, getCurrentDateValue());
 
         return DbInfo.deserialize(result.rows[0].data);
     }
@@ -74,7 +73,7 @@ export class DefaultSystemRepository implements SystemRepository
 
         const exists = await this._checkIfKeyExists(key);
 
-        let sql = "";
+        let sql: string;
         const params = [];
 
         if (!exists)
