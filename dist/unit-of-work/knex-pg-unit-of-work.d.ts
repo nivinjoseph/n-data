@@ -5,11 +5,13 @@ export declare class KnexPgUnitOfWork implements UnitOfWork {
     private readonly _onCommits;
     private readonly _onRollbacks;
     private _transactionScope;
+    private _transactionScopePromise;
     constructor(dbConnectionFactory: DbConnectionFactory);
     getTransactionScope(): Promise<object>;
     onCommit(callback: () => Promise<void>, priority?: number): void;
     commit(): Promise<void>;
     onRollback(callback: () => Promise<void>, priority?: number): void;
     rollback(): Promise<void>;
+    private _createTransactionScope;
 }
 //# sourceMappingURL=knex-pg-unit-of-work.d.ts.map

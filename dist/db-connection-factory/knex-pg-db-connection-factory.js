@@ -5,17 +5,18 @@ import { ObjectDisposedException } from "@nivinjoseph/n-exception";
 import { Delay } from "@nivinjoseph/n-util";
 // public
 export class KnexPgDbConnectionFactory {
+    _config = {
+        client: "pg",
+        pool: {
+            min: 5,
+            max: 25
+        }
+        // debug: true
+    };
+    _knex;
+    _isDisposed = false;
+    _disposePromise = null;
     constructor(config) {
-        this._config = {
-            client: "pg",
-            pool: {
-                min: 5,
-                max: 25
-            }
-            // debug: true
-        };
-        this._isDisposed = false;
-        this._disposePromise = null;
         if (config && typeof config === "string") {
             const connectionString = config;
             given(connectionString, "connectionString").ensureHasValue().ensureIsString();

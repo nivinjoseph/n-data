@@ -1,4 +1,4 @@
-import { __esDecorate, __runInitializers, __setFunctionName } from "tslib";
+import { __esDecorate, __runInitializers } from "tslib";
 import { given } from "@nivinjoseph/n-defensive";
 import { DbException } from "../exceptions/db-exception.js";
 import { OperationType } from "../exceptions/operation-type.js";
@@ -10,7 +10,16 @@ let KnexPgReadDb = (() => {
     let _classDescriptor;
     let _classExtraInitializers = [];
     let _classThis;
-    var KnexPgReadDb = _classThis = class {
+    var KnexPgReadDb = class {
+        static { _classThis = this; }
+        static {
+            const _metadata = typeof Symbol === "function" && Symbol.metadata ? Object.create(null) : void 0;
+            __esDecorate(null, _classDescriptor = { value: _classThis }, _classDecorators, { kind: "class", name: _classThis.name, metadata: _metadata }, null, _classExtraInitializers);
+            KnexPgReadDb = _classThis = _classDescriptor.value;
+            if (_metadata) Object.defineProperty(_classThis, Symbol.metadata, { enumerable: true, configurable: true, writable: true, value: _metadata });
+            __runInitializers(_classThis, _classExtraInitializers);
+        }
+        _dbConnectionFactory;
         get dbConnectionFactory() { return this._dbConnectionFactory; }
         constructor(dbConnectionFactory) {
             given(dbConnectionFactory, "dbConnectionFactory").ensureHasValue().ensureIsObject();
@@ -35,14 +44,6 @@ let KnexPgReadDb = (() => {
             return promise;
         }
     };
-    __setFunctionName(_classThis, "KnexPgReadDb");
-    (() => {
-        const _metadata = typeof Symbol === "function" && Symbol.metadata ? Object.create(null) : void 0;
-        __esDecorate(null, _classDescriptor = { value: _classThis }, _classDecorators, { kind: "class", name: _classThis.name, metadata: _metadata }, null, _classExtraInitializers);
-        KnexPgReadDb = _classThis = _classDescriptor.value;
-        if (_metadata) Object.defineProperty(_classThis, Symbol.metadata, { enumerable: true, configurable: true, writable: true, value: _metadata });
-        __runInitializers(_classThis, _classExtraInitializers);
-    })();
     return KnexPgReadDb = _classThis;
 })();
 export { KnexPgReadDb };

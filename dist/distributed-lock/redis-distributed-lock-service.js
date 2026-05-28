@@ -1,4 +1,4 @@
-import { __esDecorate, __runInitializers, __setFunctionName } from "tslib";
+import { __esDecorate, __runInitializers } from "tslib";
 import { Delay, Duration, Make, Uuid } from "@nivinjoseph/n-util";
 import { given } from "@nivinjoseph/n-defensive";
 import { ApplicationException, ObjectDisposedException } from "@nivinjoseph/n-exception";
@@ -9,16 +9,26 @@ let RedisDistributedLockService = (() => {
     let _classDescriptor;
     let _classExtraInitializers = [];
     let _classThis;
-    var RedisDistributedLockService = _classThis = class {
+    var RedisDistributedLockService = class {
+        static { _classThis = this; }
+        static {
+            const _metadata = typeof Symbol === "function" && Symbol.metadata ? Object.create(null) : void 0;
+            __esDecorate(null, _classDescriptor = { value: _classThis }, _classDecorators, { kind: "class", name: _classThis.name, metadata: _metadata }, null, _classExtraInitializers);
+            RedisDistributedLockService = _classThis = _classDescriptor.value;
+            if (_metadata) Object.defineProperty(_classThis, Symbol.metadata, { enumerable: true, configurable: true, writable: true, value: _metadata });
+            __runInitializers(_classThis, _classExtraInitializers);
+        }
+        _defaultConfig = {
+            driftFactor: 0.01,
+            retryCount: 25,
+            retryDelay: Duration.fromMilliSeconds(400),
+            retryJitter: Duration.fromMilliSeconds(200)
+        };
+        // private readonly _redLock: RedLock;
+        _executer;
+        _isDisposed = false;
+        _disposePromise = null;
         constructor(redisClient, config) {
-            this._defaultConfig = {
-                driftFactor: 0.01,
-                retryCount: 25,
-                retryDelay: Duration.fromMilliSeconds(400),
-                retryJitter: Duration.fromMilliSeconds(200)
-            };
-            this._isDisposed = false;
-            this._disposePromise = null;
             given(redisClient, "redisClient").ensureHasValue().ensureIsObject();
             given(config, "config").ensureIsObject().ensureHasStructure({
                 "driftFactor?": "number",
@@ -26,7 +36,10 @@ let RedisDistributedLockService = (() => {
                 "retryDelay?": "object",
                 "retryJitter?": "object"
             });
-            this._executer = new _RedisScriptExecuter(redisClient, Object.assign(Object.assign({}, this._defaultConfig), config == null ? {} : config));
+            this._executer = new _RedisScriptExecuter(redisClient, {
+                ...this._defaultConfig,
+                ...config == null ? {} : config
+            });
         }
         async lock(key, ttlDuration) {
             given(key, "key").ensureHasValue().ensureIsString();
@@ -44,18 +57,14 @@ let RedisDistributedLockService = (() => {
             return this._disposePromise;
         }
     };
-    __setFunctionName(_classThis, "RedisDistributedLockService");
-    (() => {
-        const _metadata = typeof Symbol === "function" && Symbol.metadata ? Object.create(null) : void 0;
-        __esDecorate(null, _classDescriptor = { value: _classThis }, _classDecorators, { kind: "class", name: _classThis.name, metadata: _metadata }, null, _classExtraInitializers);
-        RedisDistributedLockService = _classThis = _classDescriptor.value;
-        if (_metadata) Object.defineProperty(_classThis, Symbol.metadata, { enumerable: true, configurable: true, writable: true, value: _metadata });
-        __runInitializers(_classThis, _classExtraInitializers);
-    })();
     return RedisDistributedLockService = _classThis;
 })();
 export { RedisDistributedLockService };
 class RedisDistributedLock {
+    _executer;
+    _key;
+    _value;
+    _expiration;
     get key() { return this._key; }
     get value() { return this._value; }
     get expiration() { return this._expiration; }
@@ -74,8 +83,7 @@ class RedisDistributedLock {
     }
 }
 class _RedisScriptExecuter {
-    constructor(client, config) {
-        this._lockScript = `
+    _lockScript = `
         -- Return 0 if an key already exists 1 otherwise.
         -- ARGV[1] = value ARGV[2] = duration
         if redis.call("exists", KEYS[1]) == 1 then
@@ -86,7 +94,7 @@ class _RedisScriptExecuter {
 
         return 1
     `;
-        this._releaseScript = `
+    _releaseScript = `
         -- Return 0 if key is already deleted or expired 1 otherwise.
         -- ARGV[1] = value for the key
 
@@ -96,6 +104,11 @@ class _RedisScriptExecuter {
             return 0
         end
     `;
+    _lockScriptHash;
+    _releaseScriptHash;
+    _client;
+    _config;
+    constructor(client, config) {
         given(client, "client").ensureHasValue().ensureIsObject();
         this._client = client;
         given(config, "config").ensureHasValue().ensureIsObject();
@@ -107,7 +120,7 @@ class _RedisScriptExecuter {
         given(key, "key").ensureHasValue().ensureIsString();
         given(ttlDuration, "ttlDuration").ensureIsObject();
         const randomValue = Uuid.create();
-        const duration = ttlDuration !== null && ttlDuration !== void 0 ? ttlDuration : Duration.fromSeconds(30);
+        const duration = ttlDuration ?? Duration.fromSeconds(30);
         let attempts = 0;
         while (attempts < this._config.retryCount) {
             const result = await this._executeScript(this._lockScriptHash, this._lockScript, key, randomValue, duration.toMilliSeconds().toString());

@@ -11,5 +11,6 @@ interface Serialized {
     version: number;
     date: string;
 }
+export declare function getCurrentDateValue(): string;
 export {};
 //# sourceMappingURL=db-info.d.ts.map

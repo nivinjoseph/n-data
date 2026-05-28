@@ -9,10 +9,15 @@ import { Duration } from "@nivinjoseph/n-util";
 import { DomainHelper } from "@nivinjoseph/n-domain";
 import { extname } from "node:path";
 export class S3FileStore {
+    _config;
+    _privateBucket;
+    _publicBucket;
+    _publicBucketHasDot;
+    _connection;
+    // private readonly _supportedExts: ReadonlyArray<string>;
+    _maxFileSize;
+    _isDisposed = false;
     constructor(config) {
-        var _a;
-        var _b;
-        this._isDisposed = false;
         given(config, "config").ensureHasValue()
             .ensureHasStructure({
             region: "string",
@@ -28,7 +33,7 @@ export class S3FileStore {
         this._privateBucket = this._config.privateBucket;
         this._publicBucket = this._config.publicBucket;
         this._publicBucketHasDot = this._publicBucket.contains(".");
-        (_a = (_b = this._config).idGenerator) !== null && _a !== void 0 ? _a : (_b.idGenerator = () => DomainHelper.generateId("bsf"));
+        this._config.idGenerator ??= () => DomainHelper.generateId("bsf");
         this._connection = new S3Client({
             // signatureVersion: "v4",
             region: this._config.region,

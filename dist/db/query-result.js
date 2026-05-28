@@ -10,6 +10,7 @@ import Treeize from "treeize";
  * @template T - The type of the rows in the result
  */
 export class QueryResult {
+    _rows;
     /**
      * Gets the rows returned by the query.
      *

@@ -1,4 +1,4 @@
-import { __esDecorate, __runInitializers, __setFunctionName } from "tslib";
+import { __esDecorate, __runInitializers } from "tslib";
 import { DbException } from "../exceptions/db-exception.js";
 import { OperationType } from "../exceptions/operation-type.js";
 import { inject } from "@nivinjoseph/n-ject";
@@ -10,7 +10,15 @@ let KnexPgDb = (() => {
     let _classExtraInitializers = [];
     let _classThis;
     let _classSuper = KnexPgReadDb;
-    var KnexPgDb = _classThis = class extends _classSuper {
+    var KnexPgDb = class extends _classSuper {
+        static { _classThis = this; }
+        static {
+            const _metadata = typeof Symbol === "function" && Symbol.metadata ? Object.create(_classSuper[Symbol.metadata] ?? null) : void 0;
+            __esDecorate(null, _classDescriptor = { value: _classThis }, _classDecorators, { kind: "class", name: _classThis.name, metadata: _metadata }, null, _classExtraInitializers);
+            KnexPgDb = _classThis = _classDescriptor.value;
+            if (_metadata) Object.defineProperty(_classThis, Symbol.metadata, { enumerable: true, configurable: true, writable: true, value: _metadata });
+            __runInitializers(_classThis, _classExtraInitializers);
+        }
         constructor(dbConnectionFactory) {
             super(dbConnectionFactory);
         }
@@ -67,15 +75,6 @@ let KnexPgDb = (() => {
             return true;
         }
     };
-    __setFunctionName(_classThis, "KnexPgDb");
-    (() => {
-        var _a;
-        const _metadata = typeof Symbol === "function" && Symbol.metadata ? Object.create((_a = _classSuper[Symbol.metadata]) !== null && _a !== void 0 ? _a : null) : void 0;
-        __esDecorate(null, _classDescriptor = { value: _classThis }, _classDecorators, { kind: "class", name: _classThis.name, metadata: _metadata }, null, _classExtraInitializers);
-        KnexPgDb = _classThis = _classDescriptor.value;
-        if (_metadata) Object.defineProperty(_classThis, Symbol.metadata, { enumerable: true, configurable: true, writable: true, value: _metadata });
-        __runInitializers(_classThis, _classExtraInitializers);
-    })();
     return KnexPgDb = _classThis;
 })();
 export { KnexPgDb };

@@ -3,6 +3,10 @@ import { given } from "@nivinjoseph/n-defensive";
 import { ObjectDisposedException } from "@nivinjoseph/n-exception";
 import { clearInterval, setInterval } from "node:timers";
 export class InMemoryCacheService {
+    _store;
+    _evictionTracking;
+    _timer;
+    _isDisposed;
     constructor() {
         this._store = new Map();
         this._evictionTracking = new Map();
@@ -56,13 +60,12 @@ export class InMemoryCacheService {
         return Promise.resolve();
     }
     _evict() {
-        var _a;
         if (this._isDisposed)
             return;
         for (const entry of this._store.entries()) {
             const key = entry[0];
             if (this._evictionTracking.has(key)) {
-                const expiry = (_a = this._evictionTracking.get(key)) !== null && _a !== void 0 ? _a : 0;
+                const expiry = this._evictionTracking.get(key) ?? 0;
                 if (expiry <= Date.now()) {
                     this._store.delete(key);
                     this._evictionTracking.delete(key);

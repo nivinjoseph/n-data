@@ -1,4 +1,4 @@
-import { __esDecorate, __runInitializers, __setFunctionName } from "tslib";
+import { __esDecorate, __runInitializers } from "tslib";
 import { given } from "@nivinjoseph/n-defensive";
 import { DomainEntity } from "@nivinjoseph/n-domain";
 import { serialize } from "@nivinjoseph/n-util";
@@ -18,7 +18,39 @@ let StoredFile = (() => {
     let _get_signature_decorators;
     let _get_publicUrl_decorators;
     let _get_privateUrl_decorators;
-    var StoredFile = _classThis = class extends _classSuper {
+    var StoredFile = class extends _classSuper {
+        static { _classThis = this; }
+        static {
+            const _metadata = typeof Symbol === "function" && Symbol.metadata ? Object.create(_classSuper[Symbol.metadata] ?? null) : void 0;
+            _get_name_decorators = [serialize];
+            _get_ext_decorators = [serialize];
+            _get_size_decorators = [serialize];
+            _get_mime_decorators = [serialize];
+            _get_hash_decorators = [serialize];
+            _get_signature_decorators = [serialize];
+            _get_publicUrl_decorators = [serialize];
+            _get_privateUrl_decorators = [serialize];
+            __esDecorate(this, null, _get_name_decorators, { kind: "getter", name: "name", static: false, private: false, access: { has: obj => "name" in obj, get: obj => obj.name }, metadata: _metadata }, null, _instanceExtraInitializers);
+            __esDecorate(this, null, _get_ext_decorators, { kind: "getter", name: "ext", static: false, private: false, access: { has: obj => "ext" in obj, get: obj => obj.ext }, metadata: _metadata }, null, _instanceExtraInitializers);
+            __esDecorate(this, null, _get_size_decorators, { kind: "getter", name: "size", static: false, private: false, access: { has: obj => "size" in obj, get: obj => obj.size }, metadata: _metadata }, null, _instanceExtraInitializers);
+            __esDecorate(this, null, _get_mime_decorators, { kind: "getter", name: "mime", static: false, private: false, access: { has: obj => "mime" in obj, get: obj => obj.mime }, metadata: _metadata }, null, _instanceExtraInitializers);
+            __esDecorate(this, null, _get_hash_decorators, { kind: "getter", name: "hash", static: false, private: false, access: { has: obj => "hash" in obj, get: obj => obj.hash }, metadata: _metadata }, null, _instanceExtraInitializers);
+            __esDecorate(this, null, _get_signature_decorators, { kind: "getter", name: "signature", static: false, private: false, access: { has: obj => "signature" in obj, get: obj => obj.signature }, metadata: _metadata }, null, _instanceExtraInitializers);
+            __esDecorate(this, null, _get_publicUrl_decorators, { kind: "getter", name: "publicUrl", static: false, private: false, access: { has: obj => "publicUrl" in obj, get: obj => obj.publicUrl }, metadata: _metadata }, null, _instanceExtraInitializers);
+            __esDecorate(this, null, _get_privateUrl_decorators, { kind: "getter", name: "privateUrl", static: false, private: false, access: { has: obj => "privateUrl" in obj, get: obj => obj.privateUrl }, metadata: _metadata }, null, _instanceExtraInitializers);
+            __esDecorate(null, _classDescriptor = { value: _classThis }, _classDecorators, { kind: "class", name: _classThis.name, metadata: _metadata }, null, _classExtraInitializers);
+            StoredFile = _classThis = _classDescriptor.value;
+            if (_metadata) Object.defineProperty(_classThis, Symbol.metadata, { enumerable: true, configurable: true, writable: true, value: _metadata });
+            __runInitializers(_classThis, _classExtraInitializers);
+        }
+        _name = __runInitializers(this, _instanceExtraInitializers);
+        _ext;
+        _size;
+        _mime;
+        _hash;
+        _signature;
+        _publicUrl;
+        _privateUrl; // gets used for signed upload and download
         get name() { return this._name; }
         get ext() { return this._ext; }
         get size() { return this._size; }
@@ -29,7 +61,6 @@ let StoredFile = (() => {
         get privateUrl() { return this._privateUrl; } // gets used for signed upload and download
         constructor(data) {
             super(data);
-            this._name = __runInitializers(this, _instanceExtraInitializers);
             const { name, ext, size, mime, hash, signature, publicUrl, privateUrl } = data;
             given(name, "fileName").ensureHasValue().ensureIsString();
             this._name = name;
@@ -81,31 +112,6 @@ let StoredFile = (() => {
             });
         }
     };
-    __setFunctionName(_classThis, "StoredFile");
-    (() => {
-        var _a;
-        const _metadata = typeof Symbol === "function" && Symbol.metadata ? Object.create((_a = _classSuper[Symbol.metadata]) !== null && _a !== void 0 ? _a : null) : void 0;
-        _get_name_decorators = [serialize];
-        _get_ext_decorators = [serialize];
-        _get_size_decorators = [serialize];
-        _get_mime_decorators = [serialize];
-        _get_hash_decorators = [serialize];
-        _get_signature_decorators = [serialize];
-        _get_publicUrl_decorators = [serialize];
-        _get_privateUrl_decorators = [serialize];
-        __esDecorate(_classThis, null, _get_name_decorators, { kind: "getter", name: "name", static: false, private: false, access: { has: obj => "name" in obj, get: obj => obj.name }, metadata: _metadata }, null, _instanceExtraInitializers);
-        __esDecorate(_classThis, null, _get_ext_decorators, { kind: "getter", name: "ext", static: false, private: false, access: { has: obj => "ext" in obj, get: obj => obj.ext }, metadata: _metadata }, null, _instanceExtraInitializers);
-        __esDecorate(_classThis, null, _get_size_decorators, { kind: "getter", name: "size", static: false, private: false, access: { has: obj => "size" in obj, get: obj => obj.size }, metadata: _metadata }, null, _instanceExtraInitializers);
-        __esDecorate(_classThis, null, _get_mime_decorators, { kind: "getter", name: "mime", static: false, private: false, access: { has: obj => "mime" in obj, get: obj => obj.mime }, metadata: _metadata }, null, _instanceExtraInitializers);
-        __esDecorate(_classThis, null, _get_hash_decorators, { kind: "getter", name: "hash", static: false, private: false, access: { has: obj => "hash" in obj, get: obj => obj.hash }, metadata: _metadata }, null, _instanceExtraInitializers);
-        __esDecorate(_classThis, null, _get_signature_decorators, { kind: "getter", name: "signature", static: false, private: false, access: { has: obj => "signature" in obj, get: obj => obj.signature }, metadata: _metadata }, null, _instanceExtraInitializers);
-        __esDecorate(_classThis, null, _get_publicUrl_decorators, { kind: "getter", name: "publicUrl", static: false, private: false, access: { has: obj => "publicUrl" in obj, get: obj => obj.publicUrl }, metadata: _metadata }, null, _instanceExtraInitializers);
-        __esDecorate(_classThis, null, _get_privateUrl_decorators, { kind: "getter", name: "privateUrl", static: false, private: false, access: { has: obj => "privateUrl" in obj, get: obj => obj.privateUrl }, metadata: _metadata }, null, _instanceExtraInitializers);
-        __esDecorate(null, _classDescriptor = { value: _classThis }, _classDecorators, { kind: "class", name: _classThis.name, metadata: _metadata }, null, _classExtraInitializers);
-        StoredFile = _classThis = _classDescriptor.value;
-        if (_metadata) Object.defineProperty(_classThis, Symbol.metadata, { enumerable: true, configurable: true, writable: true, value: _metadata });
-        __runInitializers(_classThis, _classExtraInitializers);
-    })();
     return StoredFile = _classThis;
 })();
 export { StoredFile };

@@ -2,6 +2,9 @@ import { Exception } from "@nivinjoseph/n-exception";
 import { OperationType } from "./operation-type.js";
 import { given } from "@nivinjoseph/n-defensive";
 export class DbException extends Exception {
+    _operation;
+    _sql;
+    _params;
     get operation() { return this._operation; }
     get sql() { return this._sql; }
     // eslint-disable-next-line @typescript-eslint/no-unsafe-return
@@ -15,7 +18,7 @@ export class DbException extends Exception {
         try {
             paramsString = JSON.stringify(params);
         }
-        catch (_a) {
+        catch {
             // deliberate suppress?
         }
         if (paramsString == null)

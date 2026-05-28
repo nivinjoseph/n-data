@@ -1,4 +1,4 @@
-import { __esDecorate, __runInitializers, __setFunctionName } from "tslib";
+import { __esDecorate, __runInitializers } from "tslib";
 import { given } from "@nivinjoseph/n-defensive";
 import { inject } from "@nivinjoseph/n-ject";
 import { exec } from "child_process";
@@ -8,7 +8,16 @@ let DbMigrationScriptRunner = (() => {
     let _classDescriptor;
     let _classExtraInitializers = [];
     let _classThis;
-    var DbMigrationScriptRunner = _classThis = class {
+    var DbMigrationScriptRunner = class {
+        static { _classThis = this; }
+        static {
+            const _metadata = typeof Symbol === "function" && Symbol.metadata ? Object.create(null) : void 0;
+            __esDecorate(null, _classDescriptor = { value: _classThis }, _classDecorators, { kind: "class", name: _classThis.name, metadata: _metadata }, null, _classExtraInitializers);
+            DbMigrationScriptRunner = _classThis = _classDescriptor.value;
+            if (_metadata) Object.defineProperty(_classThis, Symbol.metadata, { enumerable: true, configurable: true, writable: true, value: _metadata });
+            __runInitializers(_classThis, _classExtraInitializers);
+        }
+        _logger;
         constructor(logger) {
             given(logger, "logger").ensureHasValue().ensureIsObject();
             this._logger = logger;
@@ -18,7 +27,6 @@ let DbMigrationScriptRunner = (() => {
                 .ensure(t => isAbsolute(t.trim()), "path must be absolute");
             migrationScriptPath = migrationScriptPath.trim();
             const promise = new Promise((resolve, reject) => {
-                var _a, _b, _c, _d;
                 const child = exec(`node ${migrationScriptPath}`, 
                 // @ts-expect-error: cuz of unused params
                 (error, stdout, stderr) => {
@@ -35,12 +43,12 @@ let DbMigrationScriptRunner = (() => {
                     console.error(err);
                     reject(err);
                 });
-                (_a = child.stdout) === null || _a === void 0 ? void 0 : _a.setEncoding("utf-8");
-                (_b = child.stdout) === null || _b === void 0 ? void 0 : _b.on("data", (data) => {
+                child.stdout?.setEncoding("utf-8");
+                child.stdout?.on("data", (data) => {
                     console.log(data);
                 });
-                (_c = child.stderr) === null || _c === void 0 ? void 0 : _c.setEncoding("utf-8");
-                (_d = child.stderr) === null || _d === void 0 ? void 0 : _d.on("data", (data) => {
+                child.stderr?.setEncoding("utf-8");
+                child.stderr?.on("data", (data) => {
                     console.log(data);
                 });
                 child.on("exit", (code) => {
@@ -60,14 +68,6 @@ let DbMigrationScriptRunner = (() => {
             }
         }
     };
-    __setFunctionName(_classThis, "DbMigrationScriptRunner");
-    (() => {
-        const _metadata = typeof Symbol === "function" && Symbol.metadata ? Object.create(null) : void 0;
-        __esDecorate(null, _classDescriptor = { value: _classThis }, _classDecorators, { kind: "class", name: _classThis.name, metadata: _metadata }, null, _classExtraInitializers);
-        DbMigrationScriptRunner = _classThis = _classDescriptor.value;
-        if (_metadata) Object.defineProperty(_classThis, Symbol.metadata, { enumerable: true, configurable: true, writable: true, value: _metadata });
-        __runInitializers(_classThis, _classExtraInitializers);
-    })();
     return DbMigrationScriptRunner = _classThis;
 })();
 export { DbMigrationScriptRunner };

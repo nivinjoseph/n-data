@@ -1,4 +1,4 @@
-import { __esDecorate, __runInitializers, __setFunctionName } from "tslib";
+import { __esDecorate, __runInitializers } from "tslib";
 import { Make } from "@nivinjoseph/n-util";
 import { given } from "@nivinjoseph/n-defensive";
 import { ObjectDisposedException } from "@nivinjoseph/n-exception";
@@ -10,10 +10,20 @@ let RedisCacheService = (() => {
     let _classDescriptor;
     let _classExtraInitializers = [];
     let _classThis;
-    var RedisCacheService = _classThis = class {
+    var RedisCacheService = class {
+        static { _classThis = this; }
+        static {
+            const _metadata = typeof Symbol === "function" && Symbol.metadata ? Object.create(null) : void 0;
+            __esDecorate(null, _classDescriptor = { value: _classThis }, _classDecorators, { kind: "class", name: _classThis.name, metadata: _metadata }, null, _classExtraInitializers);
+            RedisCacheService = _classThis = _classDescriptor.value;
+            if (_metadata) Object.defineProperty(_classThis, Symbol.metadata, { enumerable: true, configurable: true, writable: true, value: _metadata });
+            __runInitializers(_classThis, _classExtraInitializers);
+        }
+        // private readonly _client: RedisClientType<any, any, any>;
+        _proxyClient;
+        _isDisposed = false;
+        _disposePromise = null;
         constructor(redisClient) {
-            this._isDisposed = false;
-            this._disposePromise = null;
             given(redisClient, "redisClient").ensureHasValue().ensureIsObject();
             // this._client = redisClient;
             this._proxyClient = redisClient.withCommandOptions({
@@ -75,14 +85,6 @@ let RedisCacheService = (() => {
             return JSON.parse(decompressed.toString("utf8"));
         }
     };
-    __setFunctionName(_classThis, "RedisCacheService");
-    (() => {
-        const _metadata = typeof Symbol === "function" && Symbol.metadata ? Object.create(null) : void 0;
-        __esDecorate(null, _classDescriptor = { value: _classThis }, _classDecorators, { kind: "class", name: _classThis.name, metadata: _metadata }, null, _classExtraInitializers);
-        RedisCacheService = _classThis = _classDescriptor.value;
-        if (_metadata) Object.defineProperty(_classThis, Symbol.metadata, { enumerable: true, configurable: true, writable: true, value: _metadata });
-        __runInitializers(_classThis, _classExtraInitializers);
-    })();
     return RedisCacheService = _classThis;
 })();
 export { RedisCacheService };

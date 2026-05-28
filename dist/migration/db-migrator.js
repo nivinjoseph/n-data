@@ -5,12 +5,17 @@ import { DefaultSystemRepository } from "./system/default-system-repository.js";
 import { DefaultDbVersionProvider } from "./default-db-version-provider.js";
 import { MigrationDependencyKey } from "./migration-dependency-key.js";
 export class DbMigrator {
+    _container;
+    _logger;
+    _migrationRegistrations;
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-function-type
+    _dbVersionProviderClass = null;
+    _systemTableName = null;
+    _isDisposed;
+    _isBootstrapped;
     get containerRegistry() { return this._container; }
     get serviceLocator() { return this._container; }
     constructor() {
-        // eslint-disable-next-line @typescript-eslint/no-unsafe-function-type
-        this._dbVersionProviderClass = null;
-        this._systemTableName = null;
         this._container = new Container();
         this._migrationRegistrations = [];
         this._isDisposed = false;
@@ -119,6 +124,10 @@ export class DbMigrator {
     }
 }
 class MigrationRegistration {
+    _name;
+    _version;
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-function-type
+    _migration;
     get name() { return this._name; }
     get version() { return this._version; }
     // eslint-disable-next-line @typescript-eslint/no-unsafe-function-type

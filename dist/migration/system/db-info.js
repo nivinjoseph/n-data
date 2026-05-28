@@ -1,5 +1,7 @@
 import { given } from "@nivinjoseph/n-defensive";
 export class DbInfo {
+    _version;
+    _date;
     get version() { return this._version; }
     get date() { return this._date; }
     constructor(version, date) {
@@ -18,5 +20,8 @@ export class DbInfo {
             date: this._date
         };
     }
+}
+export function getCurrentDateValue() {
+    return new Date().toISOString().split("T")[0];
 }
 //# sourceMappingURL=db-info.js.map
