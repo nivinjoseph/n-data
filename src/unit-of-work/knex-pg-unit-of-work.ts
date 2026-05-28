@@ -14,6 +14,7 @@ export class KnexPgUnitOfWork implements UnitOfWork
     private readonly _onCommits = new Array<PostTransactionExec>();
     private readonly _onRollbacks = new Array<PostTransactionExec>();
     private _transactionScope: TransactionScope | null = null;
+    private _transactionScopePromise: Promise<Knex.Transaction> | null = null;
 
 
     public constructor(dbConnectionFactory: DbConnectionFactory)
@@ -24,51 +25,27 @@ export class KnexPgUnitOfWork implements UnitOfWork
     }
 
 
-    public getTransactionScope(): Promise<object>
+    public async getTransactionScope(): Promise<object>
     {
         if (this._transactionScope)
         {
             if (this._transactionScope.isCommitted || this._transactionScope.isRolledBack)
-                return Promise.reject(new InvalidOperationException("using completed UnitOfWork"));
-            return Promise.resolve(this._transactionScope.trx);
+                throw new InvalidOperationException("using completed UnitOfWork");
+            return this._transactionScope.trx;
         }
 
-        const promise = new Promise<object>((resolve, reject) =>
+        if (this._transactionScopePromise == null)
         {
-            this._dbConnectionFactory.create()
-                .then((knex: any) =>
-                {
+            this._transactionScopePromise = this._createTransactionScope();
+            // clear the cached promise on failure so a subsequent call can retry;
+            // this handler is independent of the consumer's await, so rejection still propagates
+            this._transactionScopePromise.catch(() =>
+            {
+                this._transactionScopePromise = null;
+            });
+        }
 
-                    (<Knex>knex)
-                        .transaction((trx: Knex.Transaction) =>
-                        {
-                            if (this._transactionScope)
-                            {
-                                trx.rollback();
-                                if (this._transactionScope.isCommitted || this._transactionScope.isRolledBack)
-                                    reject(new InvalidOperationException("using completed UnitOfWork"));
-                                else
-                                    resolve(this._transactionScope.trx);
-                            }
-                            else
-                            {
-                                this._transactionScope = {
-                                    trx: trx,
-                                    isCommitting: false,
-                                    isCommitted: false,
-                                    isRollingBack: false,
-                                    isRolledBack: false
-                                };
-
-                                resolve(this._transactionScope.trx);
-                            }
-                        })
-                        .catch(() => { /** */ });
-                })
-                .catch(err => reject(err));
-        });
-
-        return promise;
+        return this._transactionScopePromise;
     }
 
     public onCommit(callback: () => Promise<void>, priority?: number): void
@@ -173,6 +150,22 @@ export class KnexPgUnitOfWork implements UnitOfWork
                 .groupBy(t => t.priority.toString())
                 .orderBy(t => Number.parseInt(t.key))
                 .forEachAsync(t => Promise.all(t.values.map(v => v.callback())) as unknown as Promise<void>, 1);
+    }
+
+    private async _createTransactionScope(): Promise<Knex.Transaction>
+    {
+        const knex = await this._dbConnectionFactory.create() as Knex;
+        const trx = await knex.transaction();
+
+        this._transactionScope = {
+            trx,
+            isCommitting: false,
+            isCommitted: false,
+            isRollingBack: false,
+            isRolledBack: false
+        };
+
+        return trx;
     }
 }
 
