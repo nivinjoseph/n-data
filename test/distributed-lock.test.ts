@@ -71,6 +71,16 @@ await describe("DistributedLock tests", async () =>
     });
 
 
+    // NOTE: This test is inherently flaky. It asserts that the lock is acquired in FIFO order
+    // (3000 -> 2000 -> 1000), but RedisDistributedLockService provides no fairness/ordering
+    // guarantee: a contended lock is obtained by polling with a randomly-jittered retry delay
+    // (see retryDelay/retryJitter), so whichever waiter happens to poll first after the lock is
+    // released wins. Because the operations below are started only 200ms apart -- far less than
+    // one retry cycle (400-600ms) -- the 2000ms and 1000ms ops poll on essentially the same
+    // schedule, making the order they acquire the lock a coin flip. When the 1000ms op wins,
+    // values[1] becomes 1000 and the assertions fail (~1 in 3 runs).
+    // The "Long ttl" test below avoids this by spacing requests a full second apart (larger than
+    // the retry cycle), which keeps the polling order stable.
     await test("Basics", async () =>
     {
         const synchronized = new Synchronized(service);
