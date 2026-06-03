@@ -112,6 +112,8 @@ export abstract class OrgEventStreamBaseRepository<T extends OrgAggregateRoot<TS
                             values ${values.join(",")};`;
 
             await this._db.executeCommandWithinUnitOfWork(unitOfWork ?? this._unitOfWork, sql, ...params);
+            
+            (unitOfWork ?? this._unitOfWork).onCommit(() => this.onSave(value, events));
 
             if (!unitOfWork)
                 await this._unitOfWork.commit();
@@ -142,4 +144,6 @@ export abstract class OrgEventStreamBaseRepository<T extends OrgAggregateRoot<TS
             .groupBy(t => t.$aggregateId as string)
             .map(t => AggregateRoot.deserializeFromEvents(this._domainContext, this._aggregateType, this._aggregateStateFactory, t.values));
     }
+    
+    protected abstract onSave(value: T, events: ReadonlyArray<TDomainEvent>): Promise<void>;
 }
