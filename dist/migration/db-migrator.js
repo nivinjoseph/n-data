@@ -54,7 +54,7 @@ export class DbMigrator {
         this._migrationRegistrations.push(...migrationClasses.map(t => new MigrationRegistration(t)));
         return this;
     }
-    bootstrap() {
+    async bootstrap() {
         given(this, "this")
             .ensure(t => !t._isBootstrapped, "invoking method after bootstrap")
             .ensure(t => t._dbVersionProviderClass != null || t._systemTableName != null, "one of either DbVersionProvider or SystemTableName must be provided")
@@ -74,9 +74,8 @@ export class DbMigrator {
                 .registerSingleton(MigrationDependencyKey.dbVersionProvider, DefaultDbVersionProvider);
         }
         this._migrationRegistrations.forEach(t => this._container.registerScoped(t.name, t.migration));
-        this._container.bootstrap();
+        await this._container.bootstrap();
         this._isBootstrapped = true;
-        return this;
     }
     async runMigrations() {
         given(this, "this").ensure(t => t._isBootstrapped, "invoking method before bootstrap");

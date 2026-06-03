@@ -17,7 +17,7 @@ export declare class DbMigrator implements Disposable {
     useSystemTable(systemTableName: string): this;
     registerDbVersionProvider(dbVersionProviderClass: Function): this;
     registerMigrations(...migrationClasses: Array<Function>): this;
-    bootstrap(): this;
+    bootstrap(): Promise<void>;
     runMigrations(): Promise<void>;
     dispose(): Promise<void>;
     private _executeMigrations;
