@@ -917,11 +917,11 @@ __metadata:
     "@eslint/js": "npm:10.0.1"
     "@nivinjoseph/n-config": "npm:2.0.4"
     "@nivinjoseph/n-defensive": "npm:2.0.3"
-    "@nivinjoseph/n-domain": "npm:3.0.7"
+    "@nivinjoseph/n-domain": "npm:3.2.1"
     "@nivinjoseph/n-exception": "npm:2.0.3"
     "@nivinjoseph/n-ext": "npm:2.0.5"
-    "@nivinjoseph/n-ject": "npm:3.0.6"
-    "@nivinjoseph/n-log": "npm:3.0.8"
+    "@nivinjoseph/n-ject": "npm:4.0.1"
+    "@nivinjoseph/n-log": "npm:3.0.9"
     "@nivinjoseph/n-sec": "npm:7.0.2"
     "@nivinjoseph/n-util": "npm:4.0.2"
     "@stylistic/eslint-plugin": "npm:5.10.0"
@@ -952,16 +952,16 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@nivinjoseph/n-domain@npm:3.0.7":
-  version: 3.0.7
-  resolution: "@nivinjoseph/n-domain@npm:3.0.7"
+"@nivinjoseph/n-domain@npm:3.2.1":
+  version: 3.2.1
+  resolution: "@nivinjoseph/n-domain@npm:3.2.1"
   dependencies:
     "@nivinjoseph/n-defensive": "npm:2.0.3"
     "@nivinjoseph/n-exception": "npm:2.0.3"
     "@nivinjoseph/n-ext": "npm:2.0.5"
     "@nivinjoseph/n-util": "npm:4.0.2"
     ulid: "npm:3.0.2"
-  checksum: 10c0/917eb1f798cc6a7ab0ea38fa71a210e0e854710c8a4a907af28fa31d06148422f158be23d5df51d021a14635843438bdb4f908245397a8a8dd3c2a3a3cd51470
+  checksum: 10c0/6693fc42b23003e562ea20a40e3ad4fd0e696f5b99b7cab4bf167d398efb5a39a9f3a31ec36cec1fef82afd40843a94b8dce9300553ac28d0ce4422d9ac1417d
   languageName: node
   linkType: hard
 
@@ -985,22 +985,22 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@nivinjoseph/n-ject@npm:3.0.6":
-  version: 3.0.6
-  resolution: "@nivinjoseph/n-ject@npm:3.0.6"
+"@nivinjoseph/n-ject@npm:4.0.1":
+  version: 4.0.1
+  resolution: "@nivinjoseph/n-ject@npm:4.0.1"
   dependencies:
     "@nivinjoseph/n-defensive": "npm:2.0.3"
     "@nivinjoseph/n-exception": "npm:2.0.3"
     "@nivinjoseph/n-ext": "npm:2.0.5"
     "@nivinjoseph/n-util": "npm:4.0.2"
     tslib: "npm:2.8.1"
-  checksum: 10c0/4d9c5f4b466eb499c004095527261595cbf4a94a632aec234c11e7600c9343a776f5756b5aa6316a1a8bd55262ef91397b75cb5688f9209151d59c5b529da551
+  checksum: 10c0/a09d449b6b6be838e0cc062bec0f0e747d2a8bfcf479033ff3e5b11c4f5e144bb959e092200723346eb4e80b834f0afe6173f541f94af5737e48ff5e2b39ee65
   languageName: node
   linkType: hard
 
-"@nivinjoseph/n-log@npm:3.0.8":
-  version: 3.0.8
-  resolution: "@nivinjoseph/n-log@npm:3.0.8"
+"@nivinjoseph/n-log@npm:3.0.9":
+  version: 3.0.9
+  resolution: "@nivinjoseph/n-log@npm:3.0.9"
   dependencies:
     "@nivinjoseph/n-config": "npm:2.0.5"
     "@nivinjoseph/n-defensive": "npm:2.0.3"
@@ -1011,7 +1011,7 @@ __metadata:
     "@slack/web-api": "npm:7.16.0"
     chalk: "npm:5.6.2"
     luxon: "npm:3.7.2"
-  checksum: 10c0/af3b59af0d7bab73604dde345afe5d957cd6af539dad84673b9192262b2737fe923f83ebe9325c44bfbdbc79821b85b8888bf2c018864ea7087b7fc06aa84fa0
+  checksum: 10c0/661646bf8e461c0347f8e56792a421dd89b71674e53b22007f73bc0e1fc1ee85284413b2b743fdb0f7c9dccd5eea70fa724305cd4cb0ca675ef45d67b2ae9f25
   languageName: node
   linkType: hard
 

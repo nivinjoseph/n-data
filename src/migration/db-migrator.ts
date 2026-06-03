@@ -93,7 +93,7 @@ export class DbMigrator implements Disposable
         return this;
     }
 
-    public bootstrap(): this
+    public async bootstrap(): Promise<void>
     {
         given(this, "this")
             .ensure(t => !t._isBootstrapped, "invoking method after bootstrap")
@@ -122,11 +122,9 @@ export class DbMigrator implements Disposable
         }
 
         this._migrationRegistrations.forEach(t => this._container.registerScoped(t.name, t.migration));
-        this._container.bootstrap();
+        await this._container.bootstrap();
 
         this._isBootstrapped = true;
-
-        return this;
     }
 
     public async runMigrations(): Promise<void>

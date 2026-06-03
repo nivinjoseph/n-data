@@ -78,11 +78,13 @@ const logger = new ConsoleLogger({ logDateTimeZone: LogDateTimeZone.est });
 
 class TestInstaller implements ComponentInstaller
 {
-    public install(registry: Registry): void
+    public install(registry: Registry): Promise<void>
     {
         given(registry, "registry").ensureHasValue().ensureIsObject();
 
         registry.registerInstance("Logger", logger);
+        
+        return Promise.resolve();
     }
 }
 
@@ -94,8 +96,8 @@ await describe("Migration tests", async () =>
             .useLogger(logger)
             .useInstaller(new TestInstaller())
             .registerDbVersionProvider(TestDbVersionProvider)
-            .registerMigrations(TestDbMigration_2, TestDbMigration_1)
-            .bootstrap();
+            .registerMigrations(TestDbMigration_2, TestDbMigration_1);
+        await testMigrator.bootstrap();
 
         const dbVersionProvider = testMigrator.serviceLocator.resolve<TestDbVersionProvider>(MigrationDependencyKey.dbVersionProvider);
 
