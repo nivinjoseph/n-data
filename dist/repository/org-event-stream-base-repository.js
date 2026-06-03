@@ -69,6 +69,7 @@ export class OrgEventStreamBaseRepository {
                             (id, aggregate_id, aggregate_version, organization_id, data) 
                             values ${values.join(",")};`;
             await this._db.executeCommandWithinUnitOfWork(unitOfWork ?? this._unitOfWork, sql, ...params);
+            (unitOfWork ?? this._unitOfWork).onCommit(() => this.onSave(value, events));
             if (!unitOfWork)
                 await this._unitOfWork.commit();
         }

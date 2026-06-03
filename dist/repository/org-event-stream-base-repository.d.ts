@@ -24,5 +24,6 @@ export declare abstract class OrgEventStreamBaseRepository<T extends OrgAggregat
     get(id: string): Promise<T>;
     save(value: T, unitOfWork?: UnitOfWork): Promise<void>;
     protected query(sql: string, ...params: ReadonlyArray<any>): Promise<Array<T>>;
+    protected abstract onSave(value: T, events: ReadonlyArray<TDomainEvent>): Promise<void>;
 }
 //# sourceMappingURL=org-event-stream-base-repository.d.ts.map
