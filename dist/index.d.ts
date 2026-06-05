@@ -14,6 +14,7 @@ export { DbMigrator } from "./migration/db-migrator.js";
 export { DbMigration } from "./migration/db-migration.js";
 export { DbVersionProvider } from "./migration/db-version-provider.js";
 export { DbMigrationScriptRunner } from "./migration/db-migration-script-runner.js";
+export { DbTableCreator } from "./migration/db-table-creator.js";
 export { CacheService } from "./caching/cache-service.js";
 export { InMemoryCacheService } from "./caching/in-memory-cache-service.js";
 export { RedisCacheService } from "./caching/redis-cache-service.js";

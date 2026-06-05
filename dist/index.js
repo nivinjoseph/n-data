@@ -6,6 +6,7 @@ export { KnexPgDbConnectionFactory } from "./db-connection-factory/knex-pg-db-co
 export { KnexPgUnitOfWork } from "./unit-of-work/knex-pg-unit-of-work.js";
 export { DbMigrator } from "./migration/db-migrator.js";
 export { DbMigrationScriptRunner } from "./migration/db-migration-script-runner.js";
+export { DbTableCreator } from "./migration/db-table-creator.js";
 export { InMemoryCacheService } from "./caching/in-memory-cache-service.js";
 export { RedisCacheService } from "./caching/redis-cache-service.js";
 export { RedisDistributedLockService, UnableToAcquireDistributedLockException } from "./distributed-lock/redis-distributed-lock-service.js";
