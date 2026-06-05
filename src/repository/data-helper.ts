@@ -1,6 +1,9 @@
 import { given } from "@nivinjoseph/n-defensive";
-import { AggregateRoot, AggregateState, DomainEvent, DomainHelper } from "@nivinjoseph/n-domain";
+import { AggregateRoot, AggregateState, DomainEvent, DomainHelper, OrgAggregateRoot, OrgAggregateState, OrgDomainEvent } from "@nivinjoseph/n-domain";
 import { ClassDefinition } from "@nivinjoseph/n-util";
+
+export type AggregateRootClass = ClassDefinition<AggregateRoot<AggregateState, DomainEvent<AggregateState>>>;
+export type OrgAggregateRootClass = ClassDefinition<OrgAggregateRoot<OrgAggregateState, OrgDomainEvent<OrgAggregateState>>>;
 
 export class DataHelper
 {
@@ -10,8 +13,7 @@ export class DataHelper
     private constructor() { }
 
 
-    public static createEventStreamTableName<T extends AggregateRoot<TState, TDomainEvent>, TState extends AggregateState, TDomainEvent extends DomainEvent<TState>>(
-        aggregateType: ClassDefinition<T>): string
+    public static createEventStreamTableName(aggregateType: AggregateRootClass): string
     {
         given(aggregateType, "aggregateType").ensureHasValue().ensureIsFunction();
 
@@ -20,8 +22,7 @@ export class DataHelper
         return tableName;
     }
 
-    public static createSnapshotTableName<T extends AggregateRoot<TState, TDomainEvent>, TState extends AggregateState, TDomainEvent extends DomainEvent<TState>>(
-        aggregateType: ClassDefinition<T>): string
+    public static createSnapshotTableName(aggregateType: AggregateRootClass): string
     {
         given(aggregateType, "aggregateType").ensureHasValue().ensureIsFunction();
 
@@ -30,8 +31,7 @@ export class DataHelper
         return tableName;
     }
 
-    public static createReadModelTableName<T extends AggregateRoot<TState, TDomainEvent>, TState extends AggregateState, TDomainEvent extends DomainEvent<TState>>(
-        aggregateType: ClassDefinition<T>, prefix?: string): string
+    public static createReadModelTableName(aggregateType: AggregateRootClass, prefix?: string): string
     {
         given(aggregateType, "aggregateType").ensureHasValue().ensureIsFunction();
         given(prefix, "prefix").ensureIsString();
