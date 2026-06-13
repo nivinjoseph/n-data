@@ -53,7 +53,7 @@
         "@aws-sdk/client-s3": "3.969.0",
         "@aws-sdk/s3-request-presigner": "3.969.0",
         "@nivinjoseph/n-defensive": "2.0.3",
-        "@nivinjoseph/n-domain": "3.2.1",
+        "@nivinjoseph/n-domain": "3.2.2",
         "@nivinjoseph/n-exception": "2.0.3",
         "@nivinjoseph/n-ext": "2.0.5",
         "@nivinjoseph/n-ject": "4.0.1",
