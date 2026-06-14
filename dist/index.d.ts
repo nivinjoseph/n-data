@@ -25,7 +25,7 @@ export { StoredFile, StoredFileSchema } from "./file-store/stored-file.js";
 export { S3FileStoreConfig } from "./file-store/s3-file-store-config.js";
 export { S3FileStore } from "./file-store/s3-file-store.js";
 export { DataHelper } from "./repository/data-helper.js";
-export { BaseRepository } from "./repository/base-repository.js";
+export { BaseRepository } from "./repository/repository.ts";
 export { AggregateNotFoundException } from "./repository/aggregate-not-found-exception.js";
 export { EventStreamBaseRepository } from "./repository/event-stream-base-repository.js";
 export { OrgEventStreamBaseRepository } from "./repository/org-event-stream-base-repository.js";

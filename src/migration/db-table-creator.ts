@@ -57,7 +57,7 @@ export class DbTableCreator
     public async createEventStreamTableForAggregate(aggregateType: AggregateRootClass): Promise<string>
     {
         const tableName = DataHelper.createEventStreamTableName(aggregateType);
-        const indexName = this._createIndexNameFromTableName(tableName);
+        const indexName = this.createIndexNameFromTableName(tableName);
 
         await this._db.executeCommand(`
             create table if not exists ${tableName}
@@ -93,7 +93,7 @@ export class DbTableCreator
     public async createEventStreamTableForOrgAggregate(aggregateType: OrgAggregateRootClass): Promise<string>
     {
         const tableName = DataHelper.createEventStreamTableName(aggregateType);
-        const indexName = this._createIndexNameFromTableName(tableName);
+        const indexName = this.createIndexNameFromTableName(tableName);
 
         await this._db.executeCommand(`
             create table if not exists ${tableName}
@@ -161,7 +161,7 @@ export class DbTableCreator
     public async createSnapshotTableForOrgAggregate(aggregateType: OrgAggregateRootClass, extraColumns?: ReadonlyArray<string>): Promise<string>
     {
         const tableName = DataHelper.createSnapshotTableName(aggregateType);
-        const indexName = this._createIndexNameFromTableName(tableName);
+        const indexName = this.createIndexNameFromTableName(tableName);
 
         await this._db.executeCommand(`
             create table if not exists ${tableName}
@@ -210,13 +210,21 @@ export class DbTableCreator
     /**
      * Builds the conventional `idx_<tableName>` index name and validates it.
      *
+     * When a `suffix` is supplied it is appended as `idx_<tableName>_<suffix>`, allowing
+     * multiple distinct indexes to be named for the same table.
+     *
      * @param {string} tableName - The table the index belongs to.
+     * @param {string} [suffix] - Optional suffix appended to disambiguate multiple indexes on the same table.
      * @returns {string} The validated index name.
      * @throws {ArgumentException} If the resulting index name fails {@link validateIndexName}.
      */
-    private _createIndexNameFromTableName(tableName: string): string
+    public createIndexNameFromTableName(tableName: string, suffix?: string): string
     {
-        const indexName = `idx_${tableName}`;
+        given(tableName, "tableName").ensureHasValue().ensureIsString();
+        given(suffix, "suffix").ensureIsString();
+
+        const trimmedSuffix = suffix?.trim();
+        const indexName = `idx_${tableName}${trimmedSuffix ? `_${trimmedSuffix}` : ""}`;
 
         return this.validateIndexName(indexName);
     }

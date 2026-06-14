@@ -22,6 +22,14 @@ export class QueryResult<T>
      */
     public get rows(): ReadonlyArray<T> { return this._rows; }
 
+    /**
+     * Gets whether the query returned no rows.
+     *
+     * @readonly
+     * @type {boolean}
+     */
+    public get isEmpty(): boolean { return this._rows.isEmpty; }
+
 
     public constructor(rows: Array<T>)
     {

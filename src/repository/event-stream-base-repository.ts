@@ -1,4 +1,5 @@
 import { AggregateRoot, AggregateState, AggregateStateFactory, DomainContext, DomainEvent, DomainEventData } from "@nivinjoseph/n-domain";
+import { Repository } from "./repository.js";
 import { BaseRepository } from "./base-repository.js";
 import { Db } from "../db/db.js";
 import { UnitOfWork } from "../unit-of-work/unit-of-work.js";
@@ -8,22 +9,11 @@ import { given } from "@nivinjoseph/n-defensive";
 import { DataHelper } from "./data-helper.js";
 import { AggregateNotFoundException } from "./aggregate-not-found-exception.js";
 
-export abstract class EventStreamBaseRepository<T extends AggregateRoot<TState, TDomainEvent>, TState extends AggregateState, TDomainEvent extends DomainEvent<TState>> implements BaseRepository<T>
+export abstract class EventStreamBaseRepository<T extends AggregateRoot<TState, TDomainEvent>, TState extends AggregateState, TDomainEvent extends DomainEvent<TState>> extends BaseRepository implements Repository<T>
 {
-    private readonly _domainContext: DomainContext;
-    private readonly _db: Db;
-    private readonly _unitOfWork: UnitOfWork;
-    private readonly _logger: Logger;
     private readonly _aggregateType: ClassDefinition<T>;
     private readonly _aggregateStateFactory: AggregateStateFactory<TState>;
-    private readonly _table: string;
 
-    protected get table(): string { return this._table; }
-    
-    public get domainContext(): DomainContext { return this._domainContext; }
-    public get db(): Db { return this._db; }
-    public get unitOfWork(): UnitOfWork { return this._unitOfWork; }
-    public get logger(): Logger { return this._logger; }
     public get aggregateType(): ClassDefinition<T> { return this._aggregateType; }
     public get aggregateStateFactory(): AggregateStateFactory<TState> { return this._aggregateStateFactory; }
 
@@ -35,24 +25,14 @@ export abstract class EventStreamBaseRepository<T extends AggregateRoot<TState, 
             .ensureHasStructure({
                 userId: "string"
             });
-        this._domainContext = domainContext;
 
-        given(db, "db").ensureHasValue().ensureIsObject();
-        this._db = db;
-
-        given(unitOfWork, "unitOfWork").ensureHasValue().ensureIsObject();
-        this._unitOfWork = unitOfWork;
-
-        given(logger, "logger").ensureHasValue().ensureIsObject();
-        this._logger = logger;
+        super(domainContext, db, unitOfWork, logger, DataHelper.createEventStreamTableName(aggregateType));
 
         given(aggregateType, "aggregateType").ensureHasValue().ensureIsFunction();
         this._aggregateType = aggregateType;
-        
+
         given(aggregateStateFactory, "aggregateStateFactory").ensureHasValue().ensureIsObject();
         this._aggregateStateFactory = aggregateStateFactory;
-
-        this._table = DataHelper.createEventStreamTableName(this._aggregateType);
     }
 
 
@@ -63,10 +43,10 @@ export abstract class EventStreamBaseRepository<T extends AggregateRoot<TState, 
 
         if (ids.isNotEmpty)
             return this.query(
-                `select data from ${this._table} where aggregate_id in (${ids.map(() => "?").join(",")});`,
+                `select data from ${this.table} where aggregate_id in (${ids.map(() => "?").join(",")});`,
                 ...ids);
 
-        return this.query(`select data from ${this._table};`);
+        return this.query(`select data from ${this.table};`);
     }
 
     public async get(id: string): Promise<T>
@@ -74,7 +54,7 @@ export abstract class EventStreamBaseRepository<T extends AggregateRoot<TState, 
         given(id, "id").ensureHasValue().ensureIsString();
         id = id.trim();
 
-        const result = await this.query(`select data from ${this._table} where aggregate_id = ?;`, id);
+        const result = await this.query(`select data from ${this.table} where aggregate_id = ?;`, id);
         if (result.length !== 1)
             throw new AggregateNotFoundException(this._aggregateType, id);
 
@@ -101,23 +81,23 @@ export abstract class EventStreamBaseRepository<T extends AggregateRoot<TState, 
                 params.push(event.id, event.aggregateId, event.version, event.serialize());
             }
 
-            const sql = `insert into ${this._table} 
-                            (id, aggregate_id, aggregate_version, data) 
+            const sql = `insert into ${this.table}
+                            (id, aggregate_id, aggregate_version, data)
                             values ${values.join(",")};`;
 
-            await this._db.executeCommandWithinUnitOfWork(unitOfWork ?? this._unitOfWork, sql, ...params);
-            
-            (unitOfWork ?? this._unitOfWork).onCommit(() => this.onSave(value, events));
+            await this.db.executeCommandWithinUnitOfWork(unitOfWork ?? this.unitOfWork, sql, ...params);
+
+            (unitOfWork ?? this.unitOfWork).onCommit(() => this.onSave(value, events));
 
             if (!unitOfWork)
-                await this._unitOfWork.commit();
+                await this.unitOfWork.commit();
         }
         catch (error: any)
         {
-            await this._logger.logError(error);
+            await this.logger.logError(error);
 
             if (!unitOfWork)
-                await this._unitOfWork.rollback();
+                await this.unitOfWork.rollback();
 
             throw error;
         }
@@ -125,18 +105,13 @@ export abstract class EventStreamBaseRepository<T extends AggregateRoot<TState, 
 
     protected async query(sql: string, ...params: ReadonlyArray<any>): Promise<Array<T>>
     {
-        given(sql, "sql").ensureHasValue().ensureIsString();
-        sql = sql.trim();
-
-        given(params, "params").ensureHasValue().ensureIsArray();
-
-        const queryResult = await this._db.executeQuery<any>(sql, ...params);
-        if (queryResult.rows.isEmpty)
+        const queryResult = await this.queryRaw<any>(sql, ...params);
+        if (queryResult.isEmpty)
             return [];
 
         return queryResult.rows.map(t => t.data as DomainEventData)
             .groupBy(t => t.$aggregateId as string)
-            .map(t => AggregateRoot.deserializeFromEvents(this._domainContext, this._aggregateType, this._aggregateStateFactory, t.values));
+            .map(t => AggregateRoot.deserializeFromEvents(this.domainContext, this._aggregateType, this._aggregateStateFactory, t.values));
     }
     
     protected abstract onSave(value: T, events: ReadonlyArray<TDomainEvent>): Promise<void>;

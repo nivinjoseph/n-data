@@ -1,5 +1,5 @@
 import { AggregateRoot, AggregateState, AggregateStateFactory, DomainContext, DomainEvent } from "@nivinjoseph/n-domain";
-import { BaseRepository } from "./base-repository.js";
+import { BaseRepository } from "./repository.ts";
 import { Db } from "../db/db.js";
 import { UnitOfWork } from "../unit-of-work/unit-of-work.js";
 import { Logger } from "@nivinjoseph/n-log";

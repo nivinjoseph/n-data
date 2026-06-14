@@ -1,5 +1,5 @@
 import { OrgAggregateRoot, OrgAggregateState, OrgDomainEvent } from "@nivinjoseph/n-domain";
-import { BaseRepository } from "./base-repository.js";
+import { BaseRepository } from "./repository.ts";
 import { UnitOfWork } from "../unit-of-work/unit-of-work.js";
 import { OrgEventStreamBaseRepository } from "./org-event-stream-base-repository.js";
 export declare abstract class OrgSnapshotBaseRepository<T extends OrgAggregateRoot<TState, TDomainEvent>, TState extends OrgAggregateState, TDomainEvent extends OrgDomainEvent<TState>> implements BaseRepository<T> {

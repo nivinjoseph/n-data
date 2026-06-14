@@ -1,6 +1,6 @@
 import { AggregateRoot, AggregateState, DomainEvent } from "@nivinjoseph/n-domain";
 import { EventStreamBaseRepository } from "./event-stream-base-repository.js";
-import { BaseRepository } from "./base-repository.js";
+import { BaseRepository } from "./repository.ts";
 import { UnitOfWork } from "../unit-of-work/unit-of-work.js";
 export declare abstract class SnapshotBaseRepository<T extends AggregateRoot<TState, TDomainEvent>, TState extends AggregateState, TDomainEvent extends DomainEvent<TState>> implements BaseRepository<T> {
     private readonly _eventStreamRepository;

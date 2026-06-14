@@ -59,7 +59,7 @@ export class DefaultSystemRepository implements SystemRepository
         const sql = `select data from ${this._systemTableName} where key = ?`;
         const result = await this._db.executeQuery<any>(sql, key);
 
-        if (result.rows.isEmpty)
+        if (result.isEmpty)
             return new DbInfo(0, getCurrentDateValue());
 
         return DbInfo.deserialize(result.rows[0].data);
