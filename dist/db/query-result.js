@@ -18,6 +18,13 @@ export class QueryResult {
      * @type {ReadonlyArray<T>}
      */
     get rows() { return this._rows; }
+    /**
+     * Gets whether the query returned no rows.
+     *
+     * @readonly
+     * @type {boolean}
+     */
+    get isEmpty() { return this._rows.isEmpty; }
     constructor(rows) {
         given(rows, "rows").ensureHasValue().ensureIsArray();
         this._rows = rows;

@@ -14,6 +14,13 @@ export declare class QueryResult<T> {
      * @type {ReadonlyArray<T>}
      */
     get rows(): ReadonlyArray<T>;
+    /**
+     * Gets whether the query returned no rows.
+     *
+     * @readonly
+     * @type {boolean}
+     */
+    get isEmpty(): boolean;
     constructor(rows: Array<T>);
     /**
      * Transforms the flat result rows into a tree structure.

@@ -97,11 +97,15 @@ export declare class DbTableCreator {
     /**
      * Builds the conventional `idx_<tableName>` index name and validates it.
      *
+     * When a `suffix` is supplied it is appended as `idx_<tableName>_<suffix>`, allowing
+     * multiple distinct indexes to be named for the same table.
+     *
      * @param {string} tableName - The table the index belongs to.
+     * @param {string} [suffix] - Optional suffix appended to disambiguate multiple indexes on the same table.
      * @returns {string} The validated index name.
      * @throws {ArgumentException} If the resulting index name fails {@link validateIndexName}.
      */
-    private _createIndexNameFromTableName;
+    createIndexNameFromTableName(tableName: string, suffix?: string): string;
     /**
      * Normalizes optional extra column definitions into a DDL-ready fragment.
      *

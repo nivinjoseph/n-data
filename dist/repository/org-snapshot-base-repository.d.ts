@@ -1,11 +1,11 @@
-import { OrgAggregateRoot, OrgAggregateState, OrgDomainEvent } from "@nivinjoseph/n-domain";
-import { BaseRepository } from "./repository.ts";
+import { OrgAggregateRoot, OrgAggregateState, OrgDomainContext, OrgDomainEvent } from "@nivinjoseph/n-domain";
+import { Repository } from "./repository.js";
+import { BaseRepository } from "./base-repository.js";
 import { UnitOfWork } from "../unit-of-work/unit-of-work.js";
 import { OrgEventStreamBaseRepository } from "./org-event-stream-base-repository.js";
-export declare abstract class OrgSnapshotBaseRepository<T extends OrgAggregateRoot<TState, TDomainEvent>, TState extends OrgAggregateState, TDomainEvent extends OrgDomainEvent<TState>> implements BaseRepository<T> {
+export declare abstract class OrgSnapshotBaseRepository<T extends OrgAggregateRoot<TState, TDomainEvent>, TState extends OrgAggregateState, TDomainEvent extends OrgDomainEvent<TState>> extends BaseRepository implements Repository<T> {
     private readonly _eventStreamRepository;
-    private readonly _table;
-    protected get table(): string;
+    get domainContext(): OrgDomainContext;
     get eventStreamRepository(): OrgEventStreamBaseRepository<T, TState, TDomainEvent>;
     protected constructor(eventStreamRepository: OrgEventStreamBaseRepository<T, TState, TDomainEvent>);
     getAll(...ids: ReadonlyArray<string>): Promise<Array<T>>;
