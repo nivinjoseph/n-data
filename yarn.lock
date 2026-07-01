@@ -917,7 +917,7 @@ __metadata:
     "@eslint/js": "npm:10.0.1"
     "@nivinjoseph/n-config": "npm:2.0.4"
     "@nivinjoseph/n-defensive": "npm:2.0.3"
-    "@nivinjoseph/n-domain": "npm:3.2.2"
+    "@nivinjoseph/n-domain": "npm:3.2.3"
     "@nivinjoseph/n-exception": "npm:2.0.3"
     "@nivinjoseph/n-ext": "npm:2.0.5"
     "@nivinjoseph/n-ject": "npm:4.0.1"
@@ -952,16 +952,16 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@nivinjoseph/n-domain@npm:3.2.2":
-  version: 3.2.2
-  resolution: "@nivinjoseph/n-domain@npm:3.2.2"
+"@nivinjoseph/n-domain@npm:3.2.3":
+  version: 3.2.3
+  resolution: "@nivinjoseph/n-domain@npm:3.2.3"
   dependencies:
     "@nivinjoseph/n-defensive": "npm:2.0.3"
     "@nivinjoseph/n-exception": "npm:2.0.3"
     "@nivinjoseph/n-ext": "npm:2.0.5"
     "@nivinjoseph/n-util": "npm:4.0.2"
     ulid: "npm:3.0.2"
-  checksum: 10c0/7ff09802c0f8811ee6102ef6deb3d49edb8430fff864fe8a92b8d1da478157fc12b9e8e41cfcee31e058fd9094cf858643c7d6370a5d87cf736c9e2a61c562de
+  checksum: 10c0/d07616a0de2ba521f913af70e546dfe6eb8655d1b7377509a7ca8f432bfd5bfae6c78ecdfbb6bb4387cd0308e04145a62249a6b20549051342d25a1c4a9984e4
   languageName: node
   linkType: hard
 
