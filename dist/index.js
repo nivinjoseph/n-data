@@ -12,7 +12,7 @@ export { RedisCacheService } from "./caching/redis-cache-service.js";
 export { RedisDistributedLockService, UnableToAcquireDistributedLockException } from "./distributed-lock/redis-distributed-lock-service.js";
 export { StoredFile } from "./file-store/stored-file.js";
 export { S3FileStore } from "./file-store/s3-file-store.js";
-export { DataHelper } from "./repository/data-helper.js";
+export { DataHelper, JsonValueType } from "./repository/data-helper.js";
 export { BaseRepository } from "./repository/base-repository.js";
 export { AggregateNotFoundException } from "./repository/aggregate-not-found-exception.js";
 export { EventStreamBaseRepository } from "./repository/event-stream-base-repository.js";
