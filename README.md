@@ -10,6 +10,7 @@ A comprehensive data access library for Node.js applications, built on top of Kn
   - Unit of Work pattern implementation
   - Database migrations
   - Connection management
+  - Event sourcing repositories, with JSONB expression indexes for querying snapshots
 
 - **Caching**
   - In-memory caching
@@ -107,6 +108,123 @@ try {
     await unitOfWork.rollback();
 }
 ```
+
+### Event Sourcing Repositories
+
+Aggregates are stored as an append-only event stream plus a snapshot of the current state. Reads by id are served by the snapshot table's primary key. To query a field *inside* the snapshot's `data` column, declare the key when the table is created — `DbTableCreator` builds an expression index over it, without adding a column to the table.
+
+```typescript
+import { DbMigration, DbTableCreator, DataHelper, JsonValueType, Db } from '@nivinjoseph/n-data';
+import { inject } from '@nivinjoseph/n-ject';
+import { Logger } from '@nivinjoseph/n-log';
+
+// 1. Create the tables in a migration, declaring which keys to index
+@inject("Db", "Logger")
+export class AddOrderTables_1 implements DbMigration
+{
+    private readonly _db: Db;
+    private readonly _logger: Logger;
+
+    public constructor(db: Db, logger: Logger)
+    {
+        this._db = db;
+        this._logger = logger;
+    }
+
+    public async execute(): Promise<void>
+    {
+        const tableCreator = new DbTableCreator(this._db, this._logger);
+
+        await tableCreator.createEventStreamTableForAggregate(Order);
+
+        // each path becomes an expression index over that key inside `data`;
+        // no column is added to the table, so this also works on tables that already exist
+        await tableCreator.createSnapshotTableForAggregate(Order, [
+            { path: "status" },
+            { path: "total", type: JsonValueType.numeric },
+            { path: "customer.city" }               // dot delimited for a nested key
+        ]);
+
+        // -> create index ... on order_snaps((data->>'status'));
+        //    create index ... on order_snaps(((data->>'total')::numeric));
+        //    create index ... on order_snaps((data#>>'{customer,city}'));
+    }
+}
+```
+
+```typescript
+import { SnapshotBaseRepository, DataHelper, JsonValueType } from '@nivinjoseph/n-data';
+
+// 2. Query the index from a method on the concrete repository
+@inject("OrderEventStreamRepository")
+export class OrderRepository extends SnapshotBaseRepository<Order, OrderState, OrderEvent>
+{
+    // Build the expression with the same helper the index was built from, once, up front.
+    private static readonly _statusExpression = DataHelper.createJsonPathExpression("status");
+    private static readonly _totalExpression = DataHelper.createJsonPathExpression("total", JsonValueType.numeric);
+
+    public constructor(eventStreamRepository: OrderEventStreamRepository)
+    {
+        super(eventStreamRepository);
+    }
+
+    public getByStatus(status: string): Promise<Array<Order>>
+    {
+        return this.query(
+            `select data from ${this.table} where ${OrderRepository._statusExpression} = ?;`,
+            status);
+    }
+
+    public getOverTotal(total: number): Promise<Array<Order>>
+    {
+        return this.query(
+            `select data from ${this.table} where ${OrderRepository._totalExpression} > ?;`,
+            total);
+    }
+
+    // A projection that does not map onto the aggregate goes through queryRaw,
+    // which performs no deserialization.
+    public async getCountByStatus(): Promise<ReadonlyArray<{ status: string; count: number; }>>
+    {
+        const result = await this.queryRaw<{ status: string; count: number; }>(
+            `select ${OrderRepository._statusExpression} as status, cast(count(*) as int) as count
+             from ${this.table} group by 1;`);
+
+        return result.rows;
+    }
+}
+```
+
+```typescript
+import { OrgSnapshotBaseRepository, DataHelper } from '@nivinjoseph/n-data';
+
+// 3. Organization-scoped aggregates: every custom query must filter organization_id
+@inject("InvoiceEventStreamRepository")
+export class InvoiceRepository extends OrgSnapshotBaseRepository<Invoice, InvoiceState, InvoiceEvent>
+{
+    private static readonly _statusExpression = DataHelper.createJsonPathExpression("status");
+
+    public constructor(eventStreamRepository: InvoiceEventStreamRepository)
+    {
+        super(eventStreamRepository);
+    }
+
+    public getByStatus(status: string): Promise<Array<Invoice>>
+    {
+        // organization_id first: `query` does not add it, and the index leads with it
+        return this.query(
+            `select data from ${this.table} where organization_id = ? and ${InvoiceRepository._statusExpression} = ?;`,
+            this.domainContext.organizationId, status);
+    }
+}
+```
+
+Four things to get right:
+
+- **Never hand-write the extraction expression.** Postgres only uses an expression index when the query expression matches the indexed one *textually*. A near-miss — `data->>'total'` against an index on `((data->>'total')::numeric)` — silently falls back to a sequential scan, with no error and no warning. Build it with `DataHelper.createJsonPathExpression`, or reuse the `indexedExpressions` the create call returns.
+- **Pass a `type` whenever the value is not a string.** Extraction yields `text`, so an uncast comparison sorts lexicographically and `'9' > '100'` is true. This is a correctness concern, not just a performance one. `JsonValueType` has no date/time members, because those parse through non-immutable functions that Postgres rejects in an index expression — store a timestamp as epoch millis and use `JsonValueType.bigint`, or as an ISO-8601 string and use `JsonValueType.text`, which sorts chronologically anyway.
+- **Select `data`.** `query` deserializes each row from that column. Use `queryRaw` for anything else.
+- **Filter `organization_id` in every org-scoped query.** `query` does not add it, so omitting it returns other organizations' aggregates *and* misses the index.
 
 ### Caching
 
