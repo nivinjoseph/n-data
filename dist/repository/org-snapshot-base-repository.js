@@ -5,7 +5,7 @@ import { DataHelper } from "./data-helper.js";
 import { AggregateNotFoundException } from "./aggregate-not-found-exception.js";
 import { OrgEventStreamBaseRepository } from "./org-event-stream-base-repository.js";
 /**
- * The organization-scoped counterpart to {@link SnapshotBaseRepository}.
+ * The organization-scoped counterpart to `SnapshotBaseRepository`.
  *
  * The snapshot table holds `id` (the primary key), `organization_id`, and `data` (the
  * serialized state as jsonb). {@link get} and {@link getAll} cover lookup by id and scope
@@ -17,32 +17,48 @@ import { OrgEventStreamBaseRepository } from "./org-event-stream-base-repository
  * `organization_id`. One omission, both a tenant-isolation bug and a performance bug. The
  * organization is available as `this.domainContext.organizationId`.
  *
- * As with the plain variant, declare the keys to index when the table is created, and build
- * the predicate with {@link DataHelper.createJsonPathExpression} rather than by hand -
- * Postgres only uses an expression index when the query expression matches the indexed one
- * textually, so a near-miss silently becomes a sequential scan.
+ * As with the plain variant, declare each index with `SnapshotIndex` on this repository and build
+ * predicates from the same declaration via its `expressionForPath`, never by hand - Postgres only
+ * uses an expression index when the query expression matches the indexed one textually, so a
+ * near-miss silently becomes a sequential scan.
  *
  * ```typescript
  * await tableCreator.createSnapshotTableForOrgAggregate(Invoice, [
- *     { path: "status" },
- *     { path: "invoiceNumber", isUnique: true }
+ *     SnapshotIndex.forPath<InvoiceState>("status"),
+ *     SnapshotIndex.forPath<InvoiceState>("series").andPath("invoiceNumber").asUnique()
  * ]);
  * // -> create index ... on invoice_snaps(organization_id, (data->>'status'));
- * //    create unique index ... on invoice_snaps(organization_id, (data->>'invoiceNumber'));
+ * //    create unique index ... on invoice_snaps(organization_id, (data->>'series'), (data->>'invoiceNumber'));
  * ```
  *
- * Because the index leads with `organization_id`, a path marked `isUnique` is unique **within
- * an organization** rather than globally - the same natural key can exist once per tenant,
- * which is normally what a tenant-scoped natural key means. Aggregates whose `data` omits the
- * key are unconstrained. A collision raises out of {@link save} as a DbException and rolls the
- * unit of work back, rather than surfacing as a domain error.
+ * `organizationId` is deliberately not an indexable path, even though the state declares it. It is a
+ * real column here and it leads every index, so constraining the column both isolates the tenant and
+ * uses the index; the copy inside `data` is not what any index covers, so both indexing and querying
+ * that path are always wrong. Constrain the column.
+ *
+ * Because every index leads with `organization_id`, one marked `asUnique` is unique **within an
+ * organization** rather than globally - the same natural key, or tuple of them, can exist once
+ * per tenant, which is normally what a tenant-scoped natural key means. Rows whose `data` omits
+ * an indexed key are unconstrained; for a composite that means a row missing any member never
+ * collides. A collision raises out of {@link save} as a DbException and rolls the unit of work
+ * back, rather than surfacing as a domain error.
+ *
+ * That leading column is also why no expression here is independently searchable: btree serves only a
+ * leading prefix, so a predicate must constrain `organization_id` before any indexed expression can
+ * be used - which the mandatory org filter already does. `info.indexes` reports it as `leadingColumn`.
  *
  * @example
  * ```typescript
  * @inject("InvoiceEventStreamRepository")
  * export class InvoiceRepository extends OrgSnapshotBaseRepository<Invoice, InvoiceState, InvoiceEvent>
  * {
- *     private static readonly _statusExpression = DataHelper.createJsonPathExpression("status");
+ *     // declared once: the migration creates these, this class queries them
+ *     public static readonly statusIndex = SnapshotIndex.forPath<InvoiceState>("status");
+ *
+ *     public static readonly snapshotIndexes: ReadonlyArray<SnapshotIndex<InvoiceState>> =
+ *         [InvoiceRepository.statusIndex];
+ *
+ *     private static readonly _statusExpression = InvoiceRepository.statusIndex.expressionForPath("status");
  *
  *     public constructor(eventStreamRepository: InvoiceEventStreamRepository)
  *     {
@@ -57,6 +73,9 @@ import { OrgEventStreamBaseRepository } from "./org-event-stream-base-repository
  *             this.domainContext.organizationId, status);
  *     }
  * }
+ *
+ * // in the migration
+ * await tableCreator.createSnapshotTableForOrgAggregate(Invoice, InvoiceRepository.snapshotIndexes);
  * ```
  *
  * @class OrgSnapshotBaseRepository

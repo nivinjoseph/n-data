@@ -1,0 +1,339 @@
+/**
+ * The Postgres types a value extracted out of a jsonb column can be cast to.
+ *
+ * Deliberately narrow, on two counts. Extraction yields text, and an expression index
+ * requires an immutable expression - so only types whose input function is immutable are
+ * reachable. And the set is limited to types a JSON value actually carries: JSON has
+ * strings, numbers and booleans, so those are what this covers.
+ *
+ * Every member is verified against Postgres 12 to work as an index expression; there is a
+ * test that fails if one is added that does not.
+ *
+ * Notable absences:
+ * - No date/time types. `date`, `time`, `timestamp`, `timestamptz` and `interval` all parse
+ *   from text through stable functions (they depend on DateStyle/TimeZone), so Postgres
+ *   rejects them in an index expression. Store a timestamp as epoch millis and use
+ *   {@link JsonValueType.bigint} - which is what domain timestamps already are - or store an
+ *   ISO-8601 string and leave it as text, which sorts chronologically anyway.
+ * - No `varchar(n)`. An explicit cast to it truncates silently past n rather than erroring,
+ *   and it buys nothing over {@link JsonValueType.text} in Postgres.
+ * - No `jsonb`. Indexing a whole subtree with btree is rarely useful; reach a scalar inside
+ *   it with a dotted path instead.
+ *
+ * Two things to know about the resulting index, both verified against Postgres 12 and pinned by
+ * tests:
+ * - {@link JsonValueType.text} is not merely a no-op, it is *elided*. Extraction already yields
+ *   text, so Postgres drops the redundant cast and an index built with it is byte-for-byte the same
+ *   index as one built without - their predicates are interchangeable in either direction. It is the
+ *   one case where two different expression strings are equivalent; everywhere else a textual
+ *   difference costs the index. Just leave the type off.
+ * - The default text opclass serves `=`, range comparisons and `order by`, but **not** a prefix
+ *   `LIKE 'abc%'` unless the database collation is `C`. Under a typical `en_US.utf8` database such a
+ *   query silently sequential-scans past a perfectly good index. `text_pattern_ops` is what fixes
+ *   it, and this API does not express opclasses - build that index by hand in a migration if a
+ *   prefix search has to be fast.
+ */
+export declare enum JsonValueType {
+    text = "text",
+    uuid = "uuid",
+    boolean = "boolean",
+    smallint = "smallint",
+    integer = "integer",
+    bigint = "bigint",
+    numeric = "numeric",
+    real = "real",
+    doublePrecision = "double precision"
+}
+/**
+ * Decrements the recursion budget used by `SnapshotLeafPath`.
+ */
+type PreviousDepth = [never, 0, 1, 2, 3, 4, 5];
+/**
+ * The raw leaf-path union, before {@link SnapshotPath} removes what must never be indexed.
+ *
+ * Not exported: every *typed* signature takes {@link SnapshotPath}, so the rules live in one place
+ * and adding one lands on the whole API at once. The `Raw` overloads deliberately take `string`,
+ * which is what makes them the escape hatch.
+ */
+type SnapshotLeafPath<T, TDepth extends number = 5> = [TDepth] extends [never] ? never : {
+    [K in keyof T & string]: NonNullable<T[K]> extends Function ? never : NonNullable<T[K]> extends ReadonlyArray<any> ? never : NonNullable<T[K]> extends object ? `${K}.${SnapshotLeafPath<NonNullable<T[K]>, PreviousDepth[TDepth]>}` : K;
+}[keyof T & string];
+/**
+ * A dot-delimited path to a **leaf scalar** inside `T`, for indexing a snapshot's `data` column and
+ * for building the predicates that read it back.
+ *
+ * Only leaves are offered. A container - an object- or array-valued key - is deliberately *not* a
+ * path, because indexing one covers the text rendering of a whole subtree, and jsonb's rendering is
+ * not `JSON.stringify`'s (jsonb orders keys itself and emits `": "` / `", "`), so a predicate built
+ * in JavaScript would never match it. Use {@link SnapshotIndex.forRawPath} if you really want that.
+ *
+ * `organizationId` is excluded. On an org-scoped snapshot table it is a real column, and every index
+ * leads with it - so a predicate on the column uses those indexes, while the copy inside `data` is
+ * not what any index covers and querying it is always wrong. Only the bare top-level path is
+ * removed; a nested `customer.organizationId` is a genuine leaf and stays.
+ *
+ * The exclusion is unconditional rather than conditional on an org-scoped state: one rule stated
+ * once, with no dependency from this module onto the org base class. The cost is a plain
+ * `AggregateState` that legitimately keeps a top-level `organizationId` inside `data` - off-pattern,
+ * since n-domain offers `OrgAggregateRoot` for that - which reaches it through
+ * {@link SnapshotIndex.forRawPath}, as containers do. It also does not reach a state whose paths
+ * widen to `string` (see below), since `Exclude<string, "organizationId">` is still `string`.
+ *
+ * Depth is bounded so a self-referential state type cannot hang the compiler: paths of up to six
+ * segments are offered, and a seventh is not. Because a container contributes only its nested paths,
+ * exhausting the budget makes a deeper leaf unreachable rather than falling back to the container -
+ * it fails closed, and `forRawPath` is the way through.
+ *
+ * **The key names are only guaranteed at the top level.** `serializeStateIntoSnapshot` copies the
+ * state with `Object.assign`, so `T`'s own keys are `data`'s keys. One level down it is not so:
+ * `_serializeForSnapshot` routes any `Serializable` value through `serialize()`, which emits
+ * `field.key ?? field.name` over `@serialize` decorated getters *only*. So for a nested
+ * `Serializable`, an undecorated property is absent from `data` altogether and a renamed one lands
+ * under a different key - while this type still offers the TypeScript name. Such a path compiles,
+ * indexes an always-null expression, and enforces nothing under
+ * {@link SnapshotIndex.asUnique}. Nested plain objects are safe, since those are copied by
+ * `JSON.parse(JSON.stringify(...))`.
+ *
+ * Known gaps, all of which fail towards offering a path that does not exist: `Map`- and `Set`-valued
+ * keys are recursed into although they serialize to `{}`; a union-typed object member loses its
+ * nested paths entirely; and an index signature or an `any`-typed member widens the result to
+ * `string`, disabling the check.
+ */
+export type SnapshotPath<T> = Exclude<SnapshotLeafPath<T>, "organizationId">;
+/**
+ * Describes one index over the `data` column of a snapshot table, built fluently - and the source of
+ * the SQL expressions that read it back.
+ *
+ * Start with {@link forPath} and chain {@link andPath} to make it composite, {@link asUnique} to
+ * enforce a natural key, and {@link withName} to override the derived name. Each path carries its
+ * own optional cast, so a composite whose members need different types is expressible.
+ *
+ * Paths are checked against `T`, the aggregate's state shape. Every path is validated - and its
+ * extraction expression built - as it is added, so a malformed path, a bad type or a repeated path
+ * throws where the index is declared rather than when the table is created.
+ *
+ * The same instance then hands the expression back through {@link expressionForPath}. That matters
+ * because Postgres uses an expression index only when the query expression matches the indexed one
+ * **textually**, and a near-miss silently becomes a sequential scan with no error and no warning.
+ * The builder that produces an expression is private, so an expression can only originate from a
+ * declaration that also emits the DDL - which is what makes the two impossible to diverge. So
+ * declare each index next to the repository that queries
+ * it, and let the migration consume the same declarations.
+ *
+ * @example
+ * ```typescript
+ * export class OrderRepository extends SnapshotBaseRepository<Order, OrderState, OrderEvent>
+ * {
+ *     public static readonly statusIndex = SnapshotIndex.forPath<OrderState>("status");
+ *     public static readonly totalIndex = SnapshotIndex.forPath<OrderState>("total", JsonValueType.numeric);
+ *     public static readonly skuIndex = SnapshotIndex.forPath<OrderState>("tenantCode").andPath("sku").asUnique();
+ *
+ *     public static readonly snapshotIndexes: ReadonlyArray<SnapshotIndex<OrderState>> =
+ *         [OrderRepository.statusIndex, OrderRepository.totalIndex, OrderRepository.skuIndex];
+ *
+ *     // resolved at module load, so a path this index does not cover throws at startup rather than
+ *     // on the first call to an untested query method
+ *     private static readonly _statusExpression = OrderRepository.statusIndex.expressionForPath("status");
+ *
+ *     public getByStatus(status: string): Promise<Array<Order>>
+ *     {
+ *         return this.query(
+ *             `select data from ${this.table} where ${OrderRepository._statusExpression} = ?;`, status);
+ *     }
+ * }
+ *
+ * // in the migration
+ * await tableCreator.createSnapshotTableForAggregate(Order, OrderRepository.snapshotIndexes);
+ * ```
+ *
+ * @class SnapshotIndex
+ */
+export declare class SnapshotIndex<T> {
+    /**
+     * A name suffix that composes into a valid unquoted Postgres identifier.
+     */
+    private static readonly _nameRegex;
+    /**
+     * A bare JSON key. Constraining segments to this is what keeps the '...' string literal
+     * and the '{...}' path array in a json path expression from being broken out of.
+     */
+    private static readonly _jsonPathSegmentRegex;
+    private readonly _expressionsByPath;
+    private _isUnique;
+    private _name;
+    /**
+     * The paths this index covers, trimmed, in the order they were added - which is the order of the
+     * index's columns, and so decides which predicates it can serve.
+     */
+    get paths(): ReadonlyArray<string>;
+    /**
+     * The extraction expressions, positionally matching {@link paths}.
+     *
+     * Public because `DbTableCreator` reads them across a module boundary. To build a predicate use
+     * {@link expressionForPath} instead, which names the column it means rather than relying on a
+     * position - and which fails loudly on a path this index does not cover.
+     */
+    get expressions(): ReadonlyArray<string>;
+    /**
+     * Whether this index enforces uniqueness.
+     */
+    get isUnique(): boolean;
+    /**
+     * The index name suffix: the name given to {@link withName}, or the paths lowercased with their
+     * dots turned into underscores and joined - so `["tenantCode", "sku"]` gives `tenantcode_sku`.
+     *
+     * Note what the derivation does *not* include: the cast type. Two declarations over one path that
+     * differ only in `type` derive the same name, and index creation is `if not exists`, which
+     * matches on name alone. See {@link asUnique} for the same hazard on the uniqueness flag.
+     */
+    get nameSuffix(): string;
+    /**
+     * Use {@link forPath} or {@link forRawPath} - an index always has at least one path.
+     */
+    private constructor();
+    /**
+     * Starts an index over the given key within `data`, dot delimited to reach a nested key.
+     *
+     * @param {SnapshotPath<T>} path - The key to index, checked against the state shape.
+     * @param {JsonValueType} [type] - Optional type to cast the extracted text to. Supply it whenever the value is not a string, since an uncast comparison orders lexicographically and '9' > '100'. A cast also changes what counts as equal for {@link asUnique} - as text `1` and `1.0` differ, as numeric they do not.
+     * @returns {SnapshotIndex<T>} A new index over that path.
+     * @throws {ArgumentNullException} If path is null or undefined.
+     * @throws {ArgumentException} If path is not a string, is empty or whitespace, is not one or more '.' delimited bare JSON keys, or type is not a JsonValueType.
+     */
+    static forPath<T>(path: SnapshotPath<T>, type?: JsonValueType): SnapshotIndex<T>;
+    /**
+     * Like {@link forPath} but takes any string, for a computed or dynamic key outside the state
+     * shape. Prefer {@link forPath} so typos are caught at compile time.
+     *
+     * @param {string} path - The key to index.
+     * @param {JsonValueType} [type] - Optional type to cast the extracted text to.
+     * @returns {SnapshotIndex<T>} A new index over that path.
+     * @throws {ArgumentNullException} If path is null or undefined.
+     * @throws {ArgumentException} If path is not a string, is empty or whitespace, is not one or more '.' delimited bare JSON keys, or type is not a JsonValueType.
+     */
+    static forRawPath<T>(path: string, type?: JsonValueType): SnapshotIndex<T>;
+    /**
+     * Builds the SQL expression that extracts a key out of a snapshot table's `data` jsonb column.
+     *
+     * Private on purpose. An expression is only useful if some index was actually built from it, so
+     * the only way to obtain one is through a declaration that also emits the DDL - which is what
+     * keeps the read side from diverging from the written index. {@link forRawPath} is the escape
+     * hatch for a key outside the state shape, and it goes through here too.
+     *
+     * A `type` produces a cast, which matters for correctness and not merely for speed:
+     * `->>` yields text, so an uncast comparison orders lexicographically and '9' > '100'.
+     * See {@link JsonValueType} for which types are available and why the set is narrow.
+     *
+     * Two limits worth knowing, both of which surface long after this call:
+     * - A key whose serialized name is not a bare JSON key is not addressable at all. That includes
+     *   any `$` prefixed name, which is what a nested value decorated `@serialize("$x")` is stored
+     *   under.
+     * - A btree index over the result must fit Postgres's 2704 byte index-tuple limit, measured
+     *   *after* compression - so it depends on the value's entropy, not just its length. A
+     *   repetitive 4KB value indexes fine while an incompressible one fails, and the failure
+     *   arrives on insert rather than at create time. Index bounded scalars only.
+     *
+     * @param {string} path - The key within `data`; dot delimited to reach a nested key.
+     * @param {JsonValueType} [type] - Optional type to cast the extracted text to; defaults to leaving it as text.
+     * @returns {string} A parenthesized expression, e.g. `(data->>'status')` or `((data->>'total')::numeric)`.
+     * @throws {ArgumentNullException} If path is null or undefined.
+     * @throws {ArgumentException} If path is not a string, is empty or whitespace, any segment is not a bare JSON key, or type is not a JsonValueType.
+     */
+    private static _createExpression;
+    /**
+     * Adds another path, making this a composite index. Order matters: Postgres only uses a
+     * composite index for predicates matching a leading prefix of its columns.
+     *
+     * @param {SnapshotPath<T>} path - The key to add, checked against the state shape.
+     * @param {JsonValueType} [type] - Optional type to cast this path's extracted text to.
+     * @returns {this} This index, for chaining.
+     * @throws {ArgumentNullException} If path is null or undefined.
+     * @throws {ArgumentException} If path is not a string, is empty or whitespace, is not one or more '.' delimited bare JSON keys, is already indexed by this index, or type is not a JsonValueType.
+     */
+    andPath(path: SnapshotPath<T>, type?: JsonValueType): this;
+    /**
+     * Like {@link andPath} but takes any string, for a computed or dynamic key outside the state
+     * shape. Prefer {@link andPath} so typos are caught at compile time.
+     *
+     * @param {string} path - The key to add.
+     * @param {JsonValueType} [type] - Optional type to cast this path's extracted text to.
+     * @returns {this} This index, for chaining.
+     * @throws {ArgumentNullException} If path is null or undefined.
+     * @throws {ArgumentException} If path is not a string, is empty or whitespace, is not one or more '.' delimited bare JSON keys, is already indexed by this index, or type is not a JsonValueType.
+     */
+    andRawPath(path: string, type?: JsonValueType): this;
+    /**
+     * The expression that extracts `path`, for building a query predicate.
+     *
+     * This is the same string this index's DDL was emitted from, which is the point: Postgres uses
+     * an expression index only when the query expression matches the indexed one textually, so
+     * taking it from the declaration is what makes a predicate index-usable. Never hand-write it.
+     *
+     * Two things it does not promise. The path must be one **this** index covers - a path valid on
+     * the state but belonging to a different index throws, so read the expression into a `static`
+     * field where that surfaces at module load. And matching the expression is necessary, not
+     * sufficient: btree serves only a leading prefix of an index's columns, so the second path of a
+     * composite is not independently searchable, and on an org-scoped table nothing is until the
+     * predicate also constrains `organization_id`.
+     *
+     * @param {SnapshotPath<T>} path - A path this index covers, checked against the state shape.
+     * @returns {string} The parenthesized extraction expression, e.g. `(data->>'status')`.
+     * @throws {ArgumentNullException} If path is null or undefined.
+     * @throws {ArgumentException} If path is not a string, is empty or whitespace, or is not covered by this index.
+     */
+    expressionForPath(path: SnapshotPath<T>): string;
+    /**
+     * Like {@link expressionForPath} but takes any string, for a path declared with
+     * {@link forRawPath} or {@link andRawPath}. Prefer {@link expressionForPath}.
+     *
+     * @param {string} path - A path this index covers.
+     * @returns {string} The parenthesized extraction expression.
+     * @throws {ArgumentNullException} If path is null or undefined.
+     * @throws {ArgumentException} If path is not a string, is empty or whitespace, or is not covered by this index.
+     */
+    expressionForRawPath(path: string): string;
+    /**
+     * Enforces uniqueness over the indexed value, or over the tuple of them for a composite.
+     *
+     * Rows whose `data` omits an indexed key are unconstrained: extraction yields null, and Postgres
+     * treats nulls as distinct, so any number of them coexist. For a composite that means a row
+     * missing *any* member never collides.
+     *
+     * **Comparison is over the extracted text exactly as stored.** Nothing is folded or trimmed, so a
+     * "unique email" index accepts `a@x.com`, `A@x.com` and `" a@x.com "` as three distinct values -
+     * verified against Postgres, and pinned by a test. There is no `lower()` or `trim()` option here
+     * on purpose: every additional expression form is another spelling the read side has to match
+     * exactly, which is the divergence this design exists to prevent. Normalize in the domain, before
+     * the value reaches the snapshot, where it is enforced for every reader rather than one index.
+     *
+     * On an org-scoped table the index leads with `organization_id`, so uniqueness is scoped to the
+     * organization rather than global.
+     *
+     * A violation surfaces from a repository's `save` as a DbException rather than a domain error:
+     * the repositories upsert with `on conflict (id)`, and Postgres only routes conflicts on the
+     * named arbiter index, so a collision here raises and rolls the unit of work back.
+     *
+     * A unique index is named with a `_uq` suffix, so the same path can carry both a lookup index
+     * and a unique one without their derived names colliding. The corollary is that *clearing*
+     * `asUnique` on an existing declaration does not drop the `_uq` index - creation is
+     * `if not exists` and nothing here drops anything, so the constraint stays enforced until the
+     * index is dropped by hand.
+     *
+     * @returns {this} This index, for chaining.
+     */
+    asUnique(): this;
+    /**
+     * Overrides the derived name suffix, giving `idx_<table>_<name>` (plus `_uq` when unique).
+     *
+     * Supply it when the derivation from the paths would exceed the Postgres identifier limit of 63
+     * characters, which a composite over a long table name will.
+     *
+     * @param {string} name - The suffix to use.
+     * @returns {this} This index, for chaining.
+     * @throws {ArgumentNullException} If name is null or undefined.
+     * @throws {ArgumentException} If name is not a string, is empty or whitespace, is not a valid identifier fragment, or is already set.
+     */
+    withName(name: string): this;
+}
+export {};
+//# sourceMappingURL=snapshot-index.d.ts.map
