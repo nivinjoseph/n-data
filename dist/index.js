@@ -2,6 +2,7 @@ import "@nivinjoseph/n-ext";
 export { KnexPgReadDb } from "./db/knex-pg-read-db.js";
 export { QueryResult } from "./db/query-result.js";
 export { KnexPgDb } from "./db/knex-pg-db.js";
+export { DbException } from "./exceptions/db-exception.js";
 export { KnexPgDbConnectionFactory } from "./db-connection-factory/knex-pg-db-connection-factory.js";
 export { KnexPgUnitOfWork } from "./unit-of-work/knex-pg-unit-of-work.js";
 export { DbMigrator } from "./migration/db-migrator.js";
