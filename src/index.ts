@@ -6,6 +6,8 @@ export { QueryResult } from "./db/query-result.js";
 export { Db } from "./db/db.js";
 export { KnexPgDb } from "./db/knex-pg-db.js";
 
+export { DbException } from "./exceptions/db-exception.js";
+
 export { DbConnectionFactory } from "./db-connection-factory/db-connection-factory.js";
 export { DbConnectionConfig } from "./db-connection-factory/db-connection-config.js";
 export { KnexPgDbConnectionFactory } from "./db-connection-factory/knex-pg-db-connection-factory.js";
