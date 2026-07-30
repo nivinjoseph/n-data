@@ -53,7 +53,7 @@ export class DbTableCreator {
      * @throws {DbException} If a DDL command fails.
      */
     async createEventStreamTableForAggregate(aggregateType) {
-        const tableName = DataHelper.createEventStreamTableName(aggregateType);
+        const tableName = this._validateIdentifier(DataHelper.createEventStreamTableName(aggregateType), "tableName");
         await this._createTable(tableName, [
             "id varchar(50) primary key",
             "aggregate_id varchar(40) not null",
@@ -80,7 +80,7 @@ export class DbTableCreator {
      * @throws {DbException} If a DDL command fails.
      */
     async createEventStreamTableForOrgAggregate(aggregateType) {
-        const tableName = DataHelper.createEventStreamTableName(aggregateType);
+        const tableName = this._validateIdentifier(DataHelper.createEventStreamTableName(aggregateType), "tableName");
         await this._createTable(tableName, [
             "id varchar(50) primary key",
             "aggregate_id varchar(40) not null",
@@ -112,12 +112,13 @@ export class DbTableCreator {
      * @throws {DbException} If a DDL command fails.
      */
     async createSnapshotTableForAggregate(aggregateType, indexedPaths) {
-        const tableName = DataHelper.createSnapshotTableName(aggregateType);
-        const indexedExpressions = this._createIndexedExpressions(indexedPaths);
+        const tableName = this._validateIdentifier(DataHelper.createSnapshotTableName(aggregateType), "tableName");
+        const resolvedPaths = this._resolveIndexedPaths(indexedPaths);
+        const indexedExpressions = this._createIndexedExpressions(resolvedPaths);
         await this._createTable(tableName, [
             "id varchar(40) primary key",
             "data jsonb not null"
-        ], this._createExpressionIndexes(tableName, indexedExpressions));
+        ], this._createExpressionIndexes(tableName, resolvedPaths));
         return { tableName, indexedExpressions };
     }
     /**
@@ -139,9 +140,10 @@ export class DbTableCreator {
      * @throws {DbException} If a DDL command fails.
      */
     async createSnapshotTableForOrgAggregate(aggregateType, indexedPaths) {
-        const tableName = DataHelper.createSnapshotTableName(aggregateType);
-        const indexedExpressions = this._createIndexedExpressions(indexedPaths);
-        const indexes = this._createExpressionIndexes(tableName, indexedExpressions, "organization_id");
+        const tableName = this._validateIdentifier(DataHelper.createSnapshotTableName(aggregateType), "tableName");
+        const resolvedPaths = this._resolveIndexedPaths(indexedPaths);
+        const indexedExpressions = this._createIndexedExpressions(resolvedPaths);
+        const indexes = this._createExpressionIndexes(tableName, resolvedPaths, "organization_id");
         if (indexes.isEmpty)
             indexes.push({
                 name: this.createIndexNameFromTableName(tableName),
@@ -220,45 +222,64 @@ export class DbTableCreator {
         await this._logger.logInfo(`TABLE CREATED [${validatedTableName}]`);
     }
     /**
-     * Builds the json path expression for each indexed path, keyed by its path.
+     * Resolves each indexed path to the expression that extracts it.
      *
-     * @param {ReadonlyArray<SnapshotIndexedPath>} [indexedPaths] - The paths to build expressions for.
-     * @returns {Record<string, string>} The expressions, keyed by path; empty when there are none.
+     * @param {ReadonlyArray<SnapshotIndexedPath>} [indexedPaths] - The paths to resolve.
+     * @returns {Array<ResolvedIndexedPath>} The resolved paths, in order; empty when there are none.
      * @throws {InvalidArgumentException} If a path or type is malformed, or two paths are the same.
      */
-    _createIndexedExpressions(indexedPaths) {
+    _resolveIndexedPaths(indexedPaths) {
         given(indexedPaths, "indexedPaths").ensureIsArray()
             .ensure(t => t.distinct(u => u.path.trim()).length === t.length, "indexedPaths cannot contain the same path twice");
-        const expressions = {};
+        const resolved = new Array();
         for (const indexedPath of indexedPaths ?? []) {
             given(indexedPath, "indexedPath").ensureHasValue().ensureIsObject();
-            expressions[indexedPath.path] = DataHelper.createJsonPathExpression(indexedPath.path, indexedPath.type);
+            resolved.push({
+                // trimmed, so the key callers look expressions up by is the key actually extracted
+                path: indexedPath.path.trim(),
+                expression: DataHelper.createJsonPathExpression(indexedPath.path, indexedPath.type),
+                isUnique: indexedPath.isUnique === true
+            });
         }
+        return resolved;
+    }
+    /**
+     * Builds the expressions keyed by the path they came from, for callers to build predicates with.
+     *
+     * @param {ReadonlyArray<ResolvedIndexedPath>} resolved - The resolved paths.
+     * @returns {Record<string, string>} The expressions, keyed by path; empty when there are none.
+     */
+    _createIndexedExpressions(resolved) {
+        const expressions = {};
+        for (const t of resolved)
+            expressions[t.path] = t.expression;
         return expressions;
     }
     /**
-     * Turns indexed expressions into index definitions, one per expression.
+     * Turns resolved paths into index definitions, one per path.
      *
      * The index name is derived from the path so it is stable and readable, and so two paths
      * on one table cannot land on the same index name - which `if not exists` would silently
-     * skip rather than report.
+     * skip rather than report. A unique index takes a `_uq` suffix so it can never share a
+     * name with a non-unique index over the same path; see {@link SnapshotIndexedPath.isUnique}.
      *
      * @param {string} tableName - The table the indexes belong to.
-     * @param {Readonly<Record<string, string>>} indexedExpressions - The expressions, keyed by path.
+     * @param {ReadonlyArray<ResolvedIndexedPath>} resolved - The resolved paths to index.
      * @param {string} [leadingColumn] - Optional column to lead each index with.
-     * @returns {Array<TableIndex>} The index definitions; empty when there are no expressions.
+     * @returns {Array<TableIndex>} The index definitions; empty when there are no paths.
      * @throws {InvalidArgumentException} If two paths derive the same index name.
      */
-    _createExpressionIndexes(tableName, indexedExpressions, leadingColumn) {
+    _createExpressionIndexes(tableName, resolved, leadingColumn) {
         const indexes = new Array();
-        for (const [path, expression] of Object.entries(indexedExpressions)) {
+        for (const { path, expression, isUnique } of resolved) {
             // a path is a bare JSON key sequence, so lowercasing and swapping '.' for '_'
             // always yields a valid identifier - except where the key is already snake_cased
             // in a way that collides with a nested path, which the distinct check below catches
-            const suffix = path.trim().toLowerCase().replaceAll(".", "_");
+            const base = path.trim().toLowerCase().replaceAll(".", "_");
             indexes.push({
-                name: this.createIndexNameFromTableName(tableName, suffix),
-                columns: leadingColumn != null ? [leadingColumn, expression] : [expression]
+                name: this.createIndexNameFromTableName(tableName, isUnique ? `${base}_uq` : base),
+                columns: leadingColumn != null ? [leadingColumn, expression] : [expression],
+                isUnique
             });
         }
         given(indexes, "indexes").ensure(t => t.distinct(u => u.name).length === t.length, "indexedPaths cannot derive the same index name twice");

@@ -20,9 +20,15 @@ import { AggregateNotFoundException } from "./aggregate-not-found-exception.js";
  * ```typescript
  * await tableCreator.createSnapshotTableForAggregate(Order, [
  *     { path: "status" },
- *     { path: "total", type: JsonValueType.numeric }
+ *     { path: "total", type: JsonValueType.numeric },
+ *     { path: "orderNumber", isUnique: true }      // also enforces a natural key
  * ]);
  * ```
+ *
+ * A path marked `isUnique` enforces uniqueness over the extracted value, so a natural key
+ * held inside the snapshot state can be constrained by the database. Aggregates whose `data`
+ * omits the key are unconstrained. A collision raises out of {@link save} as a DbException
+ * and rolls the unit of work back, rather than surfacing as a domain error.
  *
  * Then build the predicate with {@link DataHelper.createJsonPathExpression} - the same
  * function the index was built from. Never hand-write the expression: Postgres only uses an

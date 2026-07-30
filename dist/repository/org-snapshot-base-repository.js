@@ -23,9 +23,19 @@ import { OrgEventStreamBaseRepository } from "./org-event-stream-base-repository
  * textually, so a near-miss silently becomes a sequential scan.
  *
  * ```typescript
- * await tableCreator.createSnapshotTableForOrgAggregate(Invoice, [{ path: "status" }]);
+ * await tableCreator.createSnapshotTableForOrgAggregate(Invoice, [
+ *     { path: "status" },
+ *     { path: "invoiceNumber", isUnique: true }
+ * ]);
  * // -> create index ... on invoice_snaps(organization_id, (data->>'status'));
+ * //    create unique index ... on invoice_snaps(organization_id, (data->>'invoiceNumber'));
  * ```
+ *
+ * Because the index leads with `organization_id`, a path marked `isUnique` is unique **within
+ * an organization** rather than globally - the same natural key can exist once per tenant,
+ * which is normally what a tenant-scoped natural key means. Aggregates whose `data` omits the
+ * key are unconstrained. A collision raises out of {@link save} as a DbException and rolls the
+ * unit of work back, rather than surfacing as a domain error.
  *
  * @example
  * ```typescript
