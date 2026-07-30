@@ -173,6 +173,106 @@ await describe("DbTableCreator tests", async () =>
             assert.ok(!db.commands.contains("create index if not exists idx_invoice_snaps on invoice_snaps(organization_id);"));
         });
 
+        await test("a unique indexed path emits a unique index under a _uq name", async () =>
+        {
+            const { creator, db } = createCreator();
+
+            await creator.createSnapshotTableForAggregate(orderType, [{ path: "email", isUnique: true }]);
+
+            assert.strictEqual(db.commands[1], "create unique index if not exists idx_order_snaps_email_uq on order_snaps((data->>'email'));");
+        });
+
+        await test("a unique indexed path on an org table leads with organization_id", async () =>
+        {
+            const { creator, db } = createCreator();
+
+            await creator.createSnapshotTableForOrgAggregate(invoiceType, [{ path: "invoiceNumber", isUnique: true }]);
+
+            // leading organization_id makes the uniqueness per organization rather than global
+            assert.strictEqual(db.commands[1], "create unique index if not exists idx_invoice_snaps_invoicenumber_uq on invoice_snaps(organization_id, (data->>'invoiceNumber'));");
+        });
+
+        await test("isUnique false is byte-identical to omitting it", async () =>
+        {
+            const withFalse = createCreator();
+            const withOmitted = createCreator();
+
+            await withFalse.creator.createSnapshotTableForAggregate(orderType, [{ path: "email", isUnique: false }]);
+            await withOmitted.creator.createSnapshotTableForAggregate(orderType, [{ path: "email" }]);
+
+            assert.deepStrictEqual(withFalse.db.commands, withOmitted.db.commands);
+            assert.strictEqual(withFalse.db.commands[1], "create index if not exists idx_order_snaps_email on order_snaps((data->>'email'));");
+        });
+
+        await test("unique and non-unique paths can be mixed in one call", async () =>
+        {
+            const { creator, db } = createCreator();
+
+            await creator.createSnapshotTableForAggregate(orderType, [
+                { path: "email", isUnique: true },
+                { path: "status" },
+                { path: "total", type: JsonValueType.numeric, isUnique: true }
+            ]);
+
+            assert.deepStrictEqual(db.commands.slice(1), [
+                "create unique index if not exists idx_order_snaps_email_uq on order_snaps((data->>'email'));",
+                "create index if not exists idx_order_snaps_status on order_snaps((data->>'status'));",
+                "create unique index if not exists idx_order_snaps_total_uq on order_snaps(((data->>'total')::numeric));"
+            ]);
+        });
+
+        await test("an org table whose only path is unique still skips the standalone (organization_id) index", async () =>
+        {
+            const { creator, db } = createCreator();
+
+            await creator.createSnapshotTableForOrgAggregate(invoiceType, [{ path: "email", isUnique: true }]);
+
+            assert.strictEqual(db.commands.length, 2);
+            assert.ok(!db.commands.contains("create index if not exists idx_invoice_snaps on invoice_snaps(organization_id);"));
+        });
+
+        // ACCEPTED TRADEOFF, pinned deliberately: the index name encodes the path and isUnique
+        // but NOT the type. Since creation is `if not exists`, which matches on name alone, the
+        // consequence is that adding or changing a `type` on an already-provisioned table
+        // silently keeps the index over the old expression - so every query over that path
+        // seq-scans while looking indexed. Documented on SnapshotIndexedPath.type; the remedy is
+        // to drop the index by hand. If you are here because you want to encode the type in the
+        // name, read that JSDoc first - this test is the record of the decision, not an
+        // oversight, and changing it means updating the docs and the README together.
+        await test("the index name does not encode the type", async () =>
+        {
+            const untyped = createCreator();
+            const typed = createCreator();
+
+            await untyped.creator.createSnapshotTableForAggregate(orderType, [{ path: "total" }]);
+            await typed.creator.createSnapshotTableForAggregate(orderType, [{ path: "total", type: JsonValueType.numeric }]);
+
+            const nameOf = (sql: string): string => sql.split(" on ")[0].replace("create index if not exists ", "");
+
+            // same name...
+            assert.strictEqual(nameOf(untyped.db.commands[1]), "idx_order_snaps_total");
+            assert.strictEqual(nameOf(typed.db.commands[1]), "idx_order_snaps_total");
+
+            // ...over different expressions, which is precisely why the change is a silent no-op
+            assert.ok(untyped.db.commands[1].contains("(data->>'total')"));
+            assert.ok(typed.db.commands[1].contains("((data->>'total')::numeric)"));
+            assert.notStrictEqual(untyped.db.commands[1], typed.db.commands[1]);
+        });
+
+        await test("a padded path is trimmed for both the index name and the returned expression key", async () =>
+        {
+            const padded = createCreator();
+            const plain = createCreator();
+
+            const paddedInfo = await padded.creator.createSnapshotTableForAggregate(orderType, [{ path: "  status  " }]);
+            await plain.creator.createSnapshotTableForAggregate(orderType, [{ path: "status" }]);
+
+            // the key is the JSON key actually extracted, not the padded input
+            assert.strictEqual(paddedInfo.indexedExpressions["status"], "(data->>'status')");
+            assert.deepStrictEqual(Object.keys(paddedInfo.indexedExpressions), ["status"]);
+            assert.deepStrictEqual(padded.db.commands, plain.db.commands);
+        });
+
         await test("an empty indexed paths array behaves like omitting it", async () =>
         {
             const withEmpty = createCreator();
@@ -358,6 +458,22 @@ await describe("DbTableCreator tests", async () =>
             await assert.rejects(() => creator.createSnapshotTableForAggregate(overlongType));
             await assert.rejects(() => creator.createEventStreamTableForAggregate(overlongType));
         });
+
+        // the table name is validated before any index name is composed, so the error names the
+        // identifier that is actually at fault rather than a derived one
+        await test("an overlong table name is blamed on the table, not on a derived index name", async () =>
+        {
+            const { creator } = createCreator();
+
+            await assert.rejects(
+                () => creator.createSnapshotTableForAggregate(overlongType, [{ path: "status" }]),
+                (error: Error) =>
+                {
+                    assert.ok(error.message.contains("tableName"), `expected a tableName error, got: ${error.message}`);
+                    assert.ok(!error.message.contains("indexName"));
+                    return true;
+                });
+        });
     });
 
     await describe("Indexed path validation", async () =>
@@ -397,6 +513,31 @@ await describe("DbTableCreator tests", async () =>
             // idx_ (4) + order_snaps (11) + _ (1) + 48 = 64, one over
             await assert.rejects(() => creator.createSnapshotTableForAggregate(orderType, [{ path: "a".repeat(48) }]));
             await assert.doesNotReject(() => creator.createSnapshotTableForAggregate(orderType, [{ path: "a".repeat(47) }]));
+        });
+
+        await test("the identifier limit is 3 chars tighter for a unique path, because of the _uq suffix", async () =>
+        {
+            const { creator } = createCreator();
+
+            await assert.rejects(() => creator.createSnapshotTableForAggregate(orderType, [{ path: "a".repeat(45), isUnique: true }]));
+            await assert.doesNotReject(() => creator.createSnapshotTableForAggregate(orderType, [{ path: "a".repeat(44), isUnique: true }]));
+        });
+
+        await test("rejects a unique path whose _uq name collides with a non-unique path's name", async () =>
+        {
+            const { creator } = createCreator();
+
+            // 'email' + unique -> idx_order_snaps_email_uq, and so does the literal path 'email_uq'
+            await assert.rejects(() => creator.createSnapshotTableForAggregate(orderType, [
+                { path: "email", isUnique: true },
+                { path: "email_uq" }
+            ]));
+
+            // the same path indexed both ways is caught earlier, by the distinct-path check
+            await assert.rejects(() => creator.createSnapshotTableForAggregate(orderType, [
+                { path: "email", isUnique: true },
+                { path: "email" }
+            ]));
         });
 
         await test("no DDL is emitted when validation fails", async () =>
@@ -474,6 +615,12 @@ await describe("DbTableCreator tests", async () =>
             assert.ok(byName.get("idx_invoice_snaps_total")!.contains("numeric"));
             assert.ok(byName.get("idx_invoice_snaps_customer_city")!.contains("customer,city"));
 
+            // none of these declared isUnique, so none may have come out unique
+            // (the primary key index is excluded - it is legitimately unique)
+            for (const [name, definition] of byName)
+                if (name.startsWith("idx_"))
+                    assert.ok(!definition.contains("UNIQUE"), `${name} should not be unique: ${definition}`);
+
             // the standalone (organization_id) index is skipped when composites already lead with it
             assert.ok(!byName.has("idx_invoice_snaps"));
         });
@@ -526,6 +673,63 @@ await describe("DbTableCreator tests", async () =>
             assert.deepStrictEqual(result.rows.map(t => t.id as string), ["inv_1"]);
         });
 
+        await test("a unique expression index is accepted and enforces uniqueness on the extracted value", async () =>
+        {
+            await db.executeCommand("drop table if exists order_snaps;");
+            await creator.createSnapshotTableForAggregate(orderType, [{ path: "email", isUnique: true }]);
+
+            const indexes = await db.executeQuery<any>(
+                `select indexdef from pg_indexes where tablename = 'order_snaps' and indexname = 'idx_order_snaps_email_uq';`);
+
+            assert.strictEqual(indexes.rows.length, 1);
+            assert.ok((indexes.rows[0].indexdef as string).contains("UNIQUE"));
+
+            // the exact statement SnapshotBaseRepository.save emits for a new aggregate
+            const insert = `insert into order_snaps (id, data) values(?, ?);`;
+
+            await db.executeCommand(insert, "ord_1", JSON.stringify({ email: "a@b.com" }));
+            await db.executeCommand(insert, "ord_2", JSON.stringify({ email: "c@d.com" }));
+
+            // a different aggregate claiming an email that is already taken must fail
+            await assert.rejects(() => db.executeCommand(insert, "ord_3", JSON.stringify({ email: "a@b.com" })));
+        });
+
+        // an absent key extracts as null, and Postgres allows any number of nulls in a unique
+        // index - which is what makes a sparse natural key usable
+        await test("rows whose data omits the unique key do not collide with each other", async () =>
+        {
+            await db.executeCommand("drop table if exists order_snaps;");
+            await creator.createSnapshotTableForAggregate(orderType, [{ path: "email", isUnique: true }]);
+
+            const insert = `insert into order_snaps (id, data) values(?, ?);`;
+
+            await db.executeCommand(insert, "ord_1", JSON.stringify({ status: "draft" }));
+            await db.executeCommand(insert, "ord_2", JSON.stringify({ status: "draft" }));
+
+            const result = await db.executeQuery<any>(`select cast(count(*) as int) as count from order_snaps;`);
+            assert.strictEqual(result.rows[0].count, 2);
+        });
+
+        // this is the claim that justifies leading org indexes with organization_id
+        await test("uniqueness on an org table is scoped to the organization, not global", async () =>
+        {
+            await db.executeCommand("drop table if exists invoice_snaps;");
+            await creator.createSnapshotTableForOrgAggregate(invoiceType, [{ path: "invoiceNumber", isUnique: true }]);
+
+            // the exact statement OrgSnapshotBaseRepository.save emits for a new aggregate
+            const insert = `insert into invoice_snaps (id, organization_id, data) values(?, ?, ?);`;
+
+            await db.executeCommand(insert, "inv_1", "org_1", JSON.stringify({ invoiceNumber: "INV-001" }));
+
+            // the same natural key under a different organization is fine
+            await assert.doesNotReject(
+                () => db.executeCommand(insert, "inv_2", "org_2", JSON.stringify({ invoiceNumber: "INV-001" })));
+
+            // but a duplicate within one organization is not
+            await assert.rejects(
+                () => db.executeCommand(insert, "inv_3", "org_1", JSON.stringify({ invoiceNumber: "INV-001" })));
+        });
+
         // JsonValueType claims every member works as an index expression. An expression index
         // requires an immutable expression, and text->date/timestamp/interval/money parse
         // through stable functions, so a plausible-looking addition can be silently wrong
@@ -576,6 +780,66 @@ await describe("DbTableCreator tests", async () =>
             const asText = await db.executeQuery<any>(
                 `select id from order_snaps where data->>'total' > '50' order by id;`);
             assert.deepStrictEqual(asText.rows.map(t => t.id as string), ["a"]);
+        });
+
+        // The four public methods each emit distinct DDL, and the branches below were only ever
+        // asserted as strings against the stub Db. These execute them, so every shape this class
+        // can produce has been accepted by a real Postgres at least once.
+
+        await test("the org event stream table and its 3-column unique index are created", async () =>
+        {
+            await db.executeCommand("drop table if exists invoice_events;");
+            await creator.createEventStreamTableForOrgAggregate(invoiceType);
+
+            const columns = await db.executeQuery<any>(
+                `select column_name from information_schema.columns where table_name = 'invoice_events' order by ordinal_position;`);
+            assert.deepStrictEqual(columns.rows.map(t => t.column_name as string),
+                ["id", "aggregate_id", "aggregate_version", "organization_id", "data"]);
+
+            const indexes = await db.executeQuery<any>(
+                `select indexdef from pg_indexes where tablename = 'invoice_events' and indexname = 'idx_invoice_events';`);
+            assert.strictEqual(indexes.rows.length, 1);
+            assert.ok((indexes.rows[0].indexdef as string).contains("UNIQUE"));
+            assert.ok((indexes.rows[0].indexdef as string).contains("organization_id, aggregate_id, aggregate_version"));
+
+            // the exact statement OrgEventStreamBaseRepository.save emits
+            const insert = `insert into invoice_events (id, aggregate_id, aggregate_version, organization_id, data) values (?, ?, ?, ?, ?);`;
+
+            await db.executeCommand(insert, "inv_1-1", "inv_1", 1, "org_1", JSON.stringify({ $name: "InvoiceCreated" }));
+
+            // concurrency is enforced per aggregate within the organization
+            await assert.rejects(() => db.executeCommand(
+                insert, "inv_1-1-dupe", "inv_1", 1, "org_1", JSON.stringify({ $name: "InvoiceAmended" })));
+        });
+
+        await test("a plain snapshot table with no indexed paths is just (id, data) with only its primary key", async () =>
+        {
+            await db.executeCommand("drop table if exists order_snaps;");
+            await creator.createSnapshotTableForAggregate(orderType);
+
+            const columns = await db.executeQuery<any>(
+                `select column_name from information_schema.columns where table_name = 'order_snaps' order by ordinal_position;`);
+            assert.deepStrictEqual(columns.rows.map(t => t.column_name as string), ["id", "data"]);
+
+            // the primary key index, and nothing else
+            const indexes = await db.executeQuery<any>(
+                `select indexname from pg_indexes where tablename = 'order_snaps' order by indexname;`);
+            assert.deepStrictEqual(indexes.rows.map(t => t.indexname as string), ["order_snaps_pkey"]);
+        });
+
+        await test("an org snapshot table with no indexed paths gets the standalone (organization_id) index", async () =>
+        {
+            await db.executeCommand("drop table if exists invoice_snaps;");
+            await creator.createSnapshotTableForOrgAggregate(invoiceType);
+
+            const indexes = await db.executeQuery<any>(
+                `select indexname, indexdef from pg_indexes where tablename = 'invoice_snaps' order by indexname;`);
+            const byName = new Map(indexes.rows.map(t => [t.indexname as string, t.indexdef as string]));
+
+            // the inverse of the "skipped when composites lead with it" case asserted above
+            assert.ok(byName.has("idx_invoice_snaps"));
+            assert.ok(byName.get("idx_invoice_snaps")!.contains("organization_id"));
+            assert.ok(!byName.get("idx_invoice_snaps")!.contains("UNIQUE"));
         });
     });
 });

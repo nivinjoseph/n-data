@@ -21,8 +21,51 @@ export interface SnapshotIndexedPath
     /**
      * Optional type to cast the extracted text to. Supply it whenever the value is not a
      * string: an uncast comparison orders lexicographically, making '9' > '100' true.
+     *
+     * Leave it off for strings. Extraction already yields text, so {@link JsonValueType.text}
+     * only adds a no-op cast and a second, textually different expression for the same value.
+     *
+     * **Changing this on a path that already has an index does nothing to that index.** The
+     * index name encodes the path but not the type, and creation is `if not exists`, which
+     * matches on name alone - so adding or changing a type against an already-provisioned
+     * database silently keeps the index over the *old* expression. Predicates built from the
+     * returned {@link SnapshotTableInfo.indexedExpressions} then use the new expression, match
+     * nothing, and sequentially scan while appearing to be indexed. Drop the index by hand to
+     * have it rebuilt. Note this differs from {@link isUnique}, whose distinct name means
+     * flipping it does take effect.
      */
     readonly type?: JsonValueType;
+
+    /**
+     * Enforces uniqueness over the extracted value - a natural key held inside the snapshot
+     * state, such as an email, slug or invoice number.
+     *
+     * On an org-scoped table the index leads with `organization_id`, so uniqueness is scoped
+     * to the organization rather than global. On a plain table it is global.
+     *
+     * Aggregates whose `data` omits the key are unconstrained: the extraction yields null,
+     * and Postgres permits any number of nulls in a unique index.
+     *
+     * A violation surfaces from `save` as a DbException rather than a domain error. The
+     * repositories upsert with `on conflict (id)`, and Postgres only routes conflicts on the
+     * named arbiter index, so a collision here raises instead of being handled - which rolls
+     * the unit of work back.
+     *
+     * The index is named `idx_<table>_<path>_uq`, deliberately distinct from the non-unique
+     * `idx_<table>_<path>`. Do not "tidy" the two into one name: index creation is
+     * `if not exists`, which matches on name alone, so a shared name would make turning this
+     * flag on for an already-provisioned table silently keep the non-unique index - leaving the
+     * constraint absent while appearing to be declared.
+     *
+     * That distinct name protects turning uniqueness *on*. It does not protect turning it back
+     * off: clearing the flag emits the non-unique index and never drops the `_uq` one, so the
+     * constraint stays enforced. Drop `idx_<table>_<path>_uq` by hand to relax it - nothing
+     * here drops indexes.
+     *
+     * Name encoding is not comprehensive: it covers the path and this flag, but not
+     * {@link type}. See that field for the consequence.
+     */
+    readonly isUnique?: boolean;
 }
 
 /**
@@ -36,9 +79,10 @@ export interface SnapshotTableInfo
     readonly tableName: string;
 
     /**
-     * The indexed expressions, keyed by the `path` they were built from. Build where clauses
-     * from these so they match the indexed expressions - Postgres only uses an expression
-     * index when the query expression matches, so divergence silently costs a seq scan.
+     * The indexed expressions, keyed by the `path` they were built from, trimmed. Build where
+     * clauses from these so they match the indexed expressions - Postgres only uses an
+     * expression index when the query expression matches, so divergence silently costs a seq
+     * scan.
      */
     readonly indexedExpressions: Readonly<Record<string, string>>;
 }
@@ -104,7 +148,7 @@ export class DbTableCreator
      */
     public async createEventStreamTableForAggregate(aggregateType: AggregateRootClass): Promise<string>
     {
-        const tableName = DataHelper.createEventStreamTableName(aggregateType);
+        const tableName = this._validateIdentifier(DataHelper.createEventStreamTableName(aggregateType), "tableName");
 
         await this._createTable(
             tableName,
@@ -138,7 +182,7 @@ export class DbTableCreator
      */
     public async createEventStreamTableForOrgAggregate(aggregateType: OrgAggregateRootClass): Promise<string>
     {
-        const tableName = DataHelper.createEventStreamTableName(aggregateType);
+        const tableName = this._validateIdentifier(DataHelper.createEventStreamTableName(aggregateType), "tableName");
 
         await this._createTable(
             tableName,
@@ -177,8 +221,9 @@ export class DbTableCreator
      */
     public async createSnapshotTableForAggregate(aggregateType: AggregateRootClass, indexedPaths?: ReadonlyArray<SnapshotIndexedPath>): Promise<SnapshotTableInfo>
     {
-        const tableName = DataHelper.createSnapshotTableName(aggregateType);
-        const indexedExpressions = this._createIndexedExpressions(indexedPaths);
+        const tableName = this._validateIdentifier(DataHelper.createSnapshotTableName(aggregateType), "tableName");
+        const resolvedPaths = this._resolveIndexedPaths(indexedPaths);
+        const indexedExpressions = this._createIndexedExpressions(resolvedPaths);
 
         await this._createTable(
             tableName,
@@ -186,7 +231,7 @@ export class DbTableCreator
                 "id varchar(40) primary key",
                 "data jsonb not null"
             ],
-            this._createExpressionIndexes(tableName, indexedExpressions));
+            this._createExpressionIndexes(tableName, resolvedPaths));
 
         return { tableName, indexedExpressions };
     }
@@ -211,10 +256,11 @@ export class DbTableCreator
      */
     public async createSnapshotTableForOrgAggregate(aggregateType: OrgAggregateRootClass, indexedPaths?: ReadonlyArray<SnapshotIndexedPath>): Promise<SnapshotTableInfo>
     {
-        const tableName = DataHelper.createSnapshotTableName(aggregateType);
-        const indexedExpressions = this._createIndexedExpressions(indexedPaths);
+        const tableName = this._validateIdentifier(DataHelper.createSnapshotTableName(aggregateType), "tableName");
+        const resolvedPaths = this._resolveIndexedPaths(indexedPaths);
+        const indexedExpressions = this._createIndexedExpressions(resolvedPaths);
 
-        const indexes = this._createExpressionIndexes(tableName, indexedExpressions, "organization_id");
+        const indexes = this._createExpressionIndexes(tableName, resolvedPaths, "organization_id");
         if (indexes.isEmpty)
             indexes.push({
                 name: this.createIndexNameFromTableName(tableName),
@@ -314,13 +360,13 @@ export class DbTableCreator
     }
 
     /**
-     * Builds the json path expression for each indexed path, keyed by its path.
+     * Resolves each indexed path to the expression that extracts it.
      *
-     * @param {ReadonlyArray<SnapshotIndexedPath>} [indexedPaths] - The paths to build expressions for.
-     * @returns {Record<string, string>} The expressions, keyed by path; empty when there are none.
+     * @param {ReadonlyArray<SnapshotIndexedPath>} [indexedPaths] - The paths to resolve.
+     * @returns {Array<ResolvedIndexedPath>} The resolved paths, in order; empty when there are none.
      * @throws {InvalidArgumentException} If a path or type is malformed, or two paths are the same.
      */
-    private _createIndexedExpressions(indexedPaths?: ReadonlyArray<SnapshotIndexedPath>): Record<string, string>
+    private _resolveIndexedPaths(indexedPaths?: ReadonlyArray<SnapshotIndexedPath>): Array<ResolvedIndexedPath>
     {
         given(indexedPaths, "indexedPaths").ensureIsArray()
             .ensure(
@@ -328,45 +374,68 @@ export class DbTableCreator
                 "indexedPaths cannot contain the same path twice"
             );
 
-        const expressions: Record<string, string> = {};
+        const resolved = new Array<ResolvedIndexedPath>();
 
         for (const indexedPath of indexedPaths ?? [])
         {
             given(indexedPath, "indexedPath").ensureHasValue().ensureIsObject();
 
-            expressions[indexedPath.path] = DataHelper.createJsonPathExpression(indexedPath.path, indexedPath.type);
+            resolved.push({
+                // trimmed, so the key callers look expressions up by is the key actually extracted
+                path: indexedPath.path.trim(),
+                expression: DataHelper.createJsonPathExpression(indexedPath.path, indexedPath.type),
+                isUnique: indexedPath.isUnique === true
+            });
         }
+
+        return resolved;
+    }
+
+    /**
+     * Builds the expressions keyed by the path they came from, for callers to build predicates with.
+     *
+     * @param {ReadonlyArray<ResolvedIndexedPath>} resolved - The resolved paths.
+     * @returns {Record<string, string>} The expressions, keyed by path; empty when there are none.
+     */
+    private _createIndexedExpressions(resolved: ReadonlyArray<ResolvedIndexedPath>): Record<string, string>
+    {
+        const expressions: Record<string, string> = {};
+
+        for (const t of resolved)
+            expressions[t.path] = t.expression;
 
         return expressions;
     }
 
     /**
-     * Turns indexed expressions into index definitions, one per expression.
+     * Turns resolved paths into index definitions, one per path.
      *
      * The index name is derived from the path so it is stable and readable, and so two paths
      * on one table cannot land on the same index name - which `if not exists` would silently
-     * skip rather than report.
+     * skip rather than report. A unique index takes a `_uq` suffix so it can never share a
+     * name with a non-unique index over the same path; see {@link SnapshotIndexedPath.isUnique}.
      *
      * @param {string} tableName - The table the indexes belong to.
-     * @param {Readonly<Record<string, string>>} indexedExpressions - The expressions, keyed by path.
+     * @param {ReadonlyArray<ResolvedIndexedPath>} resolved - The resolved paths to index.
      * @param {string} [leadingColumn] - Optional column to lead each index with.
-     * @returns {Array<TableIndex>} The index definitions; empty when there are no expressions.
+     * @returns {Array<TableIndex>} The index definitions; empty when there are no paths.
      * @throws {InvalidArgumentException} If two paths derive the same index name.
      */
-    private _createExpressionIndexes(tableName: string, indexedExpressions: Readonly<Record<string, string>>, leadingColumn?: string): Array<TableIndex>
+    private _createExpressionIndexes(tableName: string, resolved: ReadonlyArray<ResolvedIndexedPath>, leadingColumn?: string): Array<TableIndex>
     {
         const indexes = new Array<TableIndex>();
 
-        for (const [path, expression] of Object.entries(indexedExpressions))
+        for (const { path, expression, isUnique } of resolved)
         {
             // a path is a bare JSON key sequence, so lowercasing and swapping '.' for '_'
             // always yields a valid identifier - except where the key is already snake_cased
             // in a way that collides with a nested path, which the distinct check below catches
-            const suffix = path.trim().toLowerCase().replaceAll(".", "_");
+            const base = path.trim().toLowerCase().replaceAll(".", "_");
 
             indexes.push({
-                name: this.createIndexNameFromTableName(tableName, suffix),
-                columns: leadingColumn != null ? [leadingColumn, expression] : [expression]
+                name: this.createIndexNameFromTableName(tableName, isUnique ? `${base}_uq` : base),
+                columns: leadingColumn != null ? [leadingColumn, expression] : [expression],
+                isUnique
             });
         }
 
@@ -407,6 +476,29 @@ export class DbTableCreator
 
         return trimmed;
     }
+}
+
+/**
+ * A {@link SnapshotIndexedPath} resolved to the expression that extracts it, so the
+ * expression is built once and shared by the index DDL and the returned
+ * {@link SnapshotTableInfo.indexedExpressions}.
+ */
+interface ResolvedIndexedPath
+{
+    /**
+     * The path as the caller supplied it, used to key the returned expressions.
+     */
+    readonly path: string;
+
+    /**
+     * The extraction expression, from {@link DataHelper.createJsonPathExpression}.
+     */
+    readonly expression: string;
+
+    /**
+     * Whether the index over this path enforces uniqueness.
+     */
+    readonly isUnique: boolean;
 }
 
 /**

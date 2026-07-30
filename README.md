@@ -142,12 +142,14 @@ export class AddOrderTables_1 implements DbMigration
         await tableCreator.createSnapshotTableForAggregate(Order, [
             { path: "status" },
             { path: "total", type: JsonValueType.numeric },
-            { path: "customer.city" }               // dot delimited for a nested key
+            { path: "customer.city" },              // dot delimited for a nested key
+            { path: "orderNumber", isUnique: true } // also enforces a natural key
         ]);
 
         // -> create index ... on order_snaps((data->>'status'));
         //    create index ... on order_snaps(((data->>'total')::numeric));
         //    create index ... on order_snaps((data#>>'{customer,city}'));
+        //    create unique index ... on order_snaps((data->>'orderNumber'));
     }
 }
 ```
@@ -222,9 +224,11 @@ export class InvoiceRepository extends OrgSnapshotBaseRepository<Invoice, Invoic
 Four things to get right:
 
 - **Never hand-write the extraction expression.** Postgres only uses an expression index when the query expression matches the indexed one *textually*. A near-miss — `data->>'total'` against an index on `((data->>'total')::numeric)` — silently falls back to a sequential scan, with no error and no warning. Build it with `DataHelper.createJsonPathExpression`, or reuse the `indexedExpressions` the create call returns.
-- **Pass a `type` whenever the value is not a string.** Extraction yields `text`, so an uncast comparison sorts lexicographically and `'9' > '100'` is true. This is a correctness concern, not just a performance one. `JsonValueType` has no date/time members, because those parse through non-immutable functions that Postgres rejects in an index expression — store a timestamp as epoch millis and use `JsonValueType.bigint`, or as an ISO-8601 string and use `JsonValueType.text`, which sorts chronologically anyway.
+- **Pass a `type` whenever the value is not a string**, and leave it off when it is — extraction already yields `text`, so `JsonValueType.text` only adds a no-op cast. An uncast comparison sorts lexicographically, making `'9' > '100'` true, so this is a correctness concern and not just a performance one. `JsonValueType` has no date/time members, because those parse through non-immutable functions that Postgres rejects in an index expression — store a timestamp as epoch millis and use `JsonValueType.bigint`, or as an ISO-8601 string and leave it as text, which sorts chronologically anyway.
+- **Changing a declaration does not always change the database.** Index creation is `if not exists`, which matches on name alone, and the name encodes the path and `isUnique` but *not* `type`. So adding `type: numeric` to a path that already has an index silently keeps the old uncast index — queries then seq-scan while looking indexed. Likewise, clearing `isUnique` never drops the `_uq` index, so the constraint stays enforced. Both cases need the index dropped by hand; nothing here drops indexes.
 - **Select `data`.** `query` deserializes each row from that column. Use `queryRaw` for anything else.
 - **Filter `organization_id` in every org-scoped query.** `query` does not add it, so omitting it returns other organizations' aggregates *and* misses the index.
+- **`isUnique` is scoped per organization on org tables.** Since those indexes lead with `organization_id`, the same natural key can exist once per tenant rather than once globally — normally what you want. Aggregates whose `data` omits the key are unconstrained, because the extraction yields null and Postgres permits any number of nulls in a unique index. A collision raises out of `save` as a `DbException` and rolls the unit of work back: the repositories upsert with `on conflict (id)`, and Postgres only routes conflicts on the named arbiter index, so a violation elsewhere is raised rather than handled.
 
 ### Caching
 
