@@ -20,7 +20,8 @@ export { DbMigrator } from "./migration/db-migrator.js";
 export { DbMigration } from "./migration/db-migration.js";
 export { DbVersionProvider } from "./migration/db-version-provider.js";
 export { DbMigrationScriptRunner } from "./migration/db-migration-script-runner.js";
-export { DbTableCreator, SnapshotIndexedPath, SnapshotTableInfo } from "./migration/db-table-creator.js";
+export { DbTableCreator, SnapshotTableInfo, SnapshotTableIndexInfo } from "./migration/db-table-creator.js";
+export { SnapshotIndex, SnapshotPath, JsonValueType } from "./migration/snapshot-index.js";
 
 export { CacheService } from "./caching/cache-service.js";
 export { InMemoryCacheService } from "./caching/in-memory-cache-service.js";
@@ -34,7 +35,7 @@ export { StoredFile, StoredFileSchema } from "./file-store/stored-file.js";
 export { S3FileStoreConfig } from "./file-store/s3-file-store-config.js";
 export { S3FileStore } from "./file-store/s3-file-store.js";
 
-export { DataHelper, AggregateRootClass, OrgAggregateRootClass, JsonValueType } from "./repository/data-helper.js";
+export { DataHelper, AggregateRootClass, AggregateRootClassOf, OrgAggregateRootClass, OrgAggregateRootClassOf } from "./repository/data-helper.js";
 export { Repository } from "./repository/repository.js";
 export { BaseRepository } from "./repository/base-repository.js";
 export { AggregateNotFoundException } from "./repository/aggregate-not-found-exception.js";

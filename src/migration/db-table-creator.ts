@@ -1,71 +1,42 @@
 import { given } from "@nivinjoseph/n-defensive";
+import { AggregateState, OrgAggregateState } from "@nivinjoseph/n-domain";
 import { Db } from "../db/db.js";
 import { Logger } from "@nivinjoseph/n-log";
-import { AggregateRootClass, DataHelper, JsonValueType, OrgAggregateRootClass } from "../repository/data-helper.js";
+import { AggregateRootClass, AggregateRootClassOf, DataHelper, OrgAggregateRootClass, OrgAggregateRootClassOf } from "../repository/data-helper.js";
+import { SnapshotIndex } from "./snapshot-index.js";
 
 /**
- * A key inside a snapshot table's `data` column to build an expression index over.
- *
- * No column is added to the table for this; the index is built directly over the extraction
- * expression. That keeps it retrievable on tables that already exist (an index is created
- * independently of the table, whereas adding a column would need an alter that
- * `create table if not exists` never issues) and keeps the row narrow.
+ * One index that was created over a snapshot table.
  */
-export interface SnapshotIndexedPath
+export interface SnapshotTableIndexInfo
 {
     /**
-     * The key within `data`; dot delimited to reach a nested key, e.g. `"customer.city"`.
+     * The index's name as created.
      */
-    readonly path: string;
+    readonly name: string;
 
     /**
-     * Optional type to cast the extracted text to. Supply it whenever the value is not a
-     * string: an uncast comparison orders lexicographically, making '9' > '100' true.
-     *
-     * Leave it off for strings. Extraction already yields text, so {@link JsonValueType.text}
-     * only adds a no-op cast and a second, textually different expression for the same value.
-     *
-     * **Changing this on a path that already has an index does nothing to that index.** The
-     * index name encodes the path but not the type, and creation is `if not exists`, which
-     * matches on name alone - so adding or changing a type against an already-provisioned
-     * database silently keeps the index over the *old* expression. Predicates built from the
-     * returned {@link SnapshotTableInfo.indexedExpressions} then use the new expression, match
-     * nothing, and sequentially scan while appearing to be indexed. Drop the index by hand to
-     * have it rebuilt. Note this differs from {@link isUnique}, whose distinct name means
-     * flipping it does take effect.
+     * The paths it covers, trimmed, in column order.
      */
-    readonly type?: JsonValueType;
+    readonly paths: ReadonlyArray<string>;
 
     /**
-     * Enforces uniqueness over the extracted value - a natural key held inside the snapshot
-     * state, such as an email, slug or invoice number.
-     *
-     * On an org-scoped table the index leads with `organization_id`, so uniqueness is scoped
-     * to the organization rather than global. On a plain table it is global.
-     *
-     * Aggregates whose `data` omits the key are unconstrained: the extraction yields null,
-     * and Postgres permits any number of nulls in a unique index.
-     *
-     * A violation surfaces from `save` as a DbException rather than a domain error. The
-     * repositories upsert with `on conflict (id)`, and Postgres only routes conflicts on the
-     * named arbiter index, so a collision here raises instead of being handled - which rolls
-     * the unit of work back.
-     *
-     * The index is named `idx_<table>_<path>_uq`, deliberately distinct from the non-unique
-     * `idx_<table>_<path>`. Do not "tidy" the two into one name: index creation is
-     * `if not exists`, which matches on name alone, so a shared name would make turning this
-     * flag on for an already-provisioned table silently keep the non-unique index - leaving the
-     * constraint absent while appearing to be declared.
-     *
-     * That distinct name protects turning uniqueness *on*. It does not protect turning it back
-     * off: clearing the flag emits the non-unique index and never drops the `_uq` one, so the
-     * constraint stays enforced. Drop `idx_<table>_<path>_uq` by hand to relax it - nothing
-     * here drops indexes.
-     *
-     * Name encoding is not comprehensive: it covers the path and this flag, but not
-     * {@link type}. See that field for the consequence.
+     * The extraction expressions, positionally matching {@link paths}.
      */
-    readonly isUnique?: boolean;
+    readonly expressions: ReadonlyArray<string>;
+
+    /**
+     * Whether the index enforces uniqueness.
+     */
+    readonly isUnique: boolean;
+
+    /**
+     * A real column the index leads with ahead of {@link expressions} - `organization_id` on an
+     * org-scoped table, `undefined` otherwise. A predicate must constrain this too before any of the
+     * expressions can be used; conversely, constraining it alone is a valid leading prefix and does
+     * use the index.
+     */
+    readonly leadingColumn?: string;
 }
 
 /**
@@ -79,12 +50,17 @@ export interface SnapshotTableInfo
     readonly tableName: string;
 
     /**
-     * The indexed expressions, keyed by the `path` they were built from, trimmed. Build where
-     * clauses from these so they match the indexed expressions - Postgres only uses an
-     * expression index when the query expression matches, so divergence silently costs a seq
-     * scan.
+     * The indexes as created, in declaration order, with their grouping and column order intact.
+     *
+     * Predicates are not built from here - they come from the declarations, via
+     * {@link SnapshotIndex.expressionForPath}, whose expression provably matches what was indexed.
+     * This is the record of what was **created**, which is not the same as what was declared: a
+     * builder mutated after this call still answers for a path no index covers. Read it to see what
+     * a predicate has to constrain, since a btree index only serves a leading prefix of its columns -
+     * so the second path of a composite, or anything on an org-scoped table ahead of
+     * `organization_id`, is not independently searchable.
      */
-    readonly indexedExpressions: Readonly<Record<string, string>>;
+    readonly indexes: ReadonlyArray<SnapshotTableIndexInfo>;
 }
 
 /**
@@ -96,7 +72,10 @@ export interface SnapshotTableInfo
  * an `organization_id` column and include it in the leading position of their indexes.
  *
  * All table and index creation is idempotent (`if not exists`), so the methods are safe
- * to invoke on every startup/migration run.
+ * to invoke on every startup/migration run. Note that `if not exists` does not *reconcile*:
+ * an existing table keeps its columns and an existing index keeps its definition, since it
+ * matches on name alone. Changing what a table or index is declared to be therefore takes a
+ * migration of its own - nothing here alters or drops.
  *
  * @class DbTableCreator
  */
@@ -114,6 +93,12 @@ export class DbTableCreator
      * once interpolated into DDL.
      */
     private static readonly _identifierRegex = /^[a-z_][a-z0-9_]*$/;
+
+    /**
+     * The prefix every index name carries. Its length is the budget a derived table name must leave
+     * free, so an index name composed over it can still fit.
+     */
+    private static readonly _indexNamePrefix = "idx_";
 
     private readonly _db: Db;
     private readonly _logger: Logger;
@@ -143,12 +128,13 @@ export class DbTableCreator
      *
      * @param {AggregateRootClass} aggregateType - The aggregate class whose event-stream table is created.
      * @returns {Promise<string>} A promise that resolves to the created table's name once the table and index exist.
-     * @throws {InvalidArgumentException} If the derived table or index name is not a valid Postgres identifier, or exceeds the identifier limit.
+     * @throws {ArgumentNullException} If aggregateType is null or undefined.
+     * @throws {ArgumentException} If aggregateType is not a function, or the derived table or index name is not a valid Postgres identifier or exceeds the identifier limit.
      * @throws {DbException} If a DDL command fails.
      */
     public async createEventStreamTableForAggregate(aggregateType: AggregateRootClass): Promise<string>
     {
-        const tableName = this._validateIdentifier(DataHelper.createEventStreamTableName(aggregateType), "tableName");
+        const tableName = this._validateTableName(DataHelper.createEventStreamTableName(aggregateType));
 
         await this._createTable(
             tableName,
@@ -177,12 +163,13 @@ export class DbTableCreator
      *
      * @param {OrgAggregateRootClass} aggregateType - The org-scoped aggregate class whose event-stream table is created.
      * @returns {Promise<string>} A promise that resolves to the created table's name once the table and index exist.
-     * @throws {InvalidArgumentException} If the derived table or index name is not a valid Postgres identifier, or exceeds the identifier limit.
+     * @throws {ArgumentNullException} If aggregateType is null or undefined.
+     * @throws {ArgumentException} If aggregateType is not a function, or the derived table or index name is not a valid Postgres identifier or exceeds the identifier limit.
      * @throws {DbException} If a DDL command fails.
      */
     public async createEventStreamTableForOrgAggregate(aggregateType: OrgAggregateRootClass): Promise<string>
     {
-        const tableName = this._validateIdentifier(DataHelper.createEventStreamTableName(aggregateType), "tableName");
+        const tableName = this._validateTableName(DataHelper.createEventStreamTableName(aggregateType));
 
         await this._createTable(
             tableName,
@@ -209,21 +196,27 @@ export class DbTableCreator
      * `id` (the primary key, which is already indexed - so no index over `id` is created).
      * The table name is derived via {@link DataHelper.createSnapshotTableName}.
      *
-     * Each entry in `indexedPaths` produces an expression index over that key inside `data`;
-     * no column is added. Build where clauses from the returned `indexedExpressions` so they
-     * match what was indexed.
+     * Each entry in `indexes` produces one expression index over the keys it names inside
+     * `data`; no column is added. Keep those declarations and build where clauses from them with
+     * {@link SnapshotIndex.expressionForPath}, so a predicate matches what was indexed.
      *
-     * @param {AggregateRootClass} aggregateType - The aggregate class whose snapshot table is created.
-     * @param {ReadonlyArray<SnapshotIndexedPath>} [indexedPaths] - Optional keys within `data` to build expression indexes over.
-     * @returns {Promise<SnapshotTableInfo>} A promise that resolves to the table's name and its indexed expressions.
-     * @throws {InvalidArgumentException} If the derived table or index name is invalid, or a path or type is malformed, or paths collide.
+     * `TState` is inferred from `aggregateType`, so every index's paths are checked against the
+     * aggregate's real state shape.
+     *
+     * @param {AggregateRootClassOf<TState>} aggregateType - The aggregate class whose snapshot table is created.
+     * @param {ReadonlyArray<SnapshotIndex<TState>>} [indexes] - Optional indexes over keys within `data`.
+     * @returns {Promise<SnapshotTableInfo>} A promise that resolves to the table's name and the indexes as created.
+     * @throws {ArgumentNullException} If aggregateType is null or undefined, or an element of indexes is null or undefined.
+     * @throws {ArgumentException} If aggregateType is not a function, the derived table or index name is invalid, or the indexes are invalid or duplicated.
      * @throws {DbException} If a DDL command fails.
      */
-    public async createSnapshotTableForAggregate(aggregateType: AggregateRootClass, indexedPaths?: ReadonlyArray<SnapshotIndexedPath>): Promise<SnapshotTableInfo>
+    public async createSnapshotTableForAggregate<TState extends AggregateState>(aggregateType: AggregateRootClassOf<TState>, indexes?: ReadonlyArray<SnapshotIndex<TState>>): Promise<SnapshotTableInfo>
     {
-        const tableName = this._validateIdentifier(DataHelper.createSnapshotTableName(aggregateType), "tableName");
-        const resolvedPaths = this._resolveIndexedPaths(indexedPaths);
-        const indexedExpressions = this._createIndexedExpressions(resolvedPaths);
+        const tableName = this._validateTableName(DataHelper.createSnapshotTableName(aggregateType as AggregateRootClass));
+
+        this._validateIndexes(indexes);
+
+        const plan = this._planIndexes(tableName, indexes);
 
         await this._createTable(
             tableName,
@@ -231,38 +224,43 @@ export class DbTableCreator
                 "id varchar(40) primary key",
                 "data jsonb not null"
             ],
-            this._createExpressionIndexes(tableName, resolvedPaths));
+            plan.tableIndexes);
 
-        return { tableName, indexedExpressions };
+        return { tableName, indexes: plan.infos };
     }
 
     /**
      * Creates the snapshot table and its index for an organization-scoped aggregate.
      *
      * Like {@link createSnapshotTableForAggregate} but adds a non-null `organization_id`
-     * column, and every index leads with it since
-     * {@link OrgSnapshotBaseRepository} always filters on it first.
+     * column, and every index leads with it because `OrgSnapshotBaseRepository` requires every query
+     * to constrain it - `get` and `getAll` do so themselves, and `query` obliges the caller to.
      *
-     * When no `indexedPaths` are given, an index over `(organization_id)` is created to
-     * support org-scoped scans. When there are, each of their indexes already leads with
-     * `organization_id`, making a standalone one a strict subset of an index being built
-     * anyway - so it is skipped.
+     * When no `indexes` are given, an index over `(organization_id)` is created to support
+     * org-scoped scans. When there are, each of them already leads with `organization_id`,
+     * making a standalone one a strict subset of an index being built anyway - so it is skipped.
+     * That is sound rather than merely plausible: constraining a leading column alone does use the
+     * composite index, which is verified against Postgres by a planner test.
      *
-     * @param {OrgAggregateRootClass} aggregateType - The org-scoped aggregate class whose snapshot table is created.
-     * @param {ReadonlyArray<SnapshotIndexedPath>} [indexedPaths] - Optional keys within `data` to build expression indexes over.
-     * @returns {Promise<SnapshotTableInfo>} A promise that resolves to the table's name and its indexed expressions.
-     * @throws {InvalidArgumentException} If the derived table or index name is invalid, or a path or type is malformed, or paths collide.
+     * `TState` is inferred from `aggregateType`, so every index's paths are checked against the
+     * aggregate's real state shape.
+     *
+     * @param {OrgAggregateRootClassOf<TState>} aggregateType - The org-scoped aggregate class whose snapshot table is created.
+     * @param {ReadonlyArray<SnapshotIndex<TState>>} [indexes] - Optional indexes over keys within `data`.
+     * @returns {Promise<SnapshotTableInfo>} A promise that resolves to the table's name and the indexes as created.
+     * @throws {ArgumentNullException} If aggregateType is null or undefined, or an element of indexes is null or undefined.
+     * @throws {ArgumentException} If aggregateType is not a function, the derived table or index name is invalid, or the indexes are invalid or duplicated.
      * @throws {DbException} If a DDL command fails.
      */
-    public async createSnapshotTableForOrgAggregate(aggregateType: OrgAggregateRootClass, indexedPaths?: ReadonlyArray<SnapshotIndexedPath>): Promise<SnapshotTableInfo>
+    public async createSnapshotTableForOrgAggregate<TState extends OrgAggregateState>(aggregateType: OrgAggregateRootClassOf<TState>, indexes?: ReadonlyArray<SnapshotIndex<TState>>): Promise<SnapshotTableInfo>
     {
-        const tableName = this._validateIdentifier(DataHelper.createSnapshotTableName(aggregateType), "tableName");
-        const resolvedPaths = this._resolveIndexedPaths(indexedPaths);
-        const indexedExpressions = this._createIndexedExpressions(resolvedPaths);
+        const tableName = this._validateTableName(DataHelper.createSnapshotTableName(aggregateType as OrgAggregateRootClass));
 
-        const indexes = this._createExpressionIndexes(tableName, resolvedPaths, "organization_id");
-        if (indexes.isEmpty)
-            indexes.push({
+        this._validateIndexes(indexes);
+
+        const plan = this._planIndexes(tableName, indexes, "organization_id");
+        if (plan.tableIndexes.isEmpty)
+            plan.tableIndexes.push({
                 name: this.createIndexNameFromTableName(tableName),
                 columns: ["organization_id"]
             });
@@ -274,9 +272,9 @@ export class DbTableCreator
                 "organization_id varchar(40) not null",
                 "data jsonb not null"
             ],
-            indexes);
+            plan.tableIndexes);
 
-        return { tableName, indexedExpressions };
+        return { tableName, indexes: plan.infos };
     }
 
     /**
@@ -289,15 +287,14 @@ export class DbTableCreator
      * @param {string} indexName - The candidate index name to validate.
      * @returns {string} The validated, trimmed index name.
      * @throws {ArgumentNullException} If the name is null or undefined.
-     * @throws {ArgumentException} If the name is not a string, or is empty or whitespace.
-     * @throws {InvalidArgumentException} If the name is missing the `idx_` prefix, is not a valid identifier, or is too long.
+     * @throws {ArgumentException} If the name is not a string, is empty or whitespace, is missing the `idx_` prefix, is not a valid identifier, or is too long.
      */
     public validateIndexName(indexName: string): string
     {
         const validated = this._validateIdentifier(indexName, "indexName");
 
         given(validated, "indexName")
-            .ensure(t => t.startsWith("idx_"), `index name '${validated}' must start with 'idx_'`);
+            .ensure(t => t.startsWith(DbTableCreator._indexNamePrefix), `index name '${validated}' must start with '${DbTableCreator._indexNamePrefix}'`);
 
         return validated;
     }
@@ -312,8 +309,7 @@ export class DbTableCreator
      * @param {string} [suffix] - Optional suffix appended to disambiguate multiple indexes on the same table.
      * @returns {string} The validated index name.
      * @throws {ArgumentNullException} If tableName is null or undefined.
-     * @throws {ArgumentException} If tableName or suffix is not a string, or tableName is empty or whitespace.
-     * @throws {InvalidArgumentException} If the resulting index name fails {@link validateIndexName}.
+     * @throws {ArgumentException} If tableName or suffix is not a string, tableName is empty or whitespace, or the resulting index name fails {@link validateIndexName}.
      */
     public createIndexNameFromTableName(tableName: string, suffix?: string): string
     {
@@ -322,7 +318,7 @@ export class DbTableCreator
 
         const trimmedTableName = tableName.trim();
         const trimmedSuffix = suffix?.trim();
-        const indexName = `idx_${trimmedTableName}${trimmedSuffix ? `_${trimmedSuffix}` : ""}`;
+        const indexName = `${DbTableCreator._indexNamePrefix}${trimmedTableName}${trimmedSuffix ? `_${trimmedSuffix}` : ""}`;
 
         return this.validateIndexName(indexName);
     }
@@ -360,91 +356,106 @@ export class DbTableCreator
     }
 
     /**
-     * Resolves each indexed path to the expression that extracts it.
+     * Validates a set of index declarations against each other.
      *
-     * @param {ReadonlyArray<SnapshotIndexedPath>} [indexedPaths] - The paths to resolve.
-     * @returns {Array<ResolvedIndexedPath>} The resolved paths, in order; empty when there are none.
-     * @throws {InvalidArgumentException} If a path or type is malformed, or two paths are the same.
+     * Each index validates its own paths as they are added, so what is left are the rules that need
+     * the whole set: that no two are the same index under different names, and that one path does
+     * not resolve to two different expressions.
+     *
+     * A leading-prefix relationship - `[a]` alongside `[a, b]` - is deliberately allowed. A narrower
+     * index is a legitimate size and write-cost tradeoff, and a path that is *not* the leading
+     * column of a composite genuinely needs its own index to be searchable alone.
+     *
+     * @param {ReadonlyArray<SnapshotIndex<any>>} [indexes] - The declared indexes.
+     * @throws {ArgumentNullException} If an element of indexes is null or undefined.
+     * @throws {ArgumentException} If indexes is not an array, an element is not a SnapshotIndex, two indexes are duplicates, or one path resolves to conflicting expressions.
      */
-    private _resolveIndexedPaths(indexedPaths?: ReadonlyArray<SnapshotIndexedPath>): Array<ResolvedIndexedPath>
+    private _validateIndexes(indexes?: ReadonlyArray<SnapshotIndex<any>>): void
     {
-        given(indexedPaths, "indexedPaths").ensureIsArray()
-            .ensure(
-                t => t.distinct(u => u.path.trim()).length === t.length,
-                "indexedPaths cannot contain the same path twice"
-            );
+        given(indexes, "indexes").ensureIsArray();
 
-        const resolved = new Array<ResolvedIndexedPath>();
+        const expressionByPath = new Map<string, string>();
+        const conflictingPaths = new Array<string>();
 
-        for (const indexedPath of indexedPaths ?? [])
+        for (const index of indexes ?? [])
         {
-            given(indexedPath, "indexedPath").ensureHasValue().ensureIsObject();
+            // guards a plain object arriving from JavaScript, where the builder is unenforced
+            given(index, "index").ensureHasValue().ensureIsObject().ensureIsInstanceOf(SnapshotIndex);
 
-            resolved.push({
-                // trimmed, so the key callers look expressions up by is the key actually extracted
-                path: indexedPath.path.trim(),
-                expression: DataHelper.createJsonPathExpression(indexedPath.path, indexedPath.type),
-                isUnique: indexedPath.isUnique === true
+            index.paths.forEach((path, i) =>
+            {
+                const expression = index.expressions[i];
+                const existing = expressionByPath.get(path);
+
+                // a modelling rule, not a mechanical one: one key inside `data` holds one kind of
+                // value, so indexing it as text here and as numeric there means one of the two
+                // declarations has the wrong idea of the state - and only one of them can be the
+                // expression a predicate for that path is built from
+                if (existing != null && existing !== expression)
+                    conflictingPaths.push(path);
+                else
+                    expressionByPath.set(path, expression);
             });
         }
 
-        return resolved;
-    }
-
-    /**
-     * Builds the expressions keyed by the path they came from, for callers to build predicates with.
-     *
-     * @param {ReadonlyArray<ResolvedIndexedPath>} resolved - The resolved paths.
-     * @returns {Record<string, string>} The expressions, keyed by path; empty when there are none.
-     */
-    private _createIndexedExpressions(resolved: ReadonlyArray<ResolvedIndexedPath>): Record<string, string>
-    {
-        const expressions: Record<string, string> = {};
-
-        for (const t of resolved)
-            expressions[t.path] = t.expression;
-
-        return expressions;
-    }
-
-    /**
-     * Turns resolved paths into index definitions, one per path.
-     *
-     * The index name is derived from the path so it is stable and readable, and so two paths
-     * on one table cannot land on the same index name - which `if not exists` would silently
-     * skip rather than report. A unique index takes a `_uq` suffix so it can never share a
-     * name with a non-unique index over the same path; see {@link SnapshotIndexedPath.isUnique}.
-     *
-     * @param {string} tableName - The table the indexes belong to.
-     * @param {ReadonlyArray<ResolvedIndexedPath>} resolved - The resolved paths to index.
-     * @param {string} [leadingColumn] - Optional column to lead each index with.
-     * @returns {Array<TableIndex>} The index definitions; empty when there are no paths.
-     * @throws {InvalidArgumentException} If two paths derive the same index name.
-     */
-    private _createExpressionIndexes(tableName: string, resolved: ReadonlyArray<ResolvedIndexedPath>, leadingColumn?: string): Array<TableIndex>
-    {
-        const indexes = new Array<TableIndex>();
-
-        for (const { path, expression, isUnique } of resolved)
-        {
-            // a path is a bare JSON key sequence, so lowercasing and swapping '.' for '_'
-            // always yields a valid identifier - except where the key is already snake_cased
-            // in a way that collides with a nested path, which the distinct check below catches
-            const base = path.trim().toLowerCase().replaceAll(".", "_");
-
-            indexes.push({
-                name: this.createIndexNameFromTableName(tableName, isUnique ? `${base}_uq` : base),
-                columns: leadingColumn != null ? [leadingColumn, expression] : [expression],
-                isUnique
-            });
-        }
-
-        given(indexes, "indexes").ensure(
-            t => t.distinct(u => u.name).length === t.length,
-            "indexedPaths cannot derive the same index name twice"
+        given(conflictingPaths, "indexes").ensure(
+            t => t.isEmpty,
+            `the same path cannot be indexed with different types: ${conflictingPaths.distinct().join(", ")}`
         );
 
-        return indexes;
+        // identity is the ordered path list plus uniqueness, not the name - an explicit name would
+        // otherwise let the same index be declared twice and be created twice under two names
+        given(indexes ?? [], "indexes").ensure(
+            t => t.distinct(u => `${u.paths.join(",")}|${u.isUnique}`).length === t.length,
+            "the same index cannot be declared twice"
+        );
+    }
+
+    /**
+     * Reads the declarations once and produces everything derived from them: the DDL definitions and
+     * the metadata handed back to the caller.
+     *
+     * Both come out of this single synchronous pass, so the returned contract is provably the same
+     * data the DDL was emitted from. Reading the builders again after the DDL had been awaited would
+     * let a caller who mutated one in the meantime receive expressions no index covers.
+     *
+     * The name comes from {@link SnapshotIndex.nameSuffix} so it is stable and readable, and so two
+     * declarations on one table cannot land on the same index name - which `if not exists` would
+     * silently skip rather than report. A unique index takes a `_uq` suffix so the same path can
+     * carry both a lookup index and a unique one.
+     *
+     * @param {string} tableName - The table the indexes belong to.
+     * @param {ReadonlyArray<SnapshotIndex<any>>} [indexes] - The declared indexes.
+     * @param {string} [leadingColumn] - Optional real column to lead each index with.
+     * @returns {IndexPlan} The DDL definitions and the per-index metadata.
+     * @throws {ArgumentException} If two declarations derive the same index name, or a name exceeds the identifier limit.
+     */
+    private _planIndexes(tableName: string, indexes?: ReadonlyArray<SnapshotIndex<any>>, leadingColumn?: string): IndexPlan
+    {
+        const tableIndexes = new Array<TableIndex>();
+        const infos = new Array<SnapshotTableIndexInfo>();
+
+        for (const index of indexes ?? [])
+        {
+            const paths = [...index.paths];
+            const expressions = [...index.expressions];
+            const name = this.createIndexNameFromTableName(tableName, index.isUnique ? `${index.nameSuffix}_uq` : index.nameSuffix);
+
+            tableIndexes.push({
+                name,
+                columns: leadingColumn != null ? [leadingColumn, ...expressions] : expressions,
+                isUnique: index.isUnique
+            });
+
+            infos.push({ name, paths, expressions, isUnique: index.isUnique, leadingColumn });
+        }
+
+        given(tableIndexes, "indexes").ensure(
+            t => t.distinct(u => u.name).length === t.length,
+            "indexes cannot derive the same index name twice"
+        );
+
+        return { tableIndexes, infos };
     }
 
     /**
@@ -452,12 +463,12 @@ export class DbTableCreator
      *
      * @param {string} value - The candidate identifier.
      * @param {string} argName - The argument name to report in errors.
+     * @param {number} [maxLength] - The budget to enforce; defaults to the full Postgres limit.
      * @returns {string} The validated, trimmed identifier.
      * @throws {ArgumentNullException} If the value is null or undefined.
-     * @throws {ArgumentException} If the value is not a string, or is empty or whitespace.
-     * @throws {InvalidArgumentException} If the value is not a valid identifier, or is too long.
+     * @throws {ArgumentException} If the value is not a string, is empty or whitespace, is not a valid identifier, or is too long.
      */
-    private _validateIdentifier(value: string, argName: string): string
+    private _validateIdentifier(value: string, argName: string, maxLength = DbTableCreator._maxIdentifierLength): string
     {
         given(value, argName).ensureHasValue().ensureIsString();
 
@@ -469,36 +480,50 @@ export class DbTableCreator
                 `${argName} '${trimmed}' must contain only lowercase letters, digits and underscores, and cannot start with a digit`
             )
             .ensure(
-                t => t.length <= DbTableCreator._maxIdentifierLength,
-                `${argName} '${trimmed}' (${trimmed.length} chars) exceeds Postgres max identifier length of ${DbTableCreator._maxIdentifierLength} and would be silently truncated`
+                t => t.length <= maxLength,
+                `${argName} '${trimmed}' (${trimmed.length} chars) exceeds the max length of ${maxLength} and would be silently truncated`
             )
             ;
 
         return trimmed;
     }
+
+    /**
+     * Validates a derived table name, budgeting for the index names composed over it.
+     *
+     * Every index this class creates is named `idx_<tableName>[_<suffix>]`, so a table name that
+     * uses the full 63 characters leaves no room for one. Validating against the reduced budget here
+     * means an overlong aggregate name is reported against `tableName` - the identifier actually at
+     * fault - rather than against a derived `indexName` further downstream.
+     *
+     * @param {string} tableName - The derived table name.
+     * @returns {string} The validated, trimmed table name.
+     * @throws {ArgumentNullException} If tableName is null or undefined.
+     * @throws {ArgumentException} If tableName is not a string, is empty or whitespace, is not a valid identifier, or leaves no room for an index name.
+     */
+    private _validateTableName(tableName: string): string
+    {
+        return this._validateIdentifier(
+            tableName, "tableName", DbTableCreator._maxIdentifierLength - DbTableCreator._indexNamePrefix.length);
+    }
 }
 
 /**
- * A {@link SnapshotIndexedPath} resolved to the expression that extracts it, so the
- * expression is built once and shared by the index DDL and the returned
- * {@link SnapshotTableInfo.indexedExpressions}.
+ * Everything derived from a set of index declarations in one pass: what to emit, and what to hand
+ * back. Kept together so the two can never be read from the builders at different instants.
  */
-interface ResolvedIndexedPath
+interface IndexPlan
 {
     /**
-     * The path as the caller supplied it, used to key the returned expressions.
+     * The definitions to emit as DDL. Mutable so the org variant can append its standalone
+     * `(organization_id)` index when no expression indexes were declared.
      */
-    readonly path: string;
+    readonly tableIndexes: Array<TableIndex>;
 
     /**
-     * The extraction expression, from {@link DataHelper.createJsonPathExpression}.
+     * The per-index metadata returned as {@link SnapshotTableInfo.indexes}.
      */
-    readonly expression: string;
-
-    /**
-     * Whether the index over this path enforces uniqueness.
-     */
-    readonly isUnique: boolean;
+    readonly infos: Array<SnapshotTableIndexInfo>;
 }
 
 /**

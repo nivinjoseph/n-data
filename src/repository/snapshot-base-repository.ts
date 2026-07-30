@@ -16,36 +16,46 @@ import { AggregateNotFoundException } from "./aggregate-not-found-exception.js";
  * primary key already indexes. Any other read - filtering or sorting on a field *inside*
  * `data` - needs a method on the concrete subclass built over {@link query}.
  *
- * To make such a read use an index, declare the keys when the table is created and let
- * `DbTableCreator` build an expression index over each one. Nothing is added to the table:
- * the index is built directly over the extraction expression.
+ * To make such a read use an index, declare it with `SnapshotIndex` and let `DbTableCreator` build
+ * an expression index over each path. Nothing is added to the table: the index is built directly
+ * over the extraction expression.
  *
- * ```typescript
- * await tableCreator.createSnapshotTableForAggregate(Order, [
- *     { path: "status" },
- *     { path: "total", type: JsonValueType.numeric },
- *     { path: "orderNumber", isUnique: true }      // also enforces a natural key
- * ]);
- * ```
+ * **Declare those indexes here, on the repository that queries them.** One instance both produces
+ * the index and hands back the expression to query it with, through its `expressionForPath`.
+ * Postgres uses an expression index only when the query expression matches the indexed one
+ * *textually*, and a near-miss silently falls back to a sequential scan with no error and no
+ * warning. The expression builder is private to `SnapshotIndex`, so an expression can only come from
+ * a declaration that also emits the DDL - which is what makes that divergence impossible. The
+ * migration then consumes the same declarations.
  *
- * A path marked `isUnique` enforces uniqueness over the extracted value, so a natural key
- * held inside the snapshot state can be constrained by the database. Aggregates whose `data`
- * omits the key are unconstrained. A collision raises out of {@link save} as a DbException
- * and rolls the unit of work back, rather than surfacing as a domain error.
+ * Paths are checked against the aggregate's state shape, so a typo is a compile error rather than a
+ * silently useless index. An index marked `asUnique` constrains the extracted value, or for several
+ * paths the tuple of them, so a natural key held inside the snapshot state can be enforced by the
+ * database. Rows whose `data` omits an indexed key are unconstrained. A collision raises out of
+ * {@link save} as a DbException and rolls the unit of work back, rather than surfacing as a domain
+ * error.
  *
- * Then build the predicate with {@link DataHelper.createJsonPathExpression} - the same
- * function the index was built from. Never hand-write the expression: Postgres only uses an
- * expression index when the query expression matches the indexed one textually, so a
- * near-miss silently falls back to a sequential scan with no error and no warning.
+ * Matching the expression is necessary but not sufficient for the predicate to *use* the index:
+ * btree only serves a leading prefix of an index's columns, so the second path of a composite is not
+ * independently searchable. Read `info.indexes` from the create call for each index's column order.
  *
  * @example
  * ```typescript
  * @inject("OrderEventStreamRepository")
  * export class OrderRepository extends SnapshotBaseRepository<Order, OrderState, OrderEvent>
  * {
- *     // computed once, from the same helper the index was built from
- *     private static readonly _statusExpression = DataHelper.createJsonPathExpression("status");
- *     private static readonly _totalExpression = DataHelper.createJsonPathExpression("total", JsonValueType.numeric);
+ *     // declared once: the migration creates these, this class queries them
+ *     public static readonly statusIndex = SnapshotIndex.forPath<OrderState>("status");
+ *     public static readonly totalIndex = SnapshotIndex.forPath<OrderState>("total", JsonValueType.numeric);
+ *     public static readonly numberIndex = SnapshotIndex.forPath<OrderState>("orderNumber").asUnique();
+ *
+ *     public static readonly snapshotIndexes: ReadonlyArray<SnapshotIndex<OrderState>> =
+ *         [OrderRepository.statusIndex, OrderRepository.totalIndex, OrderRepository.numberIndex];
+ *
+ *     // resolved at module load, so a path the index does not cover throws at startup rather than
+ *     // on the first call to an untested query method
+ *     private static readonly _statusExpression = OrderRepository.statusIndex.expressionForPath("status");
+ *     private static readonly _totalExpression = OrderRepository.totalIndex.expressionForPath("total");
  *
  *     public constructor(eventStreamRepository: OrderEventStreamRepository)
  *     {
@@ -66,6 +76,9 @@ import { AggregateNotFoundException } from "./aggregate-not-found-exception.js";
  *             total);
  *     }
  * }
+ *
+ * // in the migration
+ * await tableCreator.createSnapshotTableForAggregate(Order, OrderRepository.snapshotIndexes);
  * ```
  *
  * @class SnapshotBaseRepository
