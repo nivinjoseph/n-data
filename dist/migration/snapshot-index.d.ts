@@ -45,9 +45,14 @@ export declare enum JsonValueType {
     doublePrecision = "double precision"
 }
 /**
- * Decrements the recursion budget used by `SnapshotLeafPath`.
+ * Decrements the recursion budget used by `SnapshotLeafPath` and by `SnapshotArrayIndex`'s mirror of
+ * it.
+ *
+ * Exported so the two path types share one budget - they walk the same state shape, so a leaf
+ * reachable by one and not the other would be an arbitrary difference. Deliberately absent from the
+ * barrel: it is an implementation detail of those types, not part of the public surface.
  */
-type PreviousDepth = [never, 0, 1, 2, 3, 4, 5];
+export type PreviousDepth = [never, 0, 1, 2, 3, 4, 5];
 /**
  * The raw leaf-path union, before {@link SnapshotPath} removes what must never be indexed.
  *
@@ -66,6 +71,11 @@ type SnapshotLeafPath<T, TDepth extends number = 5> = [TDepth] extends [never] ?
  * path, because indexing one covers the text rendering of a whole subtree, and jsonb's rendering is
  * not `JSON.stringify`'s (jsonb orders keys itself and emits `": "` / `", "`), so a predicate built
  * in JavaScript would never match it. Use {@link SnapshotIndex.forRawPath} if you really want that.
+ *
+ * An **array**-valued key has a first-class answer rather than that escape hatch: `SnapshotArrayPath`
+ * and `SnapshotArrayIndex`, which build a GIN containment index over the array as jsonb and ask
+ * membership questions of it. The two path unions are disjoint by construction - what one offers,
+ * the other maps to `never` - so a key belongs to exactly one kind of index.
  *
  * `organizationId` is excluded. On an org-scoped snapshot table it is a real column, and every index
  * leads with it - so a predicate on the column uses those indexes, while the copy inside `data` is

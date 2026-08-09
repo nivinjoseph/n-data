@@ -9,6 +9,7 @@ export { DbMigrator } from "./migration/db-migrator.js";
 export { DbMigrationScriptRunner } from "./migration/db-migration-script-runner.js";
 export { DbTableCreator } from "./migration/db-table-creator.js";
 export { SnapshotIndex, JsonValueType } from "./migration/snapshot-index.js";
+export { SnapshotArrayIndex } from "./migration/snapshot-array-index.js";
 export { InMemoryCacheService } from "./caching/in-memory-cache-service.js";
 export { RedisCacheService } from "./caching/redis-cache-service.js";
 export { RedisDistributedLockService, UnableToAcquireDistributedLockException } from "./distributed-lock/redis-distributed-lock-service.js";

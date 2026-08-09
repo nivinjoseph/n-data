@@ -46,6 +46,14 @@ import { OrgEventStreamBaseRepository } from "./org-event-stream-base-repository
  * leading prefix, so a predicate must constrain `organization_id` before any indexed expression can
  * be used - which the mandatory org filter already does. `info.indexes` reports it as `leadingColumn`.
  *
+ * **An array index is the one exception, and it does not weaken the rule.** A `SnapshotArrayIndex`
+ * builds a GIN index, which *cannot* lead with `organization_id` - a multicolumn GIN over a varchar
+ * column needs the `btree_gin` extension, which is not trusted on Postgres 12 and would demand
+ * superuser at migration time. So declaring one always creates the standalone `(organization_id)`
+ * index too, for the planner to BitmapAnd the GIN scan against, and `info.indexes[i].leadingColumn`
+ * is `undefined` for it - read it rather than assuming. Filtering `organization_id` is still
+ * mandatory: that is tenant isolation, which is a correctness rule independent of the plan.
+ *
  * @example
  * ```typescript
  * @inject("InvoiceEventStreamRepository")
@@ -53,11 +61,16 @@ import { OrgEventStreamBaseRepository } from "./org-event-stream-base-repository
  * {
  *     // declared once: the migration creates these, this class queries them
  *     public static readonly statusIndex = SnapshotIndex.forPath<InvoiceState>("status");
+ *     public static readonly labelsIndex = SnapshotArrayIndex.forPath<InvoiceState>("labels");
  *
  *     public static readonly snapshotIndexes: ReadonlyArray<SnapshotIndex<InvoiceState>> =
  *         [InvoiceRepository.statusIndex];
  *
+ *     public static readonly snapshotArrayIndexes: ReadonlyArray<SnapshotArrayIndex<InvoiceState>> =
+ *         [InvoiceRepository.labelsIndex];
+ *
  *     private static readonly _statusExpression = InvoiceRepository.statusIndex.expressionForPath("status");
+ *     private static readonly _labels = InvoiceRepository.labelsIndex.containmentForPath("labels");
  *
  *     public constructor(eventStreamRepository: InvoiceEventStreamRepository)
  *     {
@@ -71,10 +84,24 @@ import { OrgEventStreamBaseRepository } from "./org-event-stream-base-repository
  *             `select data from ${this.table} where organization_id = ? and ${InvoiceRepository._statusExpression} = ?;`,
  *             this.domainContext.organizationId, status);
  *     }
+ *
+ *     public getByLabel(label: string): Promise<Array<Invoice>>
+ *     {
+ *         const predicate = InvoiceRepository._labels.contains(label);
+ *
+ *         // organization_id first here too - the GIN index does not lead with it, but tenant
+ *         // isolation is not the index's job. Params follow the order the fragments appear in.
+ *         return this.query(
+ *             `select data from ${this.table} where organization_id = ? and ${predicate.sql};`,
+ *             this.domainContext.organizationId, ...predicate.params);
+ *     }
  * }
  *
  * // in the migration
- * await tableCreator.createSnapshotTableForOrgAggregate(Invoice, InvoiceRepository.snapshotIndexes);
+ * await tableCreator.createSnapshotTableForOrgAggregate(Invoice, {
+ *     indexes: InvoiceRepository.snapshotIndexes,
+ *     arrayIndexes: InvoiceRepository.snapshotArrayIndexes
+ * });
  * ```
  *
  * @class OrgSnapshotBaseRepository
