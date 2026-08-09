@@ -4,7 +4,7 @@ import { Exception } from "@nivinjoseph/n-exception";
 import { Logger } from "@nivinjoseph/n-log";
 import assert from "node:assert";
 import test, { after, before, describe } from "node:test";
-import { DataHelper, Db, DbConnectionConfig, DbConnectionFactory, DbTableCreator, JsonValueType, KnexPgDb, KnexPgDbConnectionFactory, QueryResult, SnapshotIndex } from "../src/index.js";
+import { DataHelper, Db, DbConnectionConfig, DbConnectionFactory, DbTableCreator, JsonValueType, KnexPgDb, KnexPgDbConnectionFactory, QueryResult, SnapshotArrayIndex, SnapshotIndex } from "../src/index.js";
 import { TransactionProvider } from "../src/unit-of-work/transaction-provider.js";
 
 
@@ -23,6 +23,23 @@ interface Customer
     name: string;
     city: string;
     address: Address;
+    nicknames: Array<string>;               // a nested scalar array: an array path, not a scalar one
+    contacts: Array<Member>;                // a nested array of flat records: also an array path
+}
+
+// the driving shape: a flat record, so its TypeScript names are its stored keys
+interface Member
+{
+    userId: string;
+    role: string;
+    isDeactivated: boolean;
+}
+
+// carries a method, so it is not a flat record - which is how an array of Serializable is kept out
+interface Serialish
+{
+    id: string;
+    serialize(): object;
 }
 
 interface OrderState extends AggregateState
@@ -36,7 +53,15 @@ interface OrderState extends AggregateState
     minTotal: number;
     maxTotal: number;
     customer: Customer;
-    tags: Array<string>;                    // container: must not be offered as a path
+    tags: Array<string>;                    // container: not a scalar path, but IS an array path
+    scores: ReadonlyArray<number>;
+    flags: Array<boolean>;
+    mixed: Array<string | number>;          // a union of scalars: still an array path
+    tainted: Array<string | Customer>;      // a union carrying an object: must not be offered
+    matrix: Array<Array<string>>;           // an array of arrays: must not be offered
+    nested: Array<{ a: string; b: Address; }>;  // an element that nests: must not be offered
+    serials: Array<Serialish>;              // an element carrying a method: must not be offered
+    optionalTags?: Array<string>;
     // eslint-disable-next-line @typescript-eslint/no-unsafe-function-type
     validator: Function;                    // must not be offered, nor fabricate a subtree
     transform(x: string): string;           // must not be offered
@@ -50,6 +75,15 @@ interface InvoiceState extends OrgAggregateState
     invoiceNumber: string;
     series: string;
     customer: Customer;
+    labels: Array<string>;
+}
+
+// the use case this feature exists for: given a userId, find the teams where that user is a member
+// AND that member is not deactivated - two conditions that must hold on the SAME element
+interface TeamState extends AggregateState
+{
+    name: string;
+    members: Array<Member>;
 }
 
 // an index signature widens the path union to `string`, which disables the check entirely. Pinned
@@ -69,12 +103,14 @@ interface PlainStateWithOrgId extends AggregateState
 
 class Order extends AggregateRoot<OrderState, DomainEvent<OrderState>> { }
 class Invoice extends OrgAggregateRoot<InvoiceState, OrgDomainEvent<InvoiceState>> { }
+class Team extends AggregateRoot<TeamState, DomainEvent<TeamState>> { }
 
 // snake cased this is 67 chars, so every derived table name overflows the 63 char limit
 class AggregateWithAnExtremelyLongNameThatOverflowsPostgresLimit extends AggregateRoot<OrderState, DomainEvent<OrderState>> { }
 
 const orderType = Order;
 const invoiceType = Invoice;
+const teamType = Team;
 const overlongType = AggregateWithAnExtremelyLongNameThatOverflowsPostgresLimit;
 
 
@@ -240,6 +276,159 @@ await describe("DbTableCreator tests", async () =>
 
             // no standalone (organization_id) index - each already leads with it
             assert.ok(!db.commands.contains("create index if not exists idx_invoice_snaps on invoice_snaps(organization_id);"));
+        });
+
+        await test("an array index emits a single-column GIN index with the jsonb_path_ops opclass", async () =>
+        {
+            const { creator, db } = createCreator();
+
+            const membersIndex = SnapshotArrayIndex.forPath<TeamState>("members");
+            const info = await creator.createSnapshotTableForAggregate(teamType, { arrayIndexes: [membersIndex] });
+
+            // the table shape is identical to the no-indexes case: nothing is added, the index is
+            // built directly over the extraction expression
+            assert.deepStrictEqual(db.commands, [
+                "create table if not exists team_snaps ( id varchar(40) primary key, data jsonb not null );",
+                "create index if not exists idx_team_snaps_members_gin on team_snaps using gin((data->'members') jsonb_path_ops);"
+            ]);
+
+            // -> not ->>: the index is over the array AS JSONB, since @> is a jsonb operator
+            assert.deepStrictEqual(info.indexes, [{
+                name: "idx_team_snaps_members_gin",
+                paths: ["members"],
+                expressions: ["(data->'members')"],
+                isUnique: false,
+                method: "gin"
+            }]);
+
+            // and the declaration's predicate embeds the very expression the index was created from
+            assert.ok(membersIndex.containmentForPath("members").contains({ userId: "u1" }).sql
+                .contains(info.indexes[0].expressions[0]));
+        });
+
+        await test("a nested array path uses #> and an underscored index name", async () =>
+        {
+            const { creator, db } = createCreator();
+
+            await creator.createSnapshotTableForAggregate(orderType, {
+                arrayIndexes: [SnapshotArrayIndex.forPath<OrderState>("customer.nicknames")]
+            });
+
+            assert.strictEqual(
+                db.commands[1],
+                "create index if not exists idx_order_snaps_customer_nicknames_gin on order_snaps using gin((data#>'{\"customer\",\"nicknames\"}') jsonb_path_ops);");
+        });
+
+        await test("withName overrides the derived suffix, keeping the _gin marker", async () =>
+        {
+            const { creator, db } = createCreator();
+
+            await creator.createSnapshotTableForAggregate(teamType, {
+                arrayIndexes: [SnapshotArrayIndex.forPath<TeamState>("members").withName("m")]
+            });
+
+            assert.strictEqual(
+                db.commands[1],
+                "create index if not exists idx_team_snaps_m_gin on team_snaps using gin((data->'members') jsonb_path_ops);");
+        });
+
+        // the _gin suffix is load-bearing, not descriptive: `if not exists` matches on NAME alone, so
+        // an index whose name is already taken is silently skipped rather than reported. Cross-kind
+        // collision through withName is what it has to survive, since one path indexed as both is
+        // itself rejected (see Cross-index validation).
+        await test("a GIN index name cannot collide with a btree one", async () =>
+        {
+            const { creator, db } = createCreator();
+
+            await assert.rejects(() => creator.createSnapshotTableForAggregate(orderType, {
+                indexes: [SnapshotIndex.forPath<OrderState>("status").withName("tags_gin")],
+                arrayIndexes: [SnapshotArrayIndex.forPath<OrderState>("tags")]
+            }));
+
+            // and nothing was emitted - the whole plan is validated before any DDL runs
+            assert.deepStrictEqual(db.commands, []);
+        });
+
+        await test("btree and GIN indexes are emitted in declaration order, btrees first", async () =>
+        {
+            const { creator, db } = createCreator();
+
+            const info = await creator.createSnapshotTableForAggregate(orderType, {
+                indexes: [SnapshotIndex.forPath<OrderState>("status"), SnapshotIndex.forPath<OrderState>("total", JsonValueType.numeric)],
+                arrayIndexes: [SnapshotArrayIndex.forPath<OrderState>("tags"), SnapshotArrayIndex.forPath<OrderState>("scores")]
+            });
+
+            assert.deepStrictEqual(db.commands, [
+                "create table if not exists order_snaps ( id varchar(40) primary key, data jsonb not null );",
+                "create index if not exists idx_order_snaps_status on order_snaps((data->>'status'));",
+                "create index if not exists idx_order_snaps_total on order_snaps(((data->>'total')::numeric));",
+                "create index if not exists idx_order_snaps_tags_gin on order_snaps using gin((data->'tags') jsonb_path_ops);",
+                "create index if not exists idx_order_snaps_scores_gin on order_snaps using gin((data->'scores') jsonb_path_ops);"
+            ]);
+
+            assert.deepStrictEqual(info.indexes.map(t => t.method), [undefined, undefined, "gin", "gin"]);
+        });
+
+        // THE org-table change: a GIN index cannot lead with organization_id, so it is not a
+        // substitute for the standalone one the way a btree expression index is
+        await test("an org table declaring only array indexes still gets the standalone (organization_id) index", async () =>
+        {
+            const { creator, db } = createCreator();
+
+            const info = await creator.createSnapshotTableForOrgAggregate(invoiceType, {
+                arrayIndexes: [SnapshotArrayIndex.forPath<InvoiceState>("labels")]
+            });
+
+            assert.deepStrictEqual(db.commands, [
+                "create table if not exists invoice_snaps ( id varchar(40) primary key, organization_id varchar(40) not null, data jsonb not null );",
+                "create index if not exists idx_invoice_snaps_labels_gin on invoice_snaps using gin((data->'labels') jsonb_path_ops);",
+                "create index if not exists idx_invoice_snaps on invoice_snaps(organization_id);"
+            ]);
+
+            // organization_id is NOT prepended to the GIN index, and leadingColumn does not claim it -
+            // reporting one would be a claim the caller builds a predicate on
+            assert.strictEqual(info.indexes[0].leadingColumn, undefined);
+            assert.deepStrictEqual(info.indexes[0].expressions, ["(data->'labels')"]);
+        });
+
+        await test("an org table with a btree index skips the standalone one even alongside an array index", async () =>
+        {
+            const { creator, db } = createCreator();
+
+            await creator.createSnapshotTableForOrgAggregate(invoiceType, {
+                indexes: [SnapshotIndex.forPath<InvoiceState>("status")],
+                arrayIndexes: [SnapshotArrayIndex.forPath<InvoiceState>("labels")]
+            });
+
+            assert.deepStrictEqual(db.commands, [
+                "create table if not exists invoice_snaps ( id varchar(40) primary key, organization_id varchar(40) not null, data jsonb not null );",
+                "create index if not exists idx_invoice_snaps_status on invoice_snaps(organization_id, (data->>'status'));",
+                "create index if not exists idx_invoice_snaps_labels_gin on invoice_snaps using gin((data->'labels') jsonb_path_ops);"
+            ]);
+        });
+
+        // the options object is an addition, not a replacement: every existing migration passes a
+        // bare array and must keep emitting byte-identical DDL
+        await test("the bare-array and options-object forms are interchangeable", async () =>
+        {
+            const bare = createCreator();
+            const wrapped = createCreator();
+
+            const indexes = [SnapshotIndex.forPath<OrderState>("status"), SnapshotIndex.forPath<OrderState>("orderNumber").asUnique()];
+
+            const bareInfo = await bare.creator.createSnapshotTableForAggregate(orderType, indexes);
+            const wrappedInfo = await wrapped.creator.createSnapshotTableForAggregate(orderType, { indexes });
+
+            assert.deepStrictEqual(bare.db.commands, wrapped.db.commands);
+            assert.deepStrictEqual(bareInfo, wrappedInfo);
+
+            const bareOrg = createCreator();
+            const wrappedOrg = createCreator();
+
+            await bareOrg.creator.createSnapshotTableForOrgAggregate(invoiceType);
+            await wrappedOrg.creator.createSnapshotTableForOrgAggregate(invoiceType, {});
+
+            assert.deepStrictEqual(bareOrg.db.commands, wrappedOrg.db.commands);
         });
 
         await test("a unique index emits a unique index under a _uq name", async () =>
@@ -629,6 +818,311 @@ await describe("DbTableCreator tests", async () =>
             SnapshotIndex.forPath<LooseState>("organizationId");
 
             assert.ok(true);
+        });
+    });
+
+    await describe("Array path typing", async () =>
+    {
+        // the two unions are mirrors: SnapshotLeafPath maps arrays to never, this one maps leaves to
+        // never. Both directions are pinned, because the disjointness is what makes a key belong to
+        // exactly one kind of index.
+        await test("array paths and scalar paths are disjoint", () =>
+        {
+            SnapshotArrayIndex.forPath<OrderState>("tags");
+            SnapshotArrayIndex.forPath<TeamState>("members");
+            SnapshotArrayIndex.forPath<OrderState>("customer.nicknames");    // nested
+            SnapshotArrayIndex.forPath<OrderState>("customer.contacts");     // nested array of records
+            SnapshotArrayIndex.forPath<OrderState>("optionalTags");          // an optional array key
+
+            // @ts-expect-error - a leaf scalar is not an array path
+            SnapshotArrayIndex.forPath<OrderState>("status");
+            // @ts-expect-error - nor is an object-valued key
+            SnapshotArrayIndex.forPath<OrderState>("customer");
+            // @ts-expect-error - array elements are not addressable by dot notation
+            SnapshotArrayIndex.forPath<OrderState>("tags.length");
+            // @ts-expect-error - a Function-typed key, and no fabricated subtree
+            SnapshotArrayIndex.forPath<OrderState>("validator");
+            // @ts-expect-error - "tgas" is not a key of OrderState
+            SnapshotArrayIndex.forPath<OrderState>("tgas");
+
+            // ...and the other direction: SnapshotIndex still refuses every one of these
+            // @ts-expect-error - an array-valued key is not a leaf
+            SnapshotIndex.forPath<TeamState>("members");
+
+            // the escape hatch takes any string
+            const dynamicKey: string = "tags";
+            SnapshotArrayIndex.forRawPath<OrderState>(dynamicKey);
+
+            assert.ok(true);
+        });
+
+        // scalar arrays and arrays of FLAT records are offered; everything else fails closed to
+        // forRawPath, where the caller explicitly owns knowing the elements' stored shape
+        await test("only arrays of scalars or of flat scalar records are offered", () =>
+        {
+            SnapshotArrayIndex.forPath<OrderState>("scores");                // ReadonlyArray<number>
+            SnapshotArrayIndex.forPath<OrderState>("flags");                 // Array<boolean>
+            SnapshotArrayIndex.forPath<OrderState>("mixed");                 // a union of scalars is fine
+
+            // @ts-expect-error - THE case the non-distributive brackets exist for: naked, the
+            // `string` arm alone would yield the key and this would silently compile
+            SnapshotArrayIndex.forPath<OrderState>("tainted");
+            // @ts-expect-error - an array of arrays is not offerable
+            SnapshotArrayIndex.forPath<OrderState>("matrix");
+            // @ts-expect-error - an element carrying a nested member is not a flat record
+            SnapshotArrayIndex.forPath<OrderState>("nested");
+            // @ts-expect-error - an element carrying a method is not a flat record, which is how an
+            // array of Serializable is kept out: its stored keys are not its TypeScript names
+            SnapshotArrayIndex.forPath<OrderState>("serials");
+
+            // forRawPath remains the deliberate way through for every one of those
+            SnapshotArrayIndex.forRawPath<OrderState>("serials");
+
+            assert.ok(true);
+        });
+
+        // organizationId is a real column on an org snapshot table, so it is excluded from this path
+        // union for the same reason it is excluded from SnapshotPath
+        await test("organizationId is not offered as an array path", () =>
+        {
+            SnapshotArrayIndex.forPath<InvoiceState>("labels");
+            SnapshotArrayIndex.forPath<InvoiceState>("customer.nicknames");
+
+            // @ts-expect-error - organizationId is a real column, not a key inside data
+            SnapshotArrayIndex.forPath<InvoiceState>("organizationId");
+
+            assert.ok(true);
+        });
+
+        // the element type is resolved FROM the path literal, so the match argument is checked
+        // against the array's element shape with no explicit type argument at the call site
+        await test("match values are checked against the element shape", () =>
+        {
+            const members = SnapshotArrayIndex.forPath<TeamState>("members").containmentForPath("members");
+
+            members.contains({ userId: "u1", isDeactivated: false });
+            members.contains({ role: "admin" });
+            members.containsAll([{ userId: "u1" }, { role: "admin" }]);
+            members.containsAny([{ role: "admin" }, { role: "owner" }]);
+
+            // @ts-expect-error - a typo'd field
+            members.contains({ userld: "u1" });
+            // @ts-expect-error - a wrong value type
+            members.contains({ isDeactivated: "false" });
+            // @ts-expect-error - an empty match is true for every array, so it would return every row.
+            // Both halves are pinned at once: the unused directive fails the build if the compile
+            // error stops occurring, and the assert fails if the runtime guard stops firing.
+            assert.throws(() => members.contains({}));
+            // @ts-expect-error - a scalar against an array of records
+            members.contains("u1");
+            // @ts-expect-error - and the same rules apply inside containsAll
+            members.containsAll([{ userld: "u1" }]);
+
+            const tags = SnapshotArrayIndex.forPath<OrderState>("tags").containmentForPath("tags");
+
+            tags.contains("urgent");
+            tags.containsAny(["urgent", "rush"]);
+
+            // @ts-expect-error - a record against an array of scalars
+            tags.contains({ userId: "u1" });
+            // @ts-expect-error - the wrong scalar type
+            tags.contains(3);
+
+            const scores = SnapshotArrayIndex.forPath<OrderState>("scores").containmentForPath("scores");
+            scores.contains(3);
+            // @ts-expect-error - the wrong scalar type
+            scores.contains("3");
+
+            // a nested path resolves to its element type too
+            const nicknames = SnapshotArrayIndex.forPath<OrderState>("customer.nicknames").containmentForPath("customer.nicknames");
+            nicknames.contains("nn");
+            // @ts-expect-error - the wrong scalar type, through a nested path
+            nicknames.contains(3);
+
+            assert.ok(true);
+        });
+
+        // the read side is checked by the same type as the write side, and membership is enforced at
+        // runtime - the same seam SnapshotIndex.expressionForPath has
+        await test("read-side paths are checked against the state, membership at runtime", () =>
+        {
+            const tagsIndex = SnapshotArrayIndex.forPath<OrderState>("tags");
+
+            // covered by this index: compiles and resolves
+            assert.strictEqual(
+                tagsIndex.containmentForPath("tags").contains("urgent").sql,
+                "((data->'tags') @> cast(? as jsonb))");
+
+            // a valid OrderState array path this index does not cover: type-checks, throws
+            assert.throws(() => tagsIndex.containmentForPath("scores"));
+
+            // @ts-expect-error - "tgas" is not a key of OrderState
+            assert.throws(() => tagsIndex.containmentForPath("tgas"));
+            // @ts-expect-error - a leaf scalar is not an array path
+            assert.throws(() => tagsIndex.containmentForPath("status"));
+
+            // the raw door stays open, and is unchecked by default
+            const dynamicKey: string = "tags";
+            assert.strictEqual(
+                tagsIndex.containmentForRawPath(dynamicKey).contains({ anything: 1 }).params[0],
+                "[{\"anything\":1}]");
+
+            // ...and checked when the element type is supplied
+            const typedRaw = tagsIndex.containmentForRawPath<{ id: string; }>("tags");
+            typedRaw.contains({ id: "x" });
+            // @ts-expect-error - with the element type supplied, a typo is caught
+            typedRaw.contains({ idd: "x" });
+        });
+
+        await test("an array builder bound to the wrong state is rejected by the create method", async () =>
+        {
+            const { creator } = createCreator();
+
+            // @ts-expect-error - an InvoiceState array index cannot be used on an Order snapshot table
+            await creator.createSnapshotTableForAggregate(orderType, { arrayIndexes: [SnapshotArrayIndex.forPath<InvoiceState>("labels")] });
+        });
+    });
+
+    await describe("Array containment predicates", async () =>
+    {
+        const members = SnapshotArrayIndex.forPath<TeamState>("members").containmentForPath("members");
+        const tags = SnapshotArrayIndex.forPath<OrderState>("tags").containmentForPath("tags");
+
+        // the single-source proof for the array side: the fragment embeds the same expression the DDL
+        // is emitted from, and `cast(? as jsonb)` rather than `?::jsonb` keeps no `?` adjacent to a `:`
+        await test("contains emits one @> term against the declared expression", () =>
+        {
+            const p = members.contains({ userId: "u1", isDeactivated: false });
+
+            assert.strictEqual(p.sql, "((data->'members') @> cast(? as jsonb))");
+            assert.deepStrictEqual(p.params, ["[{\"userId\":\"u1\",\"isDeactivated\":false}]"]);
+        });
+
+        // the reason this returns a predicate rather than an expression: a multi-field match must be
+        // ONE document, because two ANDed fragments ask whether some element has one field and some
+        // POSSIBLY DIFFERENT element has the other
+        await test("a multi-field match is a single containment document", () =>
+        {
+            const p = members.contains({ userId: "u1", isDeactivated: false });
+
+            assert.strictEqual(p.params.length, 1);
+            assert.strictEqual(p.sql.match(/@>/gu)!.length, 1);
+        });
+
+        await test("a nested path uses #> rather than #>>", () =>
+        {
+            const p = SnapshotArrayIndex.forPath<OrderState>("customer.nicknames")
+                .containmentForPath("customer.nicknames").contains("nn");
+
+            assert.strictEqual(p.sql, "((data#>'{\"customer\",\"nicknames\"}') @> cast(? as jsonb))");
+        });
+
+        await test("a scalar array binds an array-wrapped value", () =>
+        {
+            assert.deepStrictEqual(tags.contains("urgent").params, ["[\"urgent\"]"]);
+            assert.deepStrictEqual(
+                SnapshotArrayIndex.forPath<OrderState>("scores").containmentForPath("scores").contains(3).params,
+                ["[3]"]);
+        });
+
+        // containsAll is one document and so one index scan, not N predicates
+        await test("containsAll is one term with a multi-element document", () =>
+        {
+            const p = members.containsAll([{ role: "admin" }, { role: "owner" }]);
+
+            assert.strictEqual(p.sql, "((data->'members') @> cast(? as jsonb))");
+            assert.deepStrictEqual(p.params, ["[{\"role\":\"admin\"},{\"role\":\"owner\"}]"]);
+        });
+
+        // @> cannot express a disjunction, so containsAny ORs one term per match - which the planner
+        // turns into a BitmapOr over the same index. Deliberately not ?|, whose ? is knex's placeholder.
+        await test("containsAny ORs one term per match, parenthesized as a whole", () =>
+        {
+            const p = members.containsAny([{ role: "admin" }, { role: "owner" }]);
+
+            assert.strictEqual(
+                p.sql,
+                "((data->'members') @> cast(? as jsonb) or (data->'members') @> cast(? as jsonb))");
+            assert.deepStrictEqual(p.params, ["[{\"role\":\"admin\"}]", "[{\"role\":\"owner\"}]"]);
+
+            // the outer parens are load-bearing: `where organization_id = ? and A or B` binds `or` at
+            // the top and returns other organizations' rows
+            assert.ok(p.sql.startsWith("(") && p.sql.endsWith(")"));
+        });
+
+        // sql and params are produced together precisely so this cannot drift: a caller counting
+        // placeholders by hand is a positional-binding bug waiting to happen
+        await test("the placeholder count always matches the parameter count", () =>
+        {
+            for (const n of [1, 2, 3, 4])
+            {
+                const matches = Array.from({ length: n }, (_, i) => ({ role: `r${i}` }));
+                const p = members.containsAny(matches);
+
+                assert.strictEqual(p.params.length, n);
+                assert.strictEqual(p.sql.match(/\?/gu)!.length, n);
+            }
+        });
+
+        // nothing this API emits contains a `?` other than knex's own placeholders - the jsonb
+        // existence operators are knex's binding character, and jsonb_path_ops cannot serve them anyway
+        await test("no jsonb ? operator is ever emitted", () =>
+        {
+            for (const p of [members.contains({ role: "a" }), members.containsAll([{ role: "a" }]), members.containsAny([{ role: "a" }, { role: "b" }])])
+                assert.strictEqual(p.sql.replaceAll("cast(? as jsonb)", ""), p.sql.replaceAll("cast(? as jsonb)", "").replaceAll("?", ""));
+        });
+
+        // every rule here rejects a silent WRONG ANSWER rather than a malformed query
+        await test("matches that would silently match everything are rejected", () =>
+        {
+            // @> '[]' is true for every array, so this would return the whole table
+            assert.throws(() => members.containsAll([]));
+            // ...and this would emit no predicate at all
+            assert.throws(() => members.containsAny([]));
+        });
+
+        await test("values that do not survive JSON.stringify are rejected", () =>
+        {
+            const raw = SnapshotArrayIndex.forRawPath<OrderState>("tags").containmentForRawPath("tags");
+
+            // all four render as `null`, turning a bug into a null-element match
+            assert.throws(() => raw.contains(null));
+            assert.throws(() => raw.contains(undefined));
+            assert.throws(() => raw.contains(Number.NaN));
+            assert.throws(() => raw.contains(Number.POSITIVE_INFINITY));
+
+            // an empty record, reached through the raw door where the type does not stop it
+            assert.throws(() => raw.contains({}));
+            // a record with a nested value
+            assert.throws(() => raw.contains({ a: { b: 1 } }));
+            // a record whose only value is undefined - JSON.stringify would drop it to `{}`
+            assert.throws(() => raw.contains({ a: undefined }));
+            // an array as a match: not what any typed path offers
+            assert.throws(() => raw.contains(["a"]));
+
+            // and the valid ones still pass
+            assert.deepStrictEqual(raw.contains("a").params, ["[\"a\"]"]);
+            assert.deepStrictEqual(raw.contains(0).params, ["[0]"]);
+            assert.deepStrictEqual(raw.contains(false).params, ["[false]"]);
+        });
+
+        await test("withName overrides the derived suffix and cannot be set twice", () =>
+        {
+            assert.strictEqual(SnapshotArrayIndex.forPath<TeamState>("members").nameSuffix, "members");
+            assert.strictEqual(
+                SnapshotArrayIndex.forPath<OrderState>("customer.nicknames").nameSuffix, "customer_nicknames");
+            assert.strictEqual(SnapshotArrayIndex.forPath<TeamState>("members").withName("m").nameSuffix, "m");
+
+            assert.throws(() => SnapshotArrayIndex.forPath<TeamState>("members").withName("m").withName("n"));
+            assert.throws(() => SnapshotArrayIndex.forPath<TeamState>("members").withName("Bad-Name"));
+        });
+
+        await test("a path that could break out of the string literal is rejected", () =>
+        {
+            assert.throws(() => SnapshotArrayIndex.forRawPath<OrderState>("tags'); drop table order_snaps; --"));
+            assert.throws(() => SnapshotArrayIndex.forRawPath<OrderState>("ta gs"));
+            assert.throws(() => SnapshotArrayIndex.forRawPath<OrderState>(""));
+            assert.throws(() => SnapshotArrayIndex.forRawPath<OrderState>("a..b"));
         });
     });
 
@@ -1069,6 +1563,79 @@ await describe("DbTableCreator tests", async () =>
 
             assert.deepStrictEqual(db.commands, []);
         });
+
+        await test("rejects the same array index declared twice", async () =>
+        {
+            const { creator, db } = createCreator();
+
+            await assert.rejects(() => creator.createSnapshotTableForAggregate(teamType, {
+                arrayIndexes: [SnapshotArrayIndex.forPath<TeamState>("members"), SnapshotArrayIndex.forPath<TeamState>("members")]
+            }));
+
+            // identity is the path alone - an explicit name does not make it a different index
+            await assert.rejects(() => creator.createSnapshotTableForAggregate(teamType, {
+                arrayIndexes: [SnapshotArrayIndex.forPath<TeamState>("members"), SnapshotArrayIndex.forPath<TeamState>("members").withName("m")]
+            }));
+
+            assert.deepStrictEqual(db.commands, []);
+        });
+
+        // one key inside `data` holds one kind of value: indexing it as a scalar means the text
+        // rendering of the whole subtree, which jsonb orders itself - so one of the two declarations
+        // has the wrong idea of the state. Unreachable through the typed doors, since the two path
+        // unions are disjoint, but forRawPath makes it reachable.
+        await test("rejects one path indexed both as a scalar and as an array", async () =>
+        {
+            const { creator, db } = createCreator();
+
+            await assert.rejects(
+                () => creator.createSnapshotTableForAggregate(orderType, {
+                    indexes: [SnapshotIndex.forRawPath<OrderState>("tags")],
+                    arrayIndexes: [SnapshotArrayIndex.forPath<OrderState>("tags")]
+                }),
+                (e: Error) => e.message.contains("both as a scalar and as an array"));
+
+            assert.deepStrictEqual(db.commands, []);
+        });
+
+        await test("rejects a plain object masquerading as a SnapshotArrayIndex", async () =>
+        {
+            const { creator } = createCreator();
+            // structurally complete, so only the instanceof check can reject it
+            const notABuilder = {
+                path: "members", paths: ["members"], expressions: ["(data->'members')"], nameSuffix: "members",
+                containmentForPath: (): any => ({}),
+                containmentForRawPath: (): any => ({})
+            };
+
+            await assert.rejects(() => creator.createSnapshotTableForAggregate(teamType, {
+                arrayIndexes: [notABuilder as unknown as SnapshotArrayIndex<TeamState>]
+            }));
+        });
+
+        await test("rejects a second argument that is neither an array nor an options object", async () =>
+        {
+            const { creator } = createCreator();
+
+            await assert.rejects(() => creator.createSnapshotTableForAggregate(orderType, "status" as any));
+            await assert.rejects(() => creator.createSnapshotTableForOrgAggregate(invoiceType, 7 as any));
+        });
+
+        // the budget is one char tighter than a unique index's, because _gin is one char longer
+        // than _uq. `order_snaps` leaves 63 - 4 (idx_) - 11 (table) - 1 (_) - 4 (_gin) = 43.
+        await test("the identifier limit is 4 chars tighter for an array index, because of the _gin suffix", async () =>
+        {
+            const { creator, db } = createCreator();
+
+            await creator.createSnapshotTableForAggregate(orderType, {
+                arrayIndexes: [SnapshotArrayIndex.forPath<OrderState>("tags").withName("a".repeat(43))]
+            });
+            assert.strictEqual(db.commands.length, 2);
+
+            await assert.rejects(() => creator.createSnapshotTableForAggregate(orderType, {
+                arrayIndexes: [SnapshotArrayIndex.forPath<OrderState>("tags").withName("a".repeat(44))]
+            }));
+        });
     });
 
     await describe("Against Postgres", async () =>
@@ -1090,12 +1657,12 @@ await describe("DbTableCreator tests", async () =>
             db = new KnexPgDb(dbConnectionFactory);
             creator = new DbTableCreator(db, new SilentLogger());
 
-            await db.executeCommand("drop table if exists order_events; drop table if exists order_snaps; drop table if exists invoice_events; drop table if exists invoice_snaps;");
+            await db.executeCommand("drop table if exists order_events; drop table if exists order_snaps; drop table if exists invoice_events; drop table if exists invoice_snaps; drop table if exists team_snaps;");
         });
 
         after(async () =>
         {
-            await db.executeCommand("drop table if exists order_events; drop table if exists order_snaps; drop table if exists invoice_events; drop table if exists invoice_snaps;");
+            await db.executeCommand("drop table if exists order_events; drop table if exists order_snaps; drop table if exists invoice_events; drop table if exists invoice_snaps; drop table if exists team_snaps;");
             await dbConnectionFactory.dispose();
         });
 
@@ -1103,10 +1670,13 @@ await describe("DbTableCreator tests", async () =>
         // normalizes an index expression when it stores it, and the planner matches parse trees. So
         // ask the planner. Callers must seed enough rows and `analyze` first, or every plan is a seq
         // scan and the assertions pass vacuously.
-        const planFor = async (table: string, predicate: string): Promise<string> =>
+        // `params` is a strict superset of the original signature, and it makes these tests exercise
+        // the real knex binding path - which is itself a claim under test for the array predicates,
+        // whose values must arrive as bindings rather than as interpolated literals.
+        const planFor = async (table: string, predicate: string, ...params: ReadonlyArray<any>): Promise<string> =>
         {
             const explained = await db.executeQuery<any>(
-                `explain (costs off) select id from ${table} where ${predicate};`);
+                `explain (costs off) select id from ${table} where ${predicate};`, ...params);
 
             return explained.rows.map(t => t["QUERY PLAN"] as string).join("\n");
         };
@@ -1752,6 +2322,350 @@ await describe("DbTableCreator tests", async () =>
             assert.ok(byName.has("idx_invoice_snaps"));
             assert.ok(byName.get("idx_invoice_snaps")!.contains("organization_id"));
             assert.ok(!byName.get("idx_invoice_snaps")!.contains("UNIQUE"));
+        });
+
+        // ---- array containment -------------------------------------------------------------------
+
+        const membersIndex = SnapshotArrayIndex.forPath<TeamState>("members");
+        const members = membersIndex.containmentForPath("members");
+
+        const createTeams = async (): Promise<void> =>
+        {
+            await db.executeCommand("drop table if exists team_snaps;");
+            await creator.createSnapshotTableForAggregate(teamType, { arrayIndexes: [membersIndex] });
+        };
+
+        // 50,000 teams, each with two members: userId is highly selective (500 distinct),
+        // isDeactivated is not (every team has an active member) - the real shape of the driving
+        // query, and the one where a flat selectivity estimate could mislead the planner.
+        //
+        // The row count is load-bearing and is NOT the 5000 the btree planner tests use. A GIN scan
+        // carries a large fixed startup cost - scanning the entry tree for each search key - so at
+        // 5000 rows the bitmap index scan costs ~284 against a ~218 sequential scan of the whole
+        // table, and Postgres correctly prefers the seq scan. The index is *matched* either way
+        // (`set enable_seqscan = off` produces the bitmap plan with the right Index Cond), but
+        // asserting on the unaided plan needs a table big enough for the index to be the cheaper
+        // option. That is a real property of GIN, and it is why the caveats say a small snapshot
+        // table is better served by no index at all.
+        const seedTeams = async (): Promise<void> =>
+        {
+            await createTeams();
+
+            await db.executeCommand(
+                `insert into team_snaps (id, data)
+                 select 'team_' || g,
+                        json_build_object(
+                            'name', 'team' || g,
+                            'members', json_build_array(
+                                json_build_object('userId', 'u' || (g % 500), 'role', 'member', 'isDeactivated', g % 2 = 0),
+                                json_build_object('userId', 'other' || g, 'role', 'owner', 'isDeactivated', false)))::jsonb
+                 from generate_series(1, 50000) g;`);
+            await db.executeCommand("analyze team_snaps;");
+        };
+
+        await test("the GIN index is created with the jsonb_path_ops opclass and no column is added", async () =>
+        {
+            await seedTeams();
+
+            const columns = await db.executeQuery<any>(
+                `select column_name from information_schema.columns where table_name = 'team_snaps' order by ordinal_position;`);
+            assert.deepStrictEqual(columns.rows.map(t => t.column_name as string), ["id", "data"]);
+
+            const indexes = await db.executeQuery<any>(
+                `select indexdef from pg_indexes where tablename = 'team_snaps' and indexname = 'idx_team_snaps_members_gin';`);
+
+            assert.strictEqual(indexes.rows.length, 1);
+            assert.ok((indexes.rows[0].indexdef as string).contains("USING gin"), indexes.rows[0].indexdef);
+            assert.ok((indexes.rows[0].indexdef as string).contains("jsonb_path_ops"), indexes.rows[0].indexdef);
+        });
+
+        // the array-side equivalent of the expressionForPath proof, with TWO near-miss controls -
+        // without them a passing test cannot distinguish "the expression matched" from "the planner
+        // would have used an index anyway"
+        await test("a predicate built from containmentForPath uses the GIN index; two near-misses do not", async () =>
+        {
+            await seedTeams();
+
+            const p = members.contains({ userId: "u1", isDeactivated: false });
+            const plan = await planFor("team_snaps", p.sql, ...p.params);
+
+            assert.ok(plan.contains("idx_team_snaps_members_gin"), plan);
+            assert.ok(plan.contains("Bitmap Index Scan"), plan);
+
+            // control 1: `=` is not `@>`. It asks whether the array is EXACTLY that array, and the
+            // GIN opclass does not serve equality at all.
+            const equality = await planFor(
+                "team_snaps", `(data->'members') = cast(? as jsonb)`, "[{\"userId\":\"u1\"}]");
+            assert.ok(!equality.contains("idx_team_snaps_members_gin"), equality);
+            assert.ok(equality.contains("Seq Scan"), equality);
+
+            // control 2: the whole-document form. The index covers the DECLARED PATH, not `data`, so
+            // this cannot use it - which is precisely why a whole-document GIN was rejected.
+            const wholeDocument = await planFor(
+                "team_snaps", `data @> cast(? as jsonb)`, "{\"members\":[{\"userId\":\"u1\"}]}");
+            assert.ok(!wholeDocument.contains("idx_team_snaps_members_gin"), wholeDocument);
+            assert.ok(wholeDocument.contains("Seq Scan"), wholeDocument);
+        });
+
+        // THE correctness claim of this whole feature, and the reason the API returns a predicate
+        // rather than an expression: both fields must hold on the SAME element. A developer writing
+        // the SQL by hand reaches for two ANDed fragments, which silently asks a weaker question.
+        await test("a multi-field match requires one element to carry every field", async () =>
+        {
+            await db.executeCommand("drop table if exists team_snaps;");
+            await creator.createSnapshotTableForAggregate(teamType, { arrayIndexes: [membersIndex] });
+
+            // u1 IS a member, but deactivated. u2 is active. No single member is both u1 and active.
+            await db.executeCommand(
+                `insert into team_snaps (id, data) values(?, ?);`,
+                "team_1", JSON.stringify({
+                    name: "t1",
+                    members: [
+                        { userId: "u1", role: "member", isDeactivated: true },
+                        { userId: "u2", role: "owner", isDeactivated: false }
+                    ]
+                }));
+
+            const p = members.contains({ userId: "u1", isDeactivated: false });
+            const correct = await db.executeQuery<any>(
+                `select id from team_snaps where ${p.sql};`, ...p.params);
+
+            assert.deepStrictEqual(correct.rows.map(t => t.id as string), []);
+
+            // the hand-written form a developer would reach for: two separate containment tests.
+            // Same intent, different question - and it returns the row.
+            const byUser = members.contains({ userId: "u1" });
+            const byActive = members.contains({ isDeactivated: false });
+            const wrong = await db.executeQuery<any>(
+                `select id from team_snaps where ${byUser.sql} and ${byActive.sql};`,
+                ...byUser.params, ...byActive.params);
+
+            assert.deepStrictEqual(wrong.rows.map(t => t.id as string), ["team_1"]);
+
+            // and the same match against a team where one member IS both does return it
+            await db.executeCommand(
+                `insert into team_snaps (id, data) values(?, ?);`,
+                "team_2", JSON.stringify({ name: "t2", members: [{ userId: "u1", role: "member", isDeactivated: false }] }));
+
+            const found = await db.executeQuery<any>(`select id from team_snaps where ${p.sql};`, ...p.params);
+            assert.deepStrictEqual(found.rows.map(t => t.id as string), ["team_2"]);
+        });
+
+        // jsonb object containment is partial and recursive: a match names a SUBSET of the element's
+        // fields, and an element that omits a named field never matches one
+        await test("containment is partial over an element's fields, and absent fields never match", async () =>
+        {
+            await db.executeCommand("drop table if exists team_snaps;");
+            await creator.createSnapshotTableForAggregate(teamType, { arrayIndexes: [membersIndex] });
+
+            await db.executeCommand(`insert into team_snaps (id, data) values(?, ?);`,
+                "full", JSON.stringify({ name: "f", members: [{ userId: "u1", role: "admin", isDeactivated: false }] }));
+            // a member missing isDeactivated altogether
+            await db.executeCommand(`insert into team_snaps (id, data) values(?, ?);`,
+                "partial", JSON.stringify({ name: "p", members: [{ userId: "u1" }] }));
+
+            const idsFor = async (p: { sql: string; params: ReadonlyArray<string>; }): Promise<Array<string>> =>
+                (await db.executeQuery<any>(`select id from team_snaps where ${p.sql} order by id;`, ...p.params))
+                    .rows.map(t => t.id as string);
+
+            // naming a subset matches the element that also carries more
+            assert.deepStrictEqual(await idsFor(members.contains({ userId: "u1" })), ["full", "partial"]);
+            // ...but naming a field the element does not carry does not
+            assert.deepStrictEqual(await idsFor(members.contains({ userId: "u1", isDeactivated: false })), ["full"]);
+        });
+
+        await test("containsAll and containsAny mean intersection and union", async () =>
+        {
+            await db.executeCommand("drop table if exists team_snaps;");
+            await creator.createSnapshotTableForAggregate(teamType, { arrayIndexes: [membersIndex] });
+
+            const insert = `insert into team_snaps (id, data) values(?, ?);`;
+            await db.executeCommand(insert, "both", JSON.stringify({ name: "b", members: [{ role: "admin" }, { role: "owner" }] }));
+            await db.executeCommand(insert, "admin", JSON.stringify({ name: "a", members: [{ role: "admin" }] }));
+            await db.executeCommand(insert, "owner", JSON.stringify({ name: "o", members: [{ role: "owner" }] }));
+
+            const idsFor = async (p: { sql: string; params: ReadonlyArray<string>; }): Promise<Array<string>> =>
+                (await db.executeQuery<any>(`select id from team_snaps where ${p.sql} order by id;`, ...p.params))
+                    .rows.map(t => t.id as string);
+
+            assert.deepStrictEqual(await idsFor(members.containsAll([{ role: "admin" }, { role: "owner" }])), ["both"]);
+            assert.deepStrictEqual(await idsFor(members.containsAny([{ role: "admin" }, { role: "owner" }])), ["admin", "both", "owner"]);
+
+            // containment is set-like: order and multiplicity are irrelevant
+            assert.deepStrictEqual(await idsFor(members.containsAll([{ role: "owner" }, { role: "admin" }])), ["both"]);
+            assert.deepStrictEqual(await idsFor(members.containsAll([{ role: "admin" }, { role: "admin" }])), ["admin", "both"]);
+        });
+
+        await test("containsAny becomes a BitmapOr over the same index", async () =>
+        {
+            await seedTeams();
+
+            const p = members.containsAny([{ userId: "u1" }, { userId: "u2" }]);
+            const plan = await planFor("team_snaps", p.sql, ...p.params);
+
+            assert.ok(plan.contains("BitmapOr"), plan);
+            assert.ok(plan.contains("idx_team_snaps_members_gin"), plan);
+        });
+
+        // an absent key extracts SQL NULL, and NULL @> anything is NULL - so absent rows correctly
+        // never match, but `not (...)` does not return them either
+        await test("absent keys and empty arrays never match, in either direction", async () =>
+        {
+            await db.executeCommand("drop table if exists team_snaps;");
+            await creator.createSnapshotTableForAggregate(teamType, { arrayIndexes: [membersIndex] });
+
+            const insert = `insert into team_snaps (id, data) values(?, ?);`;
+            await db.executeCommand(insert, "absent", JSON.stringify({ name: "a" }));
+            await db.executeCommand(insert, "empty", JSON.stringify({ name: "e", members: [] }));
+            await db.executeCommand(insert, "hit", JSON.stringify({ name: "h", members: [{ userId: "u1" }] }));
+
+            const p = members.contains({ userId: "u1" });
+
+            const matched = await db.executeQuery<any>(`select id from team_snaps where ${p.sql};`, ...p.params);
+            assert.deepStrictEqual(matched.rows.map(t => t.id as string), ["hit"]);
+
+            // three-valued logic: negating the fragment returns NEITHER of the other two
+            const negated = await db.executeQuery<any>(`select id from team_snaps where not (${p.sql});`, ...p.params);
+            assert.deepStrictEqual(negated.rows.map(t => t.id as string), ["empty"]);
+        });
+
+        // the knex trap, pinned in both directions so the opclass choice cannot go stale
+        await test("the jsonb ? operator is unreachable, at the driver and at the index", async () =>
+        {
+            await db.executeCommand("drop table if exists order_snaps;");
+            await creator.createSnapshotTableForAggregate(orderType, {
+                arrayIndexes: [SnapshotArrayIndex.forPath<OrderState>("tags")]
+            });
+            await db.executeCommand(
+                `insert into order_snaps (id, data)
+                 select 'ord_' || g, json_build_object('tags', json_build_array('t' || (g % 500)))::jsonb
+                 from generate_series(1, 5000) g;`);
+            await db.executeCommand("analyze order_snaps;");
+
+            // escaped, it survives knex end to end - the pg dialect's positionBindings turns `\?`
+            // back into a literal `?`. So the operator is reachable by hand...
+            const escaped = await planFor("order_snaps", `(data->'tags') \\? 't7'`);
+            // ...but jsonb_path_ops cannot serve it, which is the second reason that opclass was
+            // chosen: the trap is closed at the database as well as in this API
+            assert.ok(!escaped.contains("idx_order_snaps_tags_gin"), escaped);
+            assert.ok(escaped.contains("Seq Scan"), escaped);
+
+            // unescaped, knex eats the operator as a placeholder and the call fails outright
+            await assert.rejects(() => planFor("order_snaps", `(data->'tags') ? 't7'`));
+            await assert.rejects(() => planFor("order_snaps", `(data->'tags') ? 't7'`, "x"));
+
+            // and @> over the same table is served
+            const containment = SnapshotArrayIndex.forPath<OrderState>("tags").containmentForPath("tags").contains("t7");
+            const plan = await planFor("order_snaps", containment.sql, ...containment.params);
+            assert.ok(plan.contains("idx_order_snaps_tags_gin"), plan);
+        });
+
+        // the org-table change: a GIN index does not lead with organization_id, so the standalone
+        // btree must still be there for the planner to work with
+        await test("an org table with only an array index carries both indexes, and scopes correctly", async () =>
+        {
+            await db.executeCommand("drop table if exists invoice_snaps;");
+
+            const labelsIndex = SnapshotArrayIndex.forPath<InvoiceState>("labels");
+            const info = await creator.createSnapshotTableForOrgAggregate(invoiceType, { arrayIndexes: [labelsIndex] });
+
+            const indexes = await db.executeQuery<any>(
+                `select indexname, indexdef from pg_indexes where tablename = 'invoice_snaps' order by indexname;`);
+            const byName = new Map(indexes.rows.map(t => [t.indexname as string, t.indexdef as string]));
+
+            assert.ok(byName.has("idx_invoice_snaps_labels_gin"));
+            assert.ok(byName.get("idx_invoice_snaps_labels_gin")!.contains("USING gin"));
+            assert.ok(byName.get("idx_invoice_snaps_labels_gin")!.contains("jsonb_path_ops"));
+            // the GIN index does NOT carry organization_id...
+            assert.ok(!byName.get("idx_invoice_snaps_labels_gin")!.contains("organization_id"));
+            // ...so the standalone one must exist, and leadingColumn must not claim otherwise
+            assert.ok(byName.has("idx_invoice_snaps"));
+            assert.strictEqual(info.indexes[0].leadingColumn, undefined);
+
+            // 7 organizations against 500 labels, deliberately coprime: with a shared factor every
+            // row carrying a given label lands in ONE organization, and the scoped-vs-unscoped
+            // comparison below passes vacuously
+            await db.executeCommand(
+                `insert into invoice_snaps (id, organization_id, data)
+                 select 'inv_' || g, 'org_' || (g % 7),
+                        json_build_object('labels', json_build_array('l' || (g % 500)))::jsonb
+                 from generate_series(1, 50000) g;`);
+            await db.executeCommand("analyze invoice_snaps;");
+
+            const p = labelsIndex.containmentForPath("labels").contains("l7");
+
+            // the GIN index is used even with the org filter present. Deliberately NOT asserting
+            // BitmapAnd: the planner may legitimately use the GIN alone and filter on the heap.
+            const plan = await planFor("invoice_snaps", `organization_id = ? and ${p.sql}`, "org_2", ...p.params);
+            assert.ok(plan.contains("idx_invoice_snaps_labels_gin"), plan);
+
+            // and the results are org-scoped, which is the caller's job rather than the index's
+            const scoped = await db.executeQuery<any>(
+                `select id from invoice_snaps where organization_id = ? and ${p.sql};`, "org_2", ...p.params);
+            assert.ok(scoped.rows.length > 0);
+
+            const all = await db.executeQuery<any>(`select id from invoice_snaps where ${p.sql};`, ...p.params);
+            assert.ok(all.rows.length > scoped.rows.length);
+        });
+
+        // pins the PREMISES the design rests on, so its rationale cannot silently go stale
+        await test("the multicolumn GIN and unique GIN forms this design rejects are genuinely unavailable", async () =>
+        {
+            await createTeams();
+
+            // why an array index does not lead with organization_id: a varchar has no GIN opclass in
+            // core, so this needs btree_gin - not a trusted extension on PG 12
+            await db.executeCommand("drop table if exists invoice_snaps;");
+            await creator.createSnapshotTableForOrgAggregate(invoiceType, {
+                arrayIndexes: [SnapshotArrayIndex.forPath<InvoiceState>("labels")]
+            });
+            await assert.rejects(() => db.executeCommand(
+                `create index idx_probe_multicolumn on invoice_snaps using gin (organization_id, (data->'labels') jsonb_path_ops);`));
+
+            // why SnapshotArrayIndex has no asUnique: GIN cannot enforce uniqueness at all
+            await assert.rejects(() => db.executeCommand(
+                `create unique index idx_probe_unique on team_snaps using gin((data->'members') jsonb_path_ops);`));
+        });
+
+        // jsonb stores numbers as numeric, so equality is numeric equality. Both sides of this API
+        // stringify from JavaScript so they agree by construction, but a value written by anything
+        // else may not - pinned so the doc bullet cannot drift from the behaviour.
+        await test("jsonb normalizes numbers, so 1 and 1.0 are the same element", async () =>
+        {
+            const result = await db.executeQuery<any>(
+                `select ('[1]'::jsonb @> '[1.0]'::jsonb) as forward, ('[1.0]'::jsonb @> '[1]'::jsonb) as backward;`);
+
+            assert.strictEqual(result.rows[0].forward, true);
+            assert.strictEqual(result.rows[0].backward, true);
+        });
+
+        // the write path the repositories actually emit, against a table carrying a GIN index
+        await test("SnapshotBaseRepository's insert and upsert succeed against a table with an array index", async () =>
+        {
+            await db.executeCommand("drop table if exists team_snaps;");
+            await creator.createSnapshotTableForAggregate(teamType, { arrayIndexes: [membersIndex] });
+
+            // the exact statement SnapshotBaseRepository.save emits for a new aggregate
+            await db.executeCommand(
+                `insert into team_snaps (id, data) values(?, ?);`,
+                "team_1", JSON.stringify({ id: "team_1", name: "t", members: [{ userId: "u1", role: "member", isDeactivated: true }] }));
+
+            // and the one it emits for an existing aggregate
+            await db.executeCommand(
+                `insert into team_snaps (id, data) values(?, ?) on conflict (id) do update set data = excluded.data;`,
+                "team_1", JSON.stringify({ id: "team_1", name: "t", members: [{ userId: "u1", role: "member", isDeactivated: false }] }));
+
+            // the GIN index sees the updated value, with nothing populating a column
+            const p = members.contains({ userId: "u1", isDeactivated: false });
+            const result = await db.executeQuery<any>(`select id from team_snaps where ${p.sql};`, ...p.params);
+
+            assert.deepStrictEqual(result.rows.map(t => t.id as string), ["team_1"]);
+
+            // ...and the pre-update value no longer matches
+            const stale = members.contains({ userId: "u1", isDeactivated: true });
+            const staleResult = await db.executeQuery<any>(`select id from team_snaps where ${stale.sql};`, ...stale.params);
+
+            assert.deepStrictEqual(staleResult.rows.map(t => t.id as string), []);
         });
     });
 });

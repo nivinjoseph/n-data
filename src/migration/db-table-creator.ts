@@ -3,6 +3,7 @@ import { AggregateState, OrgAggregateState } from "@nivinjoseph/n-domain";
 import { Db } from "../db/db.js";
 import { Logger } from "@nivinjoseph/n-log";
 import { AggregateRootClass, AggregateRootClassOf, DataHelper, OrgAggregateRootClass, OrgAggregateRootClassOf } from "../repository/data-helper.js";
+import { SnapshotArrayIndex } from "./snapshot-array-index.js";
 import { SnapshotIndex } from "./snapshot-index.js";
 
 /**
@@ -26,17 +27,57 @@ export interface SnapshotTableIndexInfo
     readonly expressions: ReadonlyArray<string>;
 
     /**
-     * Whether the index enforces uniqueness.
+     * Whether the index enforces uniqueness. Always false for a `gin` index - Postgres rejects
+     * `create unique index ... using gin` outright.
      */
     readonly isUnique: boolean;
+
+    /**
+     * The access method the index was created with: `"gin"` for an array-containment index,
+     * `undefined` for the default btree.
+     *
+     * It decides what a predicate may be. A btree index serves `=`, ranges and `order by` over
+     * {@link expressions}; a GIN index serves `@>` containment and nothing else, and only through the
+     * fragments `SnapshotArrayIndex.containmentForPath` produces.
+     */
+    readonly method?: "gin";
 
     /**
      * A real column the index leads with ahead of {@link expressions} - `organization_id` on an
      * org-scoped table, `undefined` otherwise. A predicate must constrain this too before any of the
      * expressions can be used; conversely, constraining it alone is a valid leading prefix and does
      * use the index.
+     *
+     * `undefined` for a `gin` index **including on an org-scoped table**, which genuinely does not
+     * lead with `organization_id`: a multicolumn GIN over a varchar column would need the `btree_gin`
+     * extension, which is not trusted on Postgres 12 and would demand superuser at migration time. An
+     * org-scoped table declaring one therefore always carries a standalone `(organization_id)` btree
+     * index for the planner to BitmapAnd the GIN scan against. Constraining `organization_id` remains
+     * mandatory regardless - that is tenant isolation, a correctness rule independent of the plan.
      */
     readonly leadingColumn?: string;
+}
+
+/**
+ * What to create over a snapshot table's `data` column, beyond the table itself.
+ *
+ * Two collections rather than one, because the two kinds are not interchangeable: a
+ * {@link SnapshotIndex} is a btree over extracted text and answers `=`, ranges and `order by`; a
+ * {@link SnapshotArrayIndex} is a GIN over an extracted jsonb array and answers containment and
+ * nothing else. Keeping them apart is what lets each carry its own rules as a shape rather than as a
+ * runtime check - a GIN index cannot be unique, cannot compose, and cannot lead with a real column.
+ */
+export interface SnapshotTableOptions<TState>
+{
+    /**
+     * Btree expression indexes over leaf scalars inside `data`.
+     */
+    readonly indexes?: ReadonlyArray<SnapshotIndex<TState>>;
+
+    /**
+     * GIN containment indexes over arrays inside `data`.
+     */
+    readonly arrayIndexes?: ReadonlyArray<SnapshotArrayIndex<TState>>;
 }
 
 /**
@@ -203,20 +244,28 @@ export class DbTableCreator
      * `TState` is inferred from `aggregateType`, so every index's paths are checked against the
      * aggregate's real state shape.
      *
+     * An array inside `data` takes the other kind: pass `SnapshotArrayIndex` declarations as
+     * `arrayIndexes` on the options object, which builds a GIN containment index over the array as
+     * jsonb and answers membership questions of it.
+     *
      * @param {AggregateRootClassOf<TState>} aggregateType - The aggregate class whose snapshot table is created.
-     * @param {ReadonlyArray<SnapshotIndex<TState>>} [indexes] - Optional indexes over keys within `data`.
+     * @param {ReadonlyArray<SnapshotIndex<TState>> | SnapshotTableOptions<TState>} [indexesOrOptions] - Optional btree indexes over keys within `data`, or an options object carrying those and the array indexes.
      * @returns {Promise<SnapshotTableInfo>} A promise that resolves to the table's name and the indexes as created.
      * @throws {ArgumentNullException} If aggregateType is null or undefined, or an element of indexes is null or undefined.
      * @throws {ArgumentException} If aggregateType is not a function, the derived table or index name is invalid, or the indexes are invalid or duplicated.
      * @throws {DbException} If a DDL command fails.
      */
-    public async createSnapshotTableForAggregate<TState extends AggregateState>(aggregateType: AggregateRootClassOf<TState>, indexes?: ReadonlyArray<SnapshotIndex<TState>>): Promise<SnapshotTableInfo>
+    public async createSnapshotTableForAggregate<TState extends AggregateState>(aggregateType: AggregateRootClassOf<TState>, indexes?: ReadonlyArray<SnapshotIndex<TState>>): Promise<SnapshotTableInfo>;
+    public async createSnapshotTableForAggregate<TState extends AggregateState>(aggregateType: AggregateRootClassOf<TState>, options?: SnapshotTableOptions<TState>): Promise<SnapshotTableInfo>;
+    public async createSnapshotTableForAggregate<TState extends AggregateState>(aggregateType: AggregateRootClassOf<TState>, indexesOrOptions?: ReadonlyArray<SnapshotIndex<TState>> | SnapshotTableOptions<TState>): Promise<SnapshotTableInfo>
     {
         const tableName = this._validateTableName(DataHelper.createSnapshotTableName(aggregateType as AggregateRootClass));
 
-        this._validateIndexes(indexes);
+        const { indexes, arrayIndexes } = this._normalizeOptions(indexesOrOptions);
 
-        const plan = this._planIndexes(tableName, indexes);
+        this._validateIndexes(indexes, arrayIndexes);
+
+        const plan = this._planIndexes(tableName, indexes, arrayIndexes);
 
         await this._createTable(
             tableName,
@@ -236,30 +285,43 @@ export class DbTableCreator
      * column, and every index leads with it because `OrgSnapshotBaseRepository` requires every query
      * to constrain it - `get` and `getAll` do so themselves, and `query` obliges the caller to.
      *
-     * When no `indexes` are given, an index over `(organization_id)` is created to support
+     * When no btree `indexes` are given, an index over `(organization_id)` is created to support
      * org-scoped scans. When there are, each of them already leads with `organization_id`,
      * making a standalone one a strict subset of an index being built anyway - so it is skipped.
      * That is sound rather than merely plausible: constraining a leading column alone does use the
      * composite index, which is verified against Postgres by a planner test.
      *
+     * An `arrayIndexes` declaration does **not** count towards that: a GIN index cannot lead with
+     * `organization_id`, because a multicolumn GIN over a varchar column needs the `btree_gin`
+     * extension, which is not trusted on Postgres 12 and would demand superuser at migration time. So
+     * a table whose only indexes are array ones still gets the standalone `(organization_id)` index -
+     * both to serve a plain org-scoped scan, and to give the planner something to BitmapAnd the GIN
+     * scan against.
+     *
      * `TState` is inferred from `aggregateType`, so every index's paths are checked against the
      * aggregate's real state shape.
      *
      * @param {OrgAggregateRootClassOf<TState>} aggregateType - The org-scoped aggregate class whose snapshot table is created.
-     * @param {ReadonlyArray<SnapshotIndex<TState>>} [indexes] - Optional indexes over keys within `data`.
+     * @param {ReadonlyArray<SnapshotIndex<TState>> | SnapshotTableOptions<TState>} [indexesOrOptions] - Optional btree indexes over keys within `data`, or an options object carrying those and the array indexes.
      * @returns {Promise<SnapshotTableInfo>} A promise that resolves to the table's name and the indexes as created.
      * @throws {ArgumentNullException} If aggregateType is null or undefined, or an element of indexes is null or undefined.
      * @throws {ArgumentException} If aggregateType is not a function, the derived table or index name is invalid, or the indexes are invalid or duplicated.
      * @throws {DbException} If a DDL command fails.
      */
-    public async createSnapshotTableForOrgAggregate<TState extends OrgAggregateState>(aggregateType: OrgAggregateRootClassOf<TState>, indexes?: ReadonlyArray<SnapshotIndex<TState>>): Promise<SnapshotTableInfo>
+    public async createSnapshotTableForOrgAggregate<TState extends OrgAggregateState>(aggregateType: OrgAggregateRootClassOf<TState>, indexes?: ReadonlyArray<SnapshotIndex<TState>>): Promise<SnapshotTableInfo>;
+    public async createSnapshotTableForOrgAggregate<TState extends OrgAggregateState>(aggregateType: OrgAggregateRootClassOf<TState>, options?: SnapshotTableOptions<TState>): Promise<SnapshotTableInfo>;
+    public async createSnapshotTableForOrgAggregate<TState extends OrgAggregateState>(aggregateType: OrgAggregateRootClassOf<TState>, indexesOrOptions?: ReadonlyArray<SnapshotIndex<TState>> | SnapshotTableOptions<TState>): Promise<SnapshotTableInfo>
     {
         const tableName = this._validateTableName(DataHelper.createSnapshotTableName(aggregateType as OrgAggregateRootClass));
 
-        this._validateIndexes(indexes);
+        const { indexes, arrayIndexes } = this._normalizeOptions(indexesOrOptions);
 
-        const plan = this._planIndexes(tableName, indexes, "organization_id");
-        if (plan.tableIndexes.isEmpty)
+        this._validateIndexes(indexes, arrayIndexes);
+
+        const plan = this._planIndexes(tableName, indexes, arrayIndexes, "organization_id");
+
+        // appended rather than unshifted, so the emission order of the declared indexes is unmoved
+        if (!plan.hasLeadingColumnIndex)
             plan.tableIndexes.push({
                 name: this.createIndexNameFromTableName(tableName),
                 columns: ["organization_id"]
@@ -324,6 +386,34 @@ export class DbTableCreator
     }
 
     /**
+     * Resolves the two accepted second-argument shapes into one.
+     *
+     * The bare array is the original signature and stays supported: every existing migration passes
+     * one. The object form is what a second index kind needs, and what a third would extend.
+     *
+     * @param {ReadonlyArray<SnapshotIndex<any>> | SnapshotTableOptions<any>} [value] - The caller's second argument.
+     * @returns {SnapshotTableOptions<any>} The two collections, either of which may be absent.
+     * @throws {ArgumentException} If value is neither an array nor an object.
+     */
+    private _normalizeOptions(value?: ReadonlyArray<SnapshotIndex<any>> | SnapshotTableOptions<any>): SnapshotTableOptions<any>
+    {
+        if (value == null)
+            return {};
+
+        if (Array.isArray(value))
+            return { indexes: <ReadonlyArray<SnapshotIndex<any>>>value };
+
+        // guards a scalar arriving from JavaScript: without this it would fall through, read two
+        // undefined properties, and silently create a table with no indexes at all. It sits after the
+        // array branch because an array is not an object to n-defensive.
+        given(<object>value, "indexes").ensureIsObject();
+
+        const options = <SnapshotTableOptions<any>>value;
+
+        return { indexes: options.indexes, arrayIndexes: options.arrayIndexes };
+    }
+
+    /**
      * Creates a table and its indexes, all idempotently.
      *
      * @param {string} tableName - The table to create.
@@ -348,7 +438,7 @@ export class DbTableCreator
         for (const index of indexes ?? [])
         {
             await this._db.executeCommand(`
-                create ${index.isUnique === true ? "unique " : ""}index if not exists ${index.name} on ${validatedTableName}(${index.columns.join(", ")});
+                create ${index.isUnique === true ? "unique " : ""}index if not exists ${index.name} on ${validatedTableName}${index.method != null ? ` using ${index.method}` : ""}(${index.columns.join(", ")});
             `);
         }
 
@@ -366,11 +456,12 @@ export class DbTableCreator
      * index is a legitimate size and write-cost tradeoff, and a path that is *not* the leading
      * column of a composite genuinely needs its own index to be searchable alone.
      *
-     * @param {ReadonlyArray<SnapshotIndex<any>>} [indexes] - The declared indexes.
+     * @param {ReadonlyArray<SnapshotIndex<any>>} [indexes] - The declared btree indexes.
+     * @param {ReadonlyArray<SnapshotArrayIndex<any>>} [arrayIndexes] - The declared array containment indexes.
      * @throws {ArgumentNullException} If an element of indexes is null or undefined.
-     * @throws {ArgumentException} If indexes is not an array, an element is not a SnapshotIndex, two indexes are duplicates, or one path resolves to conflicting expressions.
+     * @throws {ArgumentException} If indexes is not an array, an element is not a SnapshotIndex or SnapshotArrayIndex, two indexes are duplicates, or one path resolves to conflicting expressions.
      */
-    private _validateIndexes(indexes?: ReadonlyArray<SnapshotIndex<any>>): void
+    private _validateIndexes(indexes?: ReadonlyArray<SnapshotIndex<any>>, arrayIndexes?: ReadonlyArray<SnapshotArrayIndex<any>>): void
     {
         given(indexes, "indexes").ensureIsArray();
 
@@ -409,6 +500,30 @@ export class DbTableCreator
             t => t.distinct(u => `${u.paths.join(",")}|${u.isUnique}`).length === t.length,
             "the same index cannot be declared twice"
         );
+
+        given(arrayIndexes, "arrayIndexes").ensureIsArray();
+
+        for (const arrayIndex of arrayIndexes ?? [])
+            // guards a plain object arriving from JavaScript, where the builder is unenforced
+            given(arrayIndex, "arrayIndex").ensureHasValue().ensureIsObject().ensureIsInstanceOf(SnapshotArrayIndex);
+
+        // identity is the path alone - there is no uniqueness axis, since GIN cannot be unique
+        given(arrayIndexes ?? [], "arrayIndexes").ensure(
+            t => t.distinct(u => u.path).length === t.length,
+            "the same array index cannot be declared twice"
+        );
+
+        // One key inside `data` holds one kind of value, so indexing it as a scalar here and as an
+        // array there means one of the two declarations has the wrong idea of the state - the same
+        // modelling error the conflicting-type rule above catches. Unreachable through the typed
+        // doors, since SnapshotPath and SnapshotArrayPath are disjoint by construction, but
+        // forRawPath makes it reachable.
+        const crossKindPaths = (arrayIndexes ?? []).map(t => t.path).where(t => expressionByPath.has(t));
+
+        given(crossKindPaths, "arrayIndexes").ensure(
+            t => t.isEmpty,
+            `a path cannot be indexed both as a scalar and as an array: ${crossKindPaths.distinct().join(", ")}`
+        );
     }
 
     /**
@@ -424,13 +539,19 @@ export class DbTableCreator
      * silently skip rather than report. A unique index takes a `_uq` suffix so the same path can
      * carry both a lookup index and a unique one.
      *
+     * An array index takes a `_gin` suffix, which is load-bearing rather than descriptive: without it
+     * a btree and a GIN declaration over one path derive the same name, and `if not exists` matches
+     * on name alone - so whichever ran first would win and the other would be silently skipped,
+     * leaving an index that answers no query the declaration was written for.
+     *
      * @param {string} tableName - The table the indexes belong to.
-     * @param {ReadonlyArray<SnapshotIndex<any>>} [indexes] - The declared indexes.
-     * @param {string} [leadingColumn] - Optional real column to lead each index with.
+     * @param {ReadonlyArray<SnapshotIndex<any>>} [indexes] - The declared btree indexes.
+     * @param {ReadonlyArray<SnapshotArrayIndex<any>>} [arrayIndexes] - The declared array containment indexes.
+     * @param {string} [leadingColumn] - Optional real column to lead each btree index with.
      * @returns {IndexPlan} The DDL definitions and the per-index metadata.
      * @throws {ArgumentException} If two declarations derive the same index name, or a name exceeds the identifier limit.
      */
-    private _planIndexes(tableName: string, indexes?: ReadonlyArray<SnapshotIndex<any>>, leadingColumn?: string): IndexPlan
+    private _planIndexes(tableName: string, indexes?: ReadonlyArray<SnapshotIndex<any>>, arrayIndexes?: ReadonlyArray<SnapshotArrayIndex<any>>, leadingColumn?: string): IndexPlan
     {
         const tableIndexes = new Array<TableIndex>();
         const infos = new Array<SnapshotTableIndexInfo>();
@@ -450,12 +571,33 @@ export class DbTableCreator
             infos.push({ name, paths, expressions, isUnique: index.isUnique, leadingColumn });
         }
 
+        for (const arrayIndex of arrayIndexes ?? [])
+        {
+            const expression = arrayIndex.expressions[0];
+            const name = this.createIndexNameFromTableName(tableName, `${arrayIndex.nameSuffix}_gin`);
+
+            tableIndexes.push({
+                name,
+                method: "gin",
+                // the opclass rides on the column rather than on its own field, so `expression` stays
+                // byte-identical to what the containment fragments are built from - the same
+                // single-source rule as the btree side
+                columns: [`${expression} ${SnapshotArrayIndex.opclass}`]
+            });
+
+            // no leadingColumn, even on an org table: a GIN index genuinely does not lead with
+            // organization_id, and reporting one would be a claim the caller builds a predicate on
+            infos.push({ name, paths: [arrayIndex.path], expressions: [expression], isUnique: false, method: "gin" });
+        }
+
+        // runs over the combined list, so a btree name colliding with a GIN one is caught here
         given(tableIndexes, "indexes").ensure(
             t => t.distinct(u => u.name).length === t.length,
             "indexes cannot derive the same index name twice"
         );
 
-        return { tableIndexes, infos };
+        // only the btree loop prepends the leading column, so this is exact rather than approximate
+        return { tableIndexes, infos, hasLeadingColumnIndex: leadingColumn != null && (indexes?.isNotEmpty ?? false) };
     }
 
     /**
@@ -524,6 +666,14 @@ interface IndexPlan
      * The per-index metadata returned as {@link SnapshotTableInfo.indexes}.
      */
     readonly infos: Array<SnapshotTableIndexInfo>;
+
+    /**
+     * Whether any planned index leads with the leading column.
+     *
+     * Only btree indexes do - a GIN index cannot, so a table whose only declarations are array ones
+     * still needs the standalone index over that column.
+     */
+    readonly hasLeadingColumnIndex: boolean;
 }
 
 /**
@@ -545,4 +695,12 @@ interface TableIndex
      * Whether the index enforces uniqueness. Defaults to false.
      */
     readonly isUnique?: boolean;
+
+    /**
+     * The access method, placed as `using <method>`. Omitted for the default btree.
+     *
+     * A closed literal union rather than a string: it is interpolated into DDL, and every other
+     * identifier this class emits is validated. A union costs nothing and is checked at compile time.
+     */
+    readonly method?: "gin";
 }

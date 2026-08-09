@@ -39,6 +39,17 @@ import { AggregateNotFoundException } from "./aggregate-not-found-exception.js";
  * btree only serves a leading prefix of an index's columns, so the second path of a composite is not
  * independently searchable. Read `info.indexes` from the create call for each index's column order.
  *
+ * **An array inside `data` takes the other kind of index.** `SnapshotArrayIndex` builds a GIN index
+ * over the array as jsonb and answers containment - "does some element look like this" - which is how
+ * a membership query is served. It hands back a whole predicate rather than an expression, because
+ * for GIN the operator is part of what makes the index usable. Pass those declarations as
+ * `arrayIndexes` on the options object the create method accepts.
+ *
+ * The distinction that matters for an array of records: every field named in one match must be
+ * carried by the **same** element. Two separate containment fragments ANDed together ask a weaker
+ * question - some element has one field, some *possibly different* element has the other - and there
+ * is no way to tell the two apart by reading the SQL. Name them in one match.
+ *
  * @example
  * ```typescript
  * @inject("OrderEventStreamRepository")
@@ -48,14 +59,19 @@ import { AggregateNotFoundException } from "./aggregate-not-found-exception.js";
  *     public static readonly statusIndex = SnapshotIndex.forPath<OrderState>("status");
  *     public static readonly totalIndex = SnapshotIndex.forPath<OrderState>("total", JsonValueType.numeric);
  *     public static readonly numberIndex = SnapshotIndex.forPath<OrderState>("orderNumber").asUnique();
+ *     public static readonly tagsIndex = SnapshotArrayIndex.forPath<OrderState>("tags");
  *
  *     public static readonly snapshotIndexes: ReadonlyArray<SnapshotIndex<OrderState>> =
  *         [OrderRepository.statusIndex, OrderRepository.totalIndex, OrderRepository.numberIndex];
+ *
+ *     public static readonly snapshotArrayIndexes: ReadonlyArray<SnapshotArrayIndex<OrderState>> =
+ *         [OrderRepository.tagsIndex];
  *
  *     // resolved at module load, so a path the index does not cover throws at startup rather than
  *     // on the first call to an untested query method
  *     private static readonly _statusExpression = OrderRepository.statusIndex.expressionForPath("status");
  *     private static readonly _totalExpression = OrderRepository.totalIndex.expressionForPath("total");
+ *     private static readonly _tags = OrderRepository.tagsIndex.containmentForPath("tags");
  *
  *     public constructor(eventStreamRepository: OrderEventStreamRepository)
  *     {
@@ -75,10 +91,21 @@ import { AggregateNotFoundException } from "./aggregate-not-found-exception.js";
  *             `select data from ${this.table} where ${OrderRepository._totalExpression} > ?;`,
  *             total);
  *     }
+ *
+ *     public getByTag(tag: string): Promise<Array<Order>>
+ *     {
+ *         // sql and params come from one call - splice and spread them in the same order
+ *         const predicate = OrderRepository._tags.contains(tag);
+ *
+ *         return this.query(`select data from ${this.table} where ${predicate.sql};`, ...predicate.params);
+ *     }
  * }
  *
  * // in the migration
- * await tableCreator.createSnapshotTableForAggregate(Order, OrderRepository.snapshotIndexes);
+ * await tableCreator.createSnapshotTableForAggregate(Order, {
+ *     indexes: OrderRepository.snapshotIndexes,
+ *     arrayIndexes: OrderRepository.snapshotArrayIndexes
+ * });
  * ```
  *
  * @class SnapshotBaseRepository
