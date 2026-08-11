@@ -89,8 +89,11 @@ export interface BuiltRepositoryQuery
  *
  * One builder serves all four repositories, which are siblings rather than a hierarchy - so the only
  * difference between them, whether an organization filter leads the predicate, is a parameter here
- * rather than an override somewhere. That is what keeps `query` meaning the same thing on all of
- * them.
+ * rather than an override somewhere.
+ *
+ * The snapshot repositories expose it through their `query`. The event stream repositories use it
+ * privately, for the two id-shaped reads `get` and `getAll` perform - they offer no query surface of their
+ * own, deliberately, so this is the one place their statement shape is assembled.
  *
  * Deliberately absent from the barrel: it is how `query` is implemented, not part of the surface a
  * subclass uses. {@link RepositoryQuery} is what consumers name.

@@ -12,10 +12,11 @@ import { CreatorRepository } from "./creator-repository.js";
 /**
  * The append-only stream of creator events, scoped to the current studio.
  *
- * The organization filter is applied by the base on `get` and `getAll` and by `query` itself, so the naive
- * implementations below are tenant-safe without saying so. What they are not is efficient - an event stream
- * table indexes only `(organization_id, aggregate_id, aggregate_version)`, so answering a question about
- * event *content* means replaying every aggregate in the studio.
+ * The base scopes `get` and `getAll` to the current studio, so the implementations below are tenant-safe
+ * without saying so. It offers nothing else - no query surface - which is its contract rather than a gap, so
+ * every domain question here is answered by loading this studio's aggregates and filtering in memory. Fine
+ * while a studio is small; the snapshot variant is what it becomes when it is not, and what enforces the
+ * per-studio `email` uniqueness that no amount of in-memory filtering can.
  *
  * Note the state factory: it needs the domain context, so it can only be built after `super` would have
  * needed it. It is constructed inline in the `super` call, which is the only place both are in scope.

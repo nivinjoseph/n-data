@@ -134,8 +134,8 @@ await describe("RepositoryQueryBuilder tests", async () =>
             assert.strictEqual(built.sql, `select data from order_snaps where (id = ?);`);
         });
 
-        // the shapes get/getAll emit, so the statements the repositories run by default are pinned
-        await test("the statements get and getAll build are the ones the repositories ran before", async () =>
+        // the shapes get/getAll emit, so the statements every repository runs by default are pinned here
+        await test("the statements get and getAll build are pinned", async () =>
         {
             assert.strictEqual(
                 RepositoryQueryBuilder.build("receipt_snaps", "id = ?", ["rec_1"], ORG).sql,
@@ -145,9 +145,15 @@ await describe("RepositoryQueryBuilder tests", async () =>
                 RepositoryQueryBuilder.build("receipt_snaps", "id in (?,?)", ["rec_1", "rec_2"], ORG).sql,
                 `select data from receipt_snaps where organization_id = ? and (id in (?,?));`);
 
+            // the event stream repositories load by id only, and both `get` and `getAll` go through the same
+            // `in` shape - a single-element IN, which Postgres rewrites to an equality
             assert.strictEqual(
-                RepositoryQueryBuilder.build("order_events", "aggregate_id = ?", ["o1"]).sql,
-                `select data from order_events where (aggregate_id = ?);`);
+                RepositoryQueryBuilder.build("order_events", "aggregate_id in (?)", ["o1"]).sql,
+                `select data from order_events where (aggregate_id in (?));`);
+
+            assert.strictEqual(
+                RepositoryQueryBuilder.build("order_events", {}, []).sql,
+                `select data from order_events;`);
         });
     });
 

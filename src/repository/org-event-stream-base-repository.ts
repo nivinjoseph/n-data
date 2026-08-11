@@ -8,9 +8,32 @@ import { ClassDefinition } from "@nivinjoseph/n-util";
 import { given } from "@nivinjoseph/n-defensive";
 import { DataHelper } from "./data-helper.js";
 import { AggregateNotFoundException } from "./aggregate-not-found-exception.js";
-import { RepositoryQuery, RepositoryQueryBuilder } from "./repository-query.js";
+import { RepositoryQueryBuilder } from "./repository-query.js";
 import { QueryResult } from "../db/query-result.js";
 
+/**
+ * The organization-scoped counterpart to `EventStreamBaseRepository`: the append-only event stream for one
+ * tenant's aggregates.
+ *
+ * **It reads by aggregate id, or in full, and deliberately nothing else** - and every read is scoped to
+ * `this.domainContext.organizationId` without a caller saying so. {@link get} loads one, {@link getAll} loads
+ * them all or a named set, {@link save} appends. There is no query surface, and no way out of the tenant
+ * scope, because neither is wanted here:
+ *
+ * - **There is nothing to query by.** The table carries one index, the unique
+ *   `(organization_id, aggregate_id, aggregate_version)`.
+ * - **A partial match produces a wrong aggregate.** Rows are grouped by aggregate id and replayed, and
+ *   `AggregateRoot` requires exactly one created event among them - so a content-based predicate either
+ *   throws `no created event passed` or silently rebuilds the aggregate at an earlier version.
+ *
+ * Anything else is what `OrgSnapshotBaseRepository` is for: it reads a materialized table whose indexes are
+ * declared with a `SnapshotQuerySet`, prepends the organization filter to every predicate, and offers
+ * `queryAcrossOrganizations` for the rare read that is genuinely meant to span tenants. For a projection over
+ * the raw event rows use {@link BaseRepository.queryRaw} - which gets no organization filter, so such a
+ * statement must constrain `organization_id` itself.
+ *
+ * @class OrgEventStreamBaseRepository
+ */
 export abstract class OrgEventStreamBaseRepository<T extends OrgAggregateRoot<TState, TDomainEvent>, TState extends OrgAggregateState, TDomainEvent extends OrgDomainEvent<TState>> extends BaseRepository implements Repository<T>
 {
     private readonly _aggregateType: ClassDefinition<T>;
@@ -44,20 +67,15 @@ export abstract class OrgEventStreamBaseRepository<T extends OrgAggregateRoot<TS
     public async getAll(...ids: ReadonlyArray<string>): Promise<Array<T>>
     {
         given(ids, "ids").ensureHasValue().ensureIsArray();
-        ids = ids.map(t => t.trim()).where(t => t.isNotEmptyOrWhiteSpace());
 
-        if (ids.isNotEmpty)
-            return this.query(`aggregate_id in (${ids.map(() => "?").join(",")})`, ...ids);
-
-        return this.query({});
+        return this._load(ids.map(t => t.trim()).where(t => t.isNotEmptyOrWhiteSpace()));
     }
 
     public async get(id: string): Promise<T>
     {
         given(id, "id").ensureHasValue().ensureIsString();
-        id = id.trim();
 
-        const result = await this.query("aggregate_id = ?", id);
+        const result = await this._load([id.trim()]);
         if (result.length !== 1)
             throw new AggregateNotFoundException(this._aggregateType, id);
 
@@ -109,66 +127,24 @@ export abstract class OrgEventStreamBaseRepository<T extends OrgAggregateRoot<TS
     }
 
     /**
-     * Runs a query over the event stream **scoped to the current organization** and deserializes each
-     * aggregate from the events that came back.
+     * The only read this class performs: load the aggregates with these ids, or all of them when none are
+     * given - the same contract {@link getAll} offers, which is the whole of what this class reads.
      *
-     * This owns the statement: `select data from <this.table> where organization_id = ? and (<your
-     * predicate>)`. So what you supply is the predicate, without the `where` keyword - and the
-     * organization filter is added for you, ahead of it. Parameters bind with `?` placeholders and are
-     * passed positionally; never interpolate a value into the predicate.
+     * There is deliberately no way to pass a predicate, not even from in here. See the class documentation
+     * for why a query over event content is a mistake rather than a missing feature.
      *
-     * The predicate is parenthesized, so a top-level `or` in it stays contained rather than escaping
-     * the organization filter.
-     *
-     * Rows are grouped by aggregate id and each group replayed, so a predicate that matches only
-     * *some* of an aggregate's events reconstructs it from those events alone - which is rarely what
-     * is wanted. Constrain by `aggregate_id`, not by event content, unless replaying a prefix is the
-     * point.
-     *
-     * Pass a {@link RepositoryQuery} instead of a string to add `order by`, `limit` or `offset`, or to
-     * run with no predicate at all (`{}`). For a read that genuinely spans organizations, and only
-     * then, use {@link queryAcrossOrganizations}.
-     *
-     * @param {string} where - The `where` predicate, without the `where` keyword.
-     * @param {...ReadonlyArray<any>} params - Values bound to the predicate's `?` placeholders.
-     * @returns {Promise<Array<T>>} The deserialized aggregates; empty when nothing matched.
-     * @throws {ArgumentException} If the predicate is a whole statement, keeps the `where` keyword, is empty, or contains a ';'.
+     * The organization filter is still prepended by the builder, and prepended *first*, which is why this
+     * goes through it rather than writing two fixed statements by hand: the column has to lead both the
+     * predicate and the parameter list, and getting that wrong is a tenant leak rather than a syntax error.
      */
-    protected query(where: string, ...params: ReadonlyArray<any>): Promise<Array<T>>;
-    /**
-     * @param {RepositoryQuery} query - The predicate and the clauses that follow it.
-     * @param {...ReadonlyArray<any>} params - Values bound to the predicate's `?` placeholders.
-     * @returns {Promise<Array<T>>} The deserialized aggregates; empty when nothing matched.
-     */
-    protected query(query: RepositoryQuery, ...params: ReadonlyArray<any>): Promise<Array<T>>;
-    protected async query(whereOrQuery: string | RepositoryQuery, ...params: ReadonlyArray<any>): Promise<Array<T>>
+    private async _load(ids: ReadonlyArray<string>): Promise<Array<T>>
     {
-        const built = RepositoryQueryBuilder.build(this.table, whereOrQuery, params,
-            this.domainContext.organizationId);
+        const built = ids.isNotEmpty
+            ? RepositoryQueryBuilder.build(this.table,
+                `aggregate_id in (${ids.map(() => "?").join(",")})`, ids, this.domainContext.organizationId)
+            : RepositoryQueryBuilder.build(this.table, {}, [], this.domainContext.organizationId);
 
         return this._deserialize(await this.queryRaw<any>(built.sql, ...built.params));
-    }
-
-    /**
-     * Runs a whole statement over the event stream, **with no organization filter added**, and
-     * deserializes each aggregate from the events that came back.
-     *
-     * The deliberate exception to {@link query}, for a read that is genuinely meant to span tenants,
-     * and for the joins, unions and CTEs the statement {@link query} builds cannot express. It is
-     * named for its consequence so that the tenant implication is visible at the call site rather than
-     * inferred from a flag.
-     *
-     * The select list must be `data`, and if the read is meant to stay within one organization the
-     * predicate has to constrain `organization_id` itself. Prefer {@link query} unless it cannot
-     * express the read.
-     *
-     * @param {string} sql - The statement to run. Must select the `data` column.
-     * @param {...ReadonlyArray<any>} params - Values bound to the statement's `?` placeholders.
-     * @returns {Promise<Array<T>>} The deserialized aggregates; empty when nothing matched.
-     */
-    protected async queryAcrossOrganizations(sql: string, ...params: ReadonlyArray<any>): Promise<Array<T>>
-    {
-        return this._deserialize(await this.queryRaw<any>(sql, ...params));
     }
 
     private _deserialize(queryResult: QueryResult<any>): Array<T>
