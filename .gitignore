@@ -66,6 +66,8 @@ src/**/*.js
 src/**/*.map
 test/**/*.js
 test/**/*.map
+test-example/**/*.js
+test-example/**/*.map
 
 .pnp.*
 .yarn/*

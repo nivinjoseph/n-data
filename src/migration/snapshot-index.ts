@@ -147,34 +147,31 @@ export type SnapshotPath<T> = Exclude<SnapshotLeafPath<T>, "organizationId">;
  * because Postgres uses an expression index only when the query expression matches the indexed one
  * **textually**, and a near-miss silently becomes a sequential scan with no error and no warning.
  * The builder that produces an expression is private, so an expression can only originate from a
- * declaration that also emits the DDL - which is what makes the two impossible to diverge. So
- * declare each index next to the repository that queries
- * it, and let the migration consume the same declarations.
+ * declaration that also emits the DDL - which is what makes the two impossible to diverge.
+ *
+ * **`SnapshotQuerySet` is how a repository normally declares these, and reaching for this class
+ * directly is the exception.** The set binds the state in its own call, which is what lets it infer
+ * each path as a string *literal* and so check a query's paths against what is actually indexed rather
+ * than merely against the state shape. That is not available here: TypeScript has no partial
+ * type-argument inference, so `forPath<OrderState>("status")` - supplying the state explicitly - cannot
+ * also infer the path.
+ *
+ * What this class is still for is the path a typed signature cannot name: a computed or dynamic key, a
+ * `$`-prefixed serialized name, or a whole subtree, all through {@link forRawPath}. Pass such a
+ * declaration to `DbTableCreator` alongside a set, or on its own.
  *
  * @example
  * ```typescript
- * export class OrderRepository extends SnapshotBaseRepository<Order, OrderState, OrderEvent>
- * {
- *     public static readonly statusIndex = SnapshotIndex.forPath<OrderState>("status");
- *     public static readonly totalIndex = SnapshotIndex.forPath<OrderState>("total", JsonValueType.numeric);
- *     public static readonly skuIndex = SnapshotIndex.forPath<OrderState>("tenantCode").andPath("sku").asUnique();
+ * // the escape hatch: a key outside the state shape, which SnapshotQuerySet cannot name
+ * const legacyIndex = SnapshotIndex.forRawPath<OrderState>("$legacyCode");
  *
- *     public static readonly snapshotIndexes: ReadonlyArray<SnapshotIndex<OrderState>> =
- *         [OrderRepository.statusIndex, OrderRepository.totalIndex, OrderRepository.skuIndex];
+ * await tableCreator.createSnapshotTableForAggregate(Order, {
+ *     indexes: [...OrderRepository.indexes.indexes, legacyIndex],
+ *     arrayIndexes: OrderRepository.indexes.arrayIndexes
+ * });
  *
- *     // resolved at module load, so a path this index does not cover throws at startup rather than
- *     // on the first call to an untested query method
- *     private static readonly _statusExpression = OrderRepository.statusIndex.expressionForPath("status");
- *
- *     public getByStatus(status: string): Promise<Array<Order>>
- *     {
- *         return this.query(
- *             `select data from ${this.table} where ${OrderRepository._statusExpression} = ?;`, status);
- *     }
- * }
- *
- * // in the migration
- * await tableCreator.createSnapshotTableForAggregate(Order, OrderRepository.snapshotIndexes);
+ * // and the predicate for it, built from the same declaration
+ * const expression = legacyIndex.expressionForRawPath("$legacyCode");
  * ```
  *
  * @class SnapshotIndex
@@ -372,8 +369,9 @@ export class SnapshotIndex<T>
      * the state but belonging to a different index throws, so read the expression into a `static`
      * field where that surfaces at module load. And matching the expression is necessary, not
      * sufficient: btree serves only a leading prefix of an index's columns, so the second path of a
-     * composite is not independently searchable, and on an org-scoped table nothing is until the
-     * predicate also constrains `organization_id`.
+     * composite is not independently searchable. On an org-scoped table nothing is searchable until
+     * the predicate also constrains `organization_id` - which `OrgSnapshotBaseRepository.query` does
+     * for you, ahead of whatever predicate you pass it.
      *
      * @param {SnapshotPath<T>} path - A path this index covers, checked against the state shape.
      * @returns {string} The parenthesized extraction expression, e.g. `(data->>'status')`.

@@ -5,6 +5,7 @@ import { Logger } from "@nivinjoseph/n-log";
 import { AggregateRootClass, AggregateRootClassOf, DataHelper, OrgAggregateRootClass, OrgAggregateRootClassOf } from "../repository/data-helper.js";
 import { SnapshotArrayIndex } from "./snapshot-array-index.js";
 import { SnapshotIndex } from "./snapshot-index.js";
+import { SnapshotQuerySet } from "./snapshot-query-set.js";
 
 /**
  * One index that was created over a snapshot table.
@@ -52,8 +53,9 @@ export interface SnapshotTableIndexInfo
      * lead with `organization_id`: a multicolumn GIN over a varchar column would need the `btree_gin`
      * extension, which is not trusted on Postgres 12 and would demand superuser at migration time. An
      * org-scoped table declaring one therefore always carries a standalone `(organization_id)` btree
-     * index for the planner to BitmapAnd the GIN scan against. Constraining `organization_id` remains
-     * mandatory regardless - that is tenant isolation, a correctness rule independent of the plan.
+     * index for the planner to BitmapAnd the GIN scan against. `organization_id` is constrained
+     * regardless - `OrgSnapshotBaseRepository.query` adds it either way, because tenant isolation is a
+     * correctness rule independent of the plan.
      */
     readonly leadingColumn?: string;
 }
@@ -248,13 +250,19 @@ export class DbTableCreator
      * `arrayIndexes` on the options object, which builds a GIN containment index over the array as
      * jsonb and answers membership questions of it.
      *
+     * **Prefer passing the repository's `SnapshotQuerySet`.** It carries both kinds of declaration and
+     * is the same object the repository builds its predicates from, so an index that is queried is
+     * necessarily one that was created. It satisfies `SnapshotTableOptions` by shape - `indexes` and
+     * `arrayIndexes` are exactly its two getters - so it needs no unwrapping here.
+     *
      * @param {AggregateRootClassOf<TState>} aggregateType - The aggregate class whose snapshot table is created.
-     * @param {ReadonlyArray<SnapshotIndex<TState>> | SnapshotTableOptions<TState>} [indexesOrOptions] - Optional btree indexes over keys within `data`, or an options object carrying those and the array indexes.
+     * @param {ReadonlyArray<SnapshotIndex<TState>> | SnapshotTableOptions<TState>} [indexesOrOptions] - A repository's `SnapshotQuerySet`, an options object carrying `indexes` and `arrayIndexes`, or a bare array of btree indexes.
      * @returns {Promise<SnapshotTableInfo>} A promise that resolves to the table's name and the indexes as created.
      * @throws {ArgumentNullException} If aggregateType is null or undefined, or an element of indexes is null or undefined.
      * @throws {ArgumentException} If aggregateType is not a function, the derived table or index name is invalid, or the indexes are invalid or duplicated.
      * @throws {DbException} If a DDL command fails.
      */
+    public async createSnapshotTableForAggregate<TState extends AggregateState>(aggregateType: AggregateRootClassOf<TState>, querySet: SnapshotQuerySet<TState, any, any>): Promise<SnapshotTableInfo>;
     public async createSnapshotTableForAggregate<TState extends AggregateState>(aggregateType: AggregateRootClassOf<TState>, indexes?: ReadonlyArray<SnapshotIndex<TState>>): Promise<SnapshotTableInfo>;
     public async createSnapshotTableForAggregate<TState extends AggregateState>(aggregateType: AggregateRootClassOf<TState>, options?: SnapshotTableOptions<TState>): Promise<SnapshotTableInfo>;
     public async createSnapshotTableForAggregate<TState extends AggregateState>(aggregateType: AggregateRootClassOf<TState>, indexesOrOptions?: ReadonlyArray<SnapshotIndex<TState>> | SnapshotTableOptions<TState>): Promise<SnapshotTableInfo>
@@ -301,13 +309,18 @@ export class DbTableCreator
      * `TState` is inferred from `aggregateType`, so every index's paths are checked against the
      * aggregate's real state shape.
      *
+     * **Prefer passing the repository's `SnapshotQuerySet`**, for the same reason as on the plain
+     * variant: it is the object the repository queries through, so a declared index and a created one
+     * cannot diverge.
+     *
      * @param {OrgAggregateRootClassOf<TState>} aggregateType - The org-scoped aggregate class whose snapshot table is created.
-     * @param {ReadonlyArray<SnapshotIndex<TState>> | SnapshotTableOptions<TState>} [indexesOrOptions] - Optional btree indexes over keys within `data`, or an options object carrying those and the array indexes.
+     * @param {ReadonlyArray<SnapshotIndex<TState>> | SnapshotTableOptions<TState>} [indexesOrOptions] - A repository's `SnapshotQuerySet`, an options object carrying `indexes` and `arrayIndexes`, or a bare array of btree indexes.
      * @returns {Promise<SnapshotTableInfo>} A promise that resolves to the table's name and the indexes as created.
      * @throws {ArgumentNullException} If aggregateType is null or undefined, or an element of indexes is null or undefined.
      * @throws {ArgumentException} If aggregateType is not a function, the derived table or index name is invalid, or the indexes are invalid or duplicated.
      * @throws {DbException} If a DDL command fails.
      */
+    public async createSnapshotTableForOrgAggregate<TState extends OrgAggregateState>(aggregateType: OrgAggregateRootClassOf<TState>, querySet: SnapshotQuerySet<TState, any, any>): Promise<SnapshotTableInfo>;
     public async createSnapshotTableForOrgAggregate<TState extends OrgAggregateState>(aggregateType: OrgAggregateRootClassOf<TState>, indexes?: ReadonlyArray<SnapshotIndex<TState>>): Promise<SnapshotTableInfo>;
     public async createSnapshotTableForOrgAggregate<TState extends OrgAggregateState>(aggregateType: OrgAggregateRootClassOf<TState>, options?: SnapshotTableOptions<TState>): Promise<SnapshotTableInfo>;
     public async createSnapshotTableForOrgAggregate<TState extends OrgAggregateState>(aggregateType: OrgAggregateRootClassOf<TState>, indexesOrOptions?: ReadonlyArray<SnapshotIndex<TState>> | SnapshotTableOptions<TState>): Promise<SnapshotTableInfo>

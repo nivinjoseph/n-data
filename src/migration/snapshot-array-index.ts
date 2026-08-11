@@ -101,8 +101,12 @@ export type SnapshotArrayPath<T> = Exclude<SnapshotContainerArrayPath<T>, "organ
  * This is what lets {@link SnapshotArrayIndex.containmentForPath} type its match argument against the
  * *element* shape rather than against `any`, with no explicit type argument at the call site: the
  * path is inferred from the string literal, and the element type follows from it.
+ *
+ * Exported from the module so `SnapshotQuerySet` can type its containment methods the same way, but
+ * deliberately absent from the barrel: it is how those signatures are built, not a type a consumer
+ * names.
  */
-type SnapshotArrayElement<T, TPath extends string> =
+export type SnapshotArrayElement<T, TPath extends string> =
     TPath extends `${infer THead}.${infer TRest}`
         ? THead extends keyof T ? SnapshotArrayElement<NonNullable<T[THead]>, TRest> : never
         : TPath extends keyof T
@@ -138,10 +142,10 @@ export type SnapshotElementMatch<TElement> =
  *
  * The two are produced by one call and never separately, because for a variadic predicate the
  * placeholder count is not fixed - {@link SnapshotArrayContainment.containsAny} over three matches
- * emits three. Splice `sql` into the where clause and spread `params` into the call in the **same
- * order the fragment appears**: `where organization_id = ? and ${p.sql}` takes
- * `[orgId, ...p.params]`, and the reverse order takes `[...p.params, orgId]`. Positional binding is
- * unforgiving.
+ * emits three. `sql` is a whole predicate, so on its own it goes straight to a repository's `query`:
+ * `this.query(p.sql, ...p.params)`. Combined with another fragment, splice and spread in the **same
+ * order the fragments appear** - `` this.query(`${p.sql} and ${expression} = ?`, ...p.params, value) ``,
+ * and the reverse order takes the values reversed too. Positional binding is unforgiving.
  */
 export interface SnapshotArrayPredicate
 {
@@ -245,6 +249,12 @@ export interface SnapshotArrayContainment<TElement>
  * index is written; and the same instance hands the expression back inside a predicate, so the
  * written index and the query cannot diverge.
  *
+ * **A repository normally declares these through `SnapshotQuerySet.withArrayPath`**, whose
+ * `contains` / `containsAll` / `containsAny` delegate straight to the containment built here - so the
+ * predicates are the same, and the paths get checked against what the repository actually indexed.
+ * Reach for this class directly for an array key a typed path cannot name, through
+ * {@link forRawPath}.
+ *
  * @example
  * ```typescript
  * interface Member { userId: string; role: string; isDeactivated: boolean; }
@@ -252,28 +262,24 @@ export interface SnapshotArrayContainment<TElement>
  *
  * export class TeamRepository extends SnapshotBaseRepository<Team, TeamState, TeamEvent>
  * {
- *     public static readonly membersIndex = SnapshotArrayIndex.forPath<TeamState>("members");
+ *     public static readonly indexes = SnapshotQuerySet.for<TeamState>().withArrayPath("members");
  *
- *     public static readonly snapshotArrayIndexes: ReadonlyArray<SnapshotArrayIndex<TeamState>> =
- *         [TeamRepository.membersIndex];
+ *     protected override get indexes(): typeof TeamRepository.indexes { return TeamRepository.indexes; }
  *
- *     // resolved at module load, so a path this index does not cover throws at startup rather than
- *     // on the first call to an untested query method
- *     private static readonly _members = TeamRepository.membersIndex.containmentForPath("members");
+ *     public constructor(eventStreamRepository: TeamEventStreamRepository)
+ *     {
+ *         super(eventStreamRepository);
+ *     }
  *
  *     public getActiveTeamsForUser(userId: string): Promise<Array<Team>>
  *     {
  *         // ONE containment document: both fields must hold on the SAME member element
- *         const predicate = TeamRepository._members.contains({ userId, isDeactivated: false });
- *
- *         return this.query(`select data from ${this.table} where ${predicate.sql};`, ...predicate.params);
+ *         return this.query(this.indexes.contains("members", { userId, isDeactivated: false }));
  *     }
  * }
  *
  * // in the migration
- * await tableCreator.createSnapshotTableForAggregate(Team, {
- *     arrayIndexes: TeamRepository.snapshotArrayIndexes
- * });
+ * await tableCreator.createSnapshotTableForAggregate(Team, TeamRepository.indexes);
  * ```
  *
  * @class SnapshotArrayIndex
@@ -578,8 +584,10 @@ export class SnapshotArrayIndex<T>
             {
                 SnapshotArrayIndex._validateMatches(matches, "matches");
 
-                // the outer parens are not cosmetic: `where organization_id = ? and A or B` binds
-                // `or` at the top and returns other organizations' rows
+                // the outer parens are not cosmetic: spliced beside another term, `A or B` bare would
+                // bind `or` at the top and match rows neither term was meant to reach. The repository's
+                // query builder parenthesizes the whole predicate for the same reason; this keeps the
+                // fragment safe to compose before it gets there.
                 return {
                     sql: `(${matches.map(() => term).join(" or ")})`,
                     params: matches.map(t => toDocument([t]))

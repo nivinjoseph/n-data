@@ -1807,9 +1807,10 @@ await describe("DbTableCreator tests", async () =>
             await db.executeCommand("drop table if exists order_snaps;");
         });
 
-        // the org counterpart, and the reason OrgSnapshotBaseRepository.query insists the caller
-        // filters organization_id: omitting it is not only a tenant-isolation bug, it also loses the
-        // index outright, because organization_id is the leading column of every index on the table
+        // the org counterpart, and the reason OrgSnapshotBaseRepository.query prepends
+        // organization_id rather than leaving it to the caller: omitting it is not only a
+        // tenant-isolation bug, it also loses the index outright, because organization_id is the
+        // leading column of every index on the table
         await test("on an org table nothing is searchable until organization_id is constrained", async () =>
         {
             const statusIndex = SnapshotIndex.forPath<InvoiceState>("status");
