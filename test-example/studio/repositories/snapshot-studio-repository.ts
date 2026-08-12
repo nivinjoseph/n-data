@@ -60,19 +60,14 @@ export class SnapshotStudioRepository
         super(eventStreamRepository);
     }
 
-    public async checkIfSlugExists(slug: string, excludeId?: string): Promise<boolean>
+    public checkIfSlugExists(slug: string, excludeId?: string): Promise<boolean>
     {
         given(slug, "slug").ensureHasValue().ensureIsString();
         given(excludeId, "excludeId").ensureIsString().ensure(t => t.startsWith(IdPrefix.studio));
 
-        // `queryRaw` rather than `query`: the answer is an existence check, not an aggregate, so there is
-        // nothing to deserialize. `expressionFor` supplies the indexed expression, which is what keeps
-        // this hand-written statement on the index.
-        const result = await this.queryRaw<{ id: string; }>(
-            `select id from ${this.table} where ${this.indexes.expressionFor("slug")} = ?;`,
-            slug);
-
-        return result.rows.some(t => t.id !== excludeId);
+        // `exists` rather than `query`: the answer is yes or no, so there is no aggregate to deserialize.
+        // `excludeId` is what makes this usable from a rename - the studio is allowed to keep its own slug.
+        return this.exists(this.indexes.eq("slug", slug), excludeId);
     }
 
     public async getBySlug(slug: string): Promise<Studio | null>

@@ -279,6 +279,50 @@ export abstract class OrgSnapshotBaseRepository<T extends OrgAggregateRoot<TStat
     }
 
     /**
+     * Whether anything matches - without deserializing it.
+     *
+     * The question a natural-key rule asks: *is this value already taken within the current organization, by
+     * someone other than me*. `excludeId` is what makes the "other than me" half work on an update, and it is
+     * a parameter rather than something a caller filters out afterwards because it goes into the statement,
+     * which is what lets the read stop at the first match instead of materializing every one.
+     *
+     * Unlike {@link BaseRepository.queryRaw}, this applies the same filtering {@link query} does - the organization filter included.
+     * A hand-written condition reaches it through `SnapshotQuerySet.raw`, so there is no need to assemble a
+     * statement to ask a yes-or-no question.
+     *
+     * Note that it answers about *stored* rows, so it races with a concurrent write. It is a check, not a
+     * constraint: declare the path `unique` on the query set and let the index be the guarantee.
+     *
+     * @param {SnapshotPredicate} [predicate] - What to match; omitted asks whether there is any row at all.
+     * @param {string} [excludeId] - An id that does not count as a match.
+     * @returns {Promise<boolean>} Whether at least one row matched.
+     */
+    protected async exists(predicate?: SnapshotPredicate, excludeId?: string): Promise<boolean>
+    {
+        const built = RepositoryQueryBuilder.buildExists(this.table, predicate, excludeId, this.domainContext.organizationId);
+
+        return !(await this.queryRaw<unknown>(built.sql, ...built.params)).isEmpty;
+    }
+
+    /**
+     * How many rows match - without deserializing them.
+     *
+     * The counterpart to {@link exists}, and scoped the same way. For a count broken down by something -
+     * a group-by - use {@link BaseRepository.queryRaw}: that shape is a projection rather than a single
+     * number, and this cannot express it.
+     *
+     * @param {SnapshotPredicate} [predicate] - What to count; omitted counts every row within the current organization.
+     * @returns {Promise<number>} The number of matching rows.
+     */
+    protected async count(predicate?: SnapshotPredicate): Promise<number>
+    {
+        const built = RepositoryQueryBuilder.buildCount(this.table, predicate, this.domainContext.organizationId);
+        const result = await this.queryRaw<{ count: number; }>(built.sql, ...built.params);
+
+        return result.rows[0].count;
+    }
+
+    /**
      * Runs a whole statement, **with no organization filter added**, and deserializes each row into
      * an aggregate.
      *

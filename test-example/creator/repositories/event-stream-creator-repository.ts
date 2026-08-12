@@ -97,6 +97,13 @@ export class EventStreamCreatorRepository
         return creators.where(t => t.joinedAt >= since).orderByDesc(t => t.joinedAt).take(count);
     }
 
+    public async countActive(): Promise<number>
+    {
+        const creators = await this.getAll();
+
+        return creators.count(t => !t.isDeactivated);
+    }
+
     public async countByRole(): Promise<ReadonlyArray<{ role: string; count: number; }>>
     {
         const creators = await this.getAll();

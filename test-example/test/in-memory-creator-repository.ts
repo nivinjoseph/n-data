@@ -95,6 +95,11 @@ export class InMemoryCreatorRepository implements CreatorRepository
             this._scoped().where(t => t.joinedAt >= since).orderByDesc(t => t.joinedAt).take(count));
     }
 
+    public countActive(): Promise<number>
+    {
+        return Promise.resolve(this._scoped().count(t => !t.isDeactivated));
+    }
+
     public countByRole(): Promise<ReadonlyArray<{ role: string; count: number; }>>
     {
         const counts = this._scoped().groupBy(t => t.role)

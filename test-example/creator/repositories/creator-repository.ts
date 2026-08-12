@@ -26,5 +26,10 @@ export interface CreatorRepository extends Repository<Creator>
 
     getRecentlyJoined(since: number, count: number): Promise<Array<Creator>>;
 
+    /**
+     * How many creators in this studio are still active - what the studio's seat limit is checked against.
+     */
+    countActive(): Promise<number>;
+
     countByRole(): Promise<ReadonlyArray<{ role: string; count: number; }>>;
 }

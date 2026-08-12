@@ -55,19 +55,21 @@ export class SnapshotCreatorRepository
         super(eventStreamRepository);
     }
 
-    public async checkIfEmailExists(email: string, excludeId?: string): Promise<boolean>
+    public checkIfEmailExists(email: string, excludeId?: string): Promise<boolean>
     {
         given(email, "email").ensureHasValue().ensureIsString();
         given(excludeId, "excludeId").ensureIsString().ensure(t => t.startsWith(IdPrefix.creator));
 
-        // `queryRaw` gets no organization filter - it is the unprocessed door - so this one statement has to
-        // constrain the column itself. That asymmetry with `query` is easy to forget.
-        const result = await this.queryRaw<{ id: string; }>(
-            `select id from ${this.table}
-             where organization_id = ? and ${this.indexes.expressionFor("email")} = ?;`,
-            this.domainContext.organizationId, email);
+        // `exists` scopes to the current studio the same way `query` does, so this reads as the per-studio
+        // question it is. `queryRaw` would not - that door gets no organization filter, which is why the two
+        // statements further down have to constrain the column by hand.
+        return this.exists(this.indexes.eq("email", email), excludeId);
+    }
 
-        return result.rows.some(t => t.id !== excludeId);
+    public countActive(): Promise<number>
+    {
+        // what the studio's seat limit is checked against; scoped to this studio, like every read here
+        return this.count(this.indexes.eq("isDeactivated", false));
     }
 
     public async getByEmail(email: string): Promise<Creator | null>

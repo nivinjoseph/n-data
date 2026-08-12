@@ -159,25 +159,9 @@ export class RepositoryQueryBuilder
 
         // positional binding is unforgiving, so params are pushed in exactly the order the fragments
         // they belong to are appended
-        const boundParams = new Array<any>();
-        let sql = `select data from ${table.trim()}`;
-
-        if (organizationId != null)
-        {
-            sql += " where organization_id = ?";
-            boundParams.push(organizationId);
-
-            if (where.sql != null)
-            {
-                sql += ` and (${where.sql})`;
-                boundParams.push(...where.params);
-            }
-        }
-        else if (where.sql != null)
-        {
-            sql += ` where (${where.sql})`;
-            boundParams.push(...where.params);
-        }
+        const clause = RepositoryQueryBuilder._buildWhereClause(where, organizationId);
+        const boundParams = [...clause.params];
+        let sql = `select data from ${table.trim()}${clause.sql}`;
 
         if (orderBy != null)
             sql += ` order by ${orderBy}`;
@@ -195,6 +179,111 @@ export class RepositoryQueryBuilder
         }
 
         return { sql: `${sql};`, params: boundParams };
+    }
+
+    /**
+     * Builds `select 1 from <table> [where ...] limit 1;` - the statement behind a repository's `exists`.
+     *
+     * `select 1` rather than a column, so the read can be served index-only where the visibility map allows;
+     * and `limit 1`, so it stops at the first match rather than materializing the whole matching set. That
+     * second point is the reason `excludeId` is a parameter here rather than something a caller filters out
+     * of the rows afterwards - a filter applied after the fact cannot be combined with a limit.
+     *
+     * @param {string} table - The repository's table.
+     * @param {SnapshotPredicate} [predicate] - What to match; omitted asks whether the repository can see any row at all.
+     * @param {string} [excludeId] - An id that does not count as a match - "is this key taken by someone *else*".
+     * @param {string} [organizationId] - The organization to scope to; omitted on a non-org repository.
+     * @returns {BuiltRepositoryQuery} The statement and its parameters, positionally matched.
+     * @throws {ArgumentException} If the predicate's sql is a whole statement, keeps the `where` keyword, is empty, or contains a ';'; or if excludeId is empty.
+     */
+    public static buildExists(table: string, predicate?: SnapshotPredicate, excludeId?: string,
+        organizationId?: string): BuiltRepositoryQuery
+    {
+        const clause = RepositoryQueryBuilder._buildFilter(table, predicate, organizationId, excludeId);
+
+        return { sql: `select 1 from ${table.trim()}${clause.sql} limit 1;`, params: clause.params };
+    }
+
+    /**
+     * Builds `select cast(count(*) as int) as count from <table> [where ...];` - the statement behind a
+     * repository's `count`.
+     *
+     * The cast is not decoration: Postgres types `count(*)` as bigint, which the driver hands back as a
+     * string, so an uncast count would arrive as `"3"` rather than `3`.
+     *
+     * @param {string} table - The repository's table.
+     * @param {SnapshotPredicate} [predicate] - What to count; omitted counts every row the repository can see.
+     * @param {string} [organizationId] - The organization to scope to; omitted on a non-org repository.
+     * @returns {BuiltRepositoryQuery} The statement and its parameters, positionally matched.
+     * @throws {ArgumentException} If the predicate's sql is a whole statement, keeps the `where` keyword, is empty, or contains a ';'.
+     */
+    public static buildCount(table: string, predicate?: SnapshotPredicate,
+        organizationId?: string): BuiltRepositoryQuery
+    {
+        const clause = RepositoryQueryBuilder._buildFilter(table, predicate, organizationId);
+
+        return {
+            sql: `select cast(count(*) as int) as count from ${table.trim()}${clause.sql};`,
+            params: clause.params
+        };
+    }
+
+    /**
+     * Guards the arguments the two aggregate-free builders share, and assembles their `where` clause.
+     */
+    private static _buildFilter(table: string, predicate: SnapshotPredicate | undefined,
+        organizationId: string | undefined, excludeId?: string): { sql: string; params: ReadonlyArray<any>; }
+    {
+        given(table, "table").ensureHasValue().ensureIsString();
+        given(predicate, "predicate").ensureIsObject();
+        given(excludeId, "excludeId").ensureIsString()
+            .ensure(t => t.isNotEmptyOrWhiteSpace(), "excludeId is empty");
+        given(organizationId, "organizationId").ensureIsString()
+            .ensure(t => t.isNotEmptyOrWhiteSpace(), "organizationId is empty");
+
+        const where = RepositoryQueryBuilder._resolveWhere(predicate, []);
+
+        return RepositoryQueryBuilder._buildWhereClause(where, organizationId, excludeId);
+    }
+
+    /**
+     * Assembles the `where` clause every statement here shares, as an ordered list of conjuncts.
+     *
+     * The order is load bearing twice over. `organization_id` leads because every btree index on an
+     * org-scoped table leads with it, so the filter both isolates the tenant and lets the index be used. And
+     * because binding is positional, the order the fragments are appended in *is* the order their values must
+     * be bound in - which is why the parameters are collected here alongside the SQL rather than anywhere
+     * else.
+     *
+     * The predicate is parenthesized. That is not tidiness: `and` binds tighter than `or`, so splicing
+     * `a = ? or b = ?` in bare would produce `organization_id = ? and a = ? or b = ?`, which parses as
+     * `(org and a) or b` and returns other organizations' rows.
+     */
+    private static _buildWhereClause(where: { sql: string | null; params: ReadonlyArray<any>; },
+        organizationId?: string, excludeId?: string): { sql: string; params: ReadonlyArray<any>; }
+    {
+        const conjuncts = new Array<string>();
+        const params = new Array<any>();
+
+        if (organizationId != null)
+        {
+            conjuncts.push("organization_id = ?");
+            params.push(organizationId);
+        }
+
+        if (where.sql != null)
+        {
+            conjuncts.push(`(${where.sql})`);
+            params.push(...where.params);
+        }
+
+        if (excludeId != null)
+        {
+            conjuncts.push("id <> ?");
+            params.push(excludeId);
+        }
+
+        return { sql: conjuncts.isEmpty ? "" : ` where ${conjuncts.join(" and ")}`, params };
     }
 
     /**

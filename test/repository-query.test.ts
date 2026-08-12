@@ -251,6 +251,79 @@ await describe("RepositoryQueryBuilder tests", async () =>
         });
     });
 
+    // `exists` and `count` share the where-clause assembly with `build`, so what is asserted here is the two
+    // things that differ: the select list, and where `id <> ?` lands relative to the organization filter.
+    await describe("Existence and count statements", async () =>
+    {
+        await test("exists selects a constant and stops at the first match", async () =>
+        {
+            const built = RepositoryQueryBuilder.buildExists("order_snaps", { sql: "(data->>'slug') = ?", params: ["a"] });
+
+            assert.strictEqual(built.sql, `select 1 from order_snaps where ((data->>'slug') = ?) limit 1;`);
+            assert.deepStrictEqual(built.params, ["a"]);
+        });
+
+        // organization first, excluded id last - and the values in exactly that order, because binding is
+        // positional
+        await test("exists orders the organization filter, the predicate and the excluded id", async () =>
+        {
+            const built = RepositoryQueryBuilder.buildExists("receipt_snaps",
+                { sql: "(data->>'email') = ?", params: ["a@b.c"] }, "rec_1", ORG);
+
+            assert.strictEqual(built.sql,
+                `select 1 from receipt_snaps where organization_id = ? and ((data->>'email') = ?) and id <> ? limit 1;`);
+            assert.deepStrictEqual(built.params, [ORG, "a@b.c", "rec_1"]);
+        });
+
+        await test("exists with no predicate asks whether there is any row at all", async () =>
+        {
+            assert.strictEqual(RepositoryQueryBuilder.buildExists("order_snaps").sql,
+                `select 1 from order_snaps limit 1;`);
+
+            // on the org path that means any row in this organization
+            const scoped = RepositoryQueryBuilder.buildExists("receipt_snaps", undefined, undefined, ORG);
+            assert.strictEqual(scoped.sql, `select 1 from receipt_snaps where organization_id = ? limit 1;`);
+            assert.deepStrictEqual(scoped.params, [ORG]);
+        });
+
+        await test("exists takes an excluded id without a predicate", async () =>
+        {
+            const built = RepositoryQueryBuilder.buildExists("order_snaps", undefined, "ord_1");
+
+            assert.strictEqual(built.sql, `select 1 from order_snaps where id <> ? limit 1;`);
+            assert.deepStrictEqual(built.params, ["ord_1"]);
+        });
+
+        // the cast matters: Postgres types count(*) as bigint, which the driver returns as a string
+        await test("count casts to int and scopes the same way", async () =>
+        {
+            assert.strictEqual(RepositoryQueryBuilder.buildCount("order_snaps").sql,
+                `select cast(count(*) as int) as count from order_snaps;`);
+
+            const built = RepositoryQueryBuilder.buildCount("receipt_snaps",
+                { sql: "(data->>'isDeactivated') = ?", params: [false] }, ORG);
+
+            assert.strictEqual(built.sql,
+                `select cast(count(*) as int) as count from receipt_snaps where organization_id = ? and ((data->>'isDeactivated') = ?);`);
+            assert.deepStrictEqual(built.params, [ORG, false]);
+        });
+
+        await test("both reject a predicate that is really a whole statement, or a blank excluded id", async () =>
+        {
+            assert.throws(
+                () => RepositoryQueryBuilder.buildExists("order_snaps", { sql: "select 1 from x", params: [] }),
+                ArgumentException);
+
+            assert.throws(
+                () => RepositoryQueryBuilder.buildCount("order_snaps", { sql: "a = ?; drop table x", params: [1] }),
+                ArgumentException);
+
+            assert.throws(
+                () => RepositoryQueryBuilder.buildExists("order_snaps", undefined, "   "),
+                ArgumentException);
+        });
+    });
+
     await describe("Validation", async () =>
     {
         // the guard that matters most for anyone porting a subclass off the old whole-statement

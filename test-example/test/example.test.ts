@@ -490,6 +490,80 @@ await describe("The example application", async () =>
             }
         });
 
+        // the existence primitive itself, rather than the factory rule built on top of it
+        await test("exists is scoped to the studio, and honours the excluded id", async () =>
+        {
+            domainContext.organizationId = studioAId;
+
+            await inScope(async s =>
+            {
+                const repository = s.resolve<CreatorRepository>("CreatorRepository");
+
+                assert.strictEqual(await repository.checkIfEmailExists("ada@example.com"), true);
+                assert.strictEqual(await repository.checkIfEmailExists("nobody@example.com"), false);
+
+                // edsger is in studio B only, so from here he does not exist
+                assert.strictEqual(await repository.checkIfEmailExists("edsger@example.com"), false);
+
+                // and ada does not collide with herself, which is what makes this usable on an update
+                const ada = await repository.getByEmail("ada@example.com");
+                assert.strictEqual(await repository.checkIfEmailExists("ada@example.com", ada!.id), false);
+            });
+        });
+
+        // count, and the flow the studio's seat limit is built on
+        await test("count feeds the studio's cached creator count", async () =>
+        {
+            domainContext.organizationId = studioAId;
+
+            const activeCount = await inScope(s =>
+                s.resolve<CreatorRepository>("CreatorRepository").countActive());
+
+            assert.strictEqual(activeCount, 3);
+
+            await inScope(async s =>
+            {
+                const repository = s.resolve<StudioRepository>("StudioRepository");
+                const studio = await repository.get(studioAId);
+
+                studio.setCreatorCount(activeCount);
+                await repository.save(studio);
+            });
+
+            await inScope(async s =>
+            {
+                const studio = await s.resolve<StudioRepository>("StudioRepository").get(studioAId);
+
+                assert.strictEqual(studio.creatorCount, 3);
+
+                // the enterprise plan set earlier has an unlimited seat limit
+                assert.strictEqual(studio.hasSeatAvailable(), true);
+            });
+
+            // a creator of its own, so deactivating does not disturb the three the later blocks rely on
+            await inScope(s => s.resolve<CreatorFactory>("CreatorFactory")
+                .invite("temp@example.com", "Temp Hire", "member"));
+
+            assert.strictEqual(
+                await inScope(s => s.resolve<CreatorRepository>("CreatorRepository").countActive()), 4);
+
+            await inScope(async s =>
+            {
+                const repository = s.resolve<CreatorRepository>("CreatorRepository");
+                const temp = await repository.getByEmail("temp@example.com");
+
+                temp!.deactivate();
+                await repository.save(temp!);
+            });
+
+            // deactivated, so it is still a row but no longer an active one - which is the difference
+            // between `count` over a predicate and counting the table
+            assert.strictEqual(
+                await inScope(s => s.resolve<CreatorRepository>("CreatorRepository").countActive()), 3);
+            assert.strictEqual(
+                (await inScope(s => s.resolve<CreatorRepository>("CreatorRepository").getAll())).length, 4);
+        });
+
         await test("a bigint-cast timestamp orders as a number", async () =>
         {
             domainContext.organizationId = studioAId;
