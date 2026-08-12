@@ -1,13 +1,15 @@
 import { given } from "@nivinjoseph/n-defensive";
 import { SnapshotOrderBy, SnapshotPredicate } from "../migration/snapshot-query-set.js";
+import { validateBooleanFragment } from "./sql-fragment.js";
 
 /**
  * The clauses a repository `query` may add around its predicate.
  *
  * Every repository's `query` owns the statement it runs - the select list is always `data`, and the
  * table is always the repository's own - so what a caller supplies is the `where` predicate and,
- * through this, the clauses that follow it. Pass a bare string for the common predicate-only case;
- * reach for this object when a query needs ordering or paging, or needs no predicate at all.
+ * through this, the clauses that follow it. Pass a bare {@link SnapshotPredicate} for the common
+ * predicate-only case; reach for this object when a query needs ordering or paging, or needs no
+ * predicate at all.
  *
  * On an organization-scoped repository the tenant filter is added ahead of `where` and is not
  * expressible here - that is the whole point of it being automatic. `queryAcrossOrganizations` is the
@@ -28,8 +30,8 @@ import { SnapshotOrderBy, SnapshotPredicate } from "../migration/snapshot-query-
  *     orderBy: [this.querySet.orderBy("series"), this.querySet.orderBy("revision", "desc")]
  * });
  *
- * // a raw predicate, with its params passed positionally
- * this.query({ where: `${this.querySet.expressionFor("status")} = ?`, limit: 50 }, status);
+ * // a hand-written predicate, through the one door that takes one
+ * this.query({ where: this.querySet.raw(`${this.querySet.expressionFor("status")} = ?`, status), limit: 50 });
  *
  * // no predicate at all
  * this.query({ orderBy: this.querySet.orderBy("placedAt", "desc"), limit: 10 });
@@ -40,15 +42,16 @@ export interface RepositoryQuery
     /**
      * The `where` predicate, without the `where` keyword.
      *
-     * A `SnapshotPredicate` from the repository's `SnapshotQuerySet` carries its own parameters, so
-     * none are passed positionally alongside it - supplying any is an error rather than a silent
-     * misbinding. A raw string binds with `?` placeholders and takes its values positionally; never
-     * interpolate a value into it.
+     * A {@link SnapshotPredicate} always carries its own parameters, so there is nothing to pass
+     * positionally alongside it and no way to mis-order the binding. A hand-written fragment reaches
+     * this through `SnapshotQuerySet.raw`, which is the library's only door for one and validates it
+     * on the way in; there is deliberately no bare-string form here, because the two differed in what
+     * they accepted and in where their values came from.
      *
      * Omit it to select every row the repository can see - which on an organization-scoped
      * repository still means only the current organization's.
      */
-    readonly where?: string | SnapshotPredicate;
+    readonly where?: SnapshotPredicate;
 
     /**
      * The `order by` list, without the `order by` keywords.
@@ -85,6 +88,23 @@ export interface BuiltRepositoryQuery
 }
 
 /**
+ * {@link RepositoryQuery} with the raw-string predicate the public type no longer admits.
+ *
+ * The string form survives here and only here, because the event stream repositories' `_load` builds
+ * `aggregate_id in (?, ?, ...)` - a fragment whose placeholder count is not fixed, assembled inside
+ * the library from ids the library itself validated. Nothing a consumer writes reaches it: a
+ * hand-written fragment comes in as a `SnapshotPredicate` through `SnapshotQuerySet.raw`, which
+ * validates it and owns its parameters.
+ */
+interface NormalizedQuery
+{
+    readonly where?: string | SnapshotPredicate;
+    readonly orderBy?: string | SnapshotOrderBy | ReadonlyArray<SnapshotOrderBy>;
+    readonly limit?: number;
+    readonly offset?: number;
+}
+
+/**
  * Assembles the statement a repository's `query` runs.
  *
  * One builder serves all four repositories, which are siblings rather than a hierarchy - so the only
@@ -102,17 +122,6 @@ export interface BuiltRepositoryQuery
  */
 export class RepositoryQueryBuilder
 {
-    /**
-     * A predicate that is really a whole statement. `with` is included because a caller reaching for
-     * a CTE is reaching past what this builds, same as one writing `select`.
-     */
-    private static readonly _statementRegex = /^\s*(?:select|with)\b/i;
-
-    /**
-     * A predicate that has kept the keyword this builder emits.
-     */
-    private static readonly _whereKeywordRegex = /^\s*where\b/i;
-
     /**
      * @static
      */
@@ -133,8 +142,8 @@ export class RepositoryQueryBuilder
      * differently.
      *
      * @param {string} table - The repository's table.
-     * @param {string | SnapshotPredicate | RepositoryQuery} whereOrQuery - The predicate, or the clauses to build from.
-     * @param {ReadonlyArray<any>} params - Values bound to the predicate's `?` placeholders.
+     * @param {string | SnapshotPredicate | RepositoryQuery} whereOrQuery - The predicate, or the clauses to build from. The string form is internal; see {@link NormalizedQuery}.
+     * @param {ReadonlyArray<any>} params - Values bound to the internal string form's `?` placeholders; always empty for anything a consumer supplies.
      * @param {string} [organizationId] - The organization to scope to; omitted on a non-org repository.
      * @returns {BuiltRepositoryQuery} The statement and its parameters, positionally matched.
      * @throws {ArgumentNullException} If table, whereOrQuery or params is null or undefined.
@@ -179,6 +188,32 @@ export class RepositoryQueryBuilder
         }
 
         return { sql: `${sql};`, params: boundParams };
+    }
+
+    /**
+     * Builds `<column> in (?, ?, ...)` over a set of ids, as a predicate carrying its own values.
+     *
+     * The one fragment the library assembles for itself. All four repositories look up by id - `id`
+     * on a snapshot table, `aggregate_id` on an event stream - and none of them can express it
+     * through a `SnapshotQuerySet`, whose paths reach inside `data` and whose declarations belong to
+     * the subclass. Building it here keeps the placeholder count and the value order derived from one
+     * array in one place; positional binding gives no second chance at getting that pairing right.
+     *
+     * @param {string} column - The id column to match against.
+     * @param {ReadonlyArray<string>} values - The ids; must be non-empty, since `in ()` is not valid SQL.
+     * @returns {SnapshotPredicate} The fragment and its values, positionally matched.
+     * @throws {ArgumentException} If column is empty, or values is empty.
+     */
+    public static idPredicate(column: string, values: ReadonlyArray<string>): SnapshotPredicate
+    {
+        given(column, "column").ensureHasValue().ensureIsString()
+            .ensure(t => t.isNotEmptyOrWhiteSpace(), "column is empty");
+        given(values, "values").ensureHasValue().ensureIsArray().ensureIsNotEmpty();
+
+        return {
+            sql: `${column.trim()} in (${values.map(() => "?").join(",")})`,
+            params: [...values]
+        };
     }
 
     /**
@@ -287,10 +322,11 @@ export class RepositoryQueryBuilder
     }
 
     /**
-     * Widens the string form to the object form. The string form is the predicate-only case, so an
-     * empty one is a mistake rather than a way to select everything - `{}` is how that is asked for.
+     * Widens whichever form arrived to the object form. The string form is internal - see
+     * {@link NormalizedQuery} - and is the predicate-only case, so an empty one is a mistake rather
+     * than a way to select everything; `{}` is how that is asked for.
      */
-    private static _normalize(value: string | SnapshotPredicate | RepositoryQuery): RepositoryQuery
+    private static _normalize(value: string | SnapshotPredicate | RepositoryQuery): NormalizedQuery
     {
         given(value, "where").ensureHasValue();
 
@@ -330,8 +366,13 @@ export class RepositoryQueryBuilder
      * Resolves the predicate and the values that bind to it, from whichever form arrived.
      *
      * A {@link SnapshotPredicate} owns its parameters, so positional ones alongside it would have
-     * nowhere to go; a raw string owns none, so the positional ones are its. Either way there is
-     * exactly one source, which is what keeps the binding order unambiguous.
+     * nowhere to go; the internal string form owns none, so the positional ones are its. Either way
+     * there is exactly one source, which is what keeps the binding order unambiguous.
+     *
+     * Both guards below are now internal invariants rather than consumer-facing errors - a consumer
+     * cannot reach either, since `where` is a `SnapshotPredicate` on the public type and `query`
+     * takes no positional params at all. They stay because the string branch is still live for
+     * `_load`, and a mis-bound `in (?, ?)` would be silent.
      *
      * @returns The trimmed predicate and its parameters; `sql` is null when there is no predicate.
      */
@@ -371,25 +412,7 @@ export class RepositoryQueryBuilder
      */
     private static _validateWhereSql(where: string): string
     {
-        given(where, "where").ensureHasValue().ensureIsString()
-            .ensure(
-                t => t.isNotEmptyOrWhiteSpace(),
-                "where is empty; omit it to select without a predicate"
-            )
-            .ensure(
-                t => !RepositoryQueryBuilder._statementRegex.test(t),
-                "where is a predicate, not a whole statement - drop the 'select ... from ...' and pass only what follows 'where'"
-            )
-            .ensure(
-                t => !RepositoryQueryBuilder._whereKeywordRegex.test(t),
-                "where must not include the 'where' keyword, which is emitted for you"
-            )
-            .ensure(
-                t => !t.contains(";"),
-                "where must not contain a ';'"
-            );
-
-        return where.trim();
+        return validateBooleanFragment(where, "where");
     }
 
     /**

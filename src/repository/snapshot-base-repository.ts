@@ -8,6 +8,7 @@ import { DataHelper } from "./data-helper.js";
 import { AggregateNotFoundException } from "./aggregate-not-found-exception.js";
 import { RepositoryQuery, RepositoryQueryBuilder } from "./repository-query.js";
 import { QueryResult } from "../db/query-result.js";
+import { executeRawQuery } from "./raw-query.js";
 import { SnapshotPredicate, SnapshotQuerySet } from "../migration/snapshot-query-set.js";
 
 /**
@@ -15,9 +16,10 @@ import { SnapshotPredicate, SnapshotQuerySet } from "../migration/snapshot-query
  * both the snapshot and the underlying event stream on save.
  *
  * The snapshot table holds one row per aggregate: `id` (the primary key) and `data` (the
- * serialized state as jsonb). {@link get} and {@link getAll} cover lookup by id, which the
- * primary key already indexes. Any other read - filtering or sorting on a field *inside*
- * `data` - needs a method on the concrete subclass built over {@link query}.
+ * serialized state as jsonb). {@link get} and {@link getByIds} cover lookup by id, which the
+ * primary key already indexes, and {@link getAll} takes the whole table. Any other read -
+ * filtering or sorting on a field *inside* `data` - needs a method on the concrete subclass
+ * built over {@link query}.
  *
  * {@link query} owns the statement it runs - `select data from <table> where (<your predicate>)` - so
  * a subclass supplies the predicate and nothing else, with `order by`, `limit` and `offset` available
@@ -48,7 +50,7 @@ import { SnapshotPredicate, SnapshotQuerySet } from "../migration/snapshot-query
  * Matching the expression is necessary but not sufficient for the predicate to *use* the index:
  * btree only serves a leading prefix of an index's columns, so the second path of a composite is not
  * independently searchable. That is a property of the plan rather than of the types, so it is not
- * expressible in the set - read `info.indexes` from the create call for each index's column order.
+ * expressible in the set - read `info.createdIndexes` from the create call for each index's column order.
  *
  * **An array inside `data` takes the other kind of index.** `withArrayPath` builds a GIN index over
  * the array as jsonb, and {@link SnapshotQuerySet.contains} answers containment - "does some element
@@ -159,14 +161,39 @@ export abstract class SnapshotBaseRepository<T extends AggregateRoot<TState, TDo
     }
 
 
-    public async getAll(...ids: ReadonlyArray<string>): Promise<Array<T>>
+    /**
+     * The aggregates with these ids, in whatever order the table returns them.
+     *
+     * Ids that are blank once trimmed are dropped, and if that leaves none the result is empty -
+     * asking for zero ids returns zero aggregates, which is unremarkable because the caller passed an
+     * array. It was not always: as `getAll(...ids)` this shared a signature with {@link getAll}, so
+     * the empty case had to stand for either everything or nothing and could not be read off the call.
+     *
+     * @param {ReadonlyArray<string>} ids - The aggregate ids to load.
+     * @returns {Promise<Array<T>>} The aggregates found; empty when none of the ids matched, or when no usable id was given.
+     */
+    public async getByIds(ids: ReadonlyArray<string>): Promise<Array<T>>
     {
         given(ids, "ids").ensureHasValue().ensureIsArray();
-        ids = ids.map(t => t.trim()).where(t => t.isNotEmptyOrWhiteSpace());
 
-        if (ids.isNotEmpty)
-            return this.query(`id in (${ids.map(() => "?").join(",")})`, ...ids);
+        const trimmed = ids.map(t => t.trim()).where(t => t.isNotEmptyOrWhiteSpace());
+        if (trimmed.isEmpty)
+            return [];
 
+        return this.query(RepositoryQueryBuilder.idPredicate("id", trimmed));
+    }
+
+    /**
+     * Every row in the snapshot table.
+     *
+     * **Unbounded, and takes no arguments so that it can only be called on purpose.** It is
+     * {@link query} with no predicate; for anything narrower, or for ordering and paging, build a
+     * method on the subclass over `query` instead.
+     *
+     * @returns {Promise<Array<T>>} Every aggregate, deserialized.
+     */
+    public getAll(): Promise<Array<T>>
+    {
         return this.query({});
     }
 
@@ -175,7 +202,7 @@ export abstract class SnapshotBaseRepository<T extends AggregateRoot<TState, TDo
         given(id, "id").ensureHasValue().ensureIsString();
         id = id.trim();
 
-        const result = await this.query("id = ?", id);
+        const result = await this.query(RepositoryQueryBuilder.idPredicate("id", [id]));
 
         if (result.length !== 1)
             throw new AggregateNotFoundException(this._eventStreamRepository.aggregateType, id);
@@ -183,90 +210,60 @@ export abstract class SnapshotBaseRepository<T extends AggregateRoot<TState, TDo
         return result[0];
     }
 
-    public async save(value: T, unitOfWork?: UnitOfWork): Promise<void>
+    /**
+     * Saves the snapshot and the underlying event stream in a transaction this repository owns, and
+     * commits it - or rolls it back and rethrows if anything fails.
+     *
+     * The transaction is this repository's own {@link BaseRepository.unitOfWork}. If anything else
+     * was queued on that same instance, **this commits that too**, because a unit of work commits as
+     * a whole. Use {@link saveWithin} when several writes have to land together.
+     *
+     * @param {T} value - The aggregate to save. A no-op when it is neither new nor changed.
+     */
+    public save(value: T): Promise<void>
     {
-        given(value, "value").ensureHasValue().ensureIsObject().ensureIsType(this._eventStreamRepository.aggregateType);
-
-        given(unitOfWork, "unitOfWork").ensureIsObject();
-
-        if (!value.isNew && !value.hasChanges)
-            return;
-
-        try
-        {
-            await this._eventStreamRepository.save(value, unitOfWork ?? this.unitOfWork);
-
-            let sql = "";
-            const params = [];
-
-            if (value.isNew)
-            {
-                sql = `insert into ${this.table}
-                            (id, data)
-                            values(?, ?);`;
-
-                params.push(value.id, value.snapshot());
-            }
-            else
-            {
-                sql = `insert into ${this.table}
-                            (id, data)
-                            values(?, ?)
-                            on conflict (id) do update
-                            set data = excluded.data;`;
-
-                params.push(value.id, value.snapshot());
-            }
-
-            await this.db.executeCommandWithinUnitOfWork(unitOfWork ?? this.unitOfWork, sql, ...params);
-
-            if (!unitOfWork)
-                await this.unitOfWork.commit();
-        }
-        catch (error)
-        {
-            await this.logger.logError(error as any);
-
-            if (!unitOfWork)
-                await this.unitOfWork.rollback();
-
-            throw error;
-        }
+        return this._save(value, this.unitOfWork, true);
     }
+
+    /**
+     * Saves the snapshot and the underlying event stream into a transaction the caller owns, and
+     * **does not commit**.
+     *
+     * @param {T} value - The aggregate to save. A no-op when it is neither new nor changed.
+     * @param {UnitOfWork} unitOfWork - The caller's transaction. Required; committing it is theirs to do.
+     */
+    public saveWithin(value: T, unitOfWork: UnitOfWork): Promise<void>
+    {
+        given(unitOfWork, "unitOfWork").ensureHasValue().ensureIsObject();
+
+        return this._save(value, unitOfWork, false);
+    }
+
 
     /**
      * Runs a query and deserializes each row into an aggregate.
      *
      * This owns the statement: `select data from <this.table> where (<your predicate>)`. So what you
-     * supply is the predicate, without the `where` keyword. Parameters bind with `?` placeholders and
-     * are passed positionally; never interpolate a value into the predicate.
+     * supply is the predicate, without the `where` keyword.
      *
-     * Pass a {@link RepositoryQuery} instead of a string to add `order by`, `limit` or `offset`, or to
-     * run with no predicate at all (`{}`). For a read the built statement cannot express - a join, a
-     * union, a CTE - use {@link queryStatement}. For reads whose shape does not map onto the
-     * aggregate - counts, group-bys, projections - use {@link BaseRepository.queryRaw}, which performs
+     * **A predicate always carries its own values.** Every one comes from {@link querySet} - a typed
+     * `eq`/`gt`/`in`/`contains`, a combinator, or `raw` for a hand-written fragment - and each binds
+     * its own `?` placeholders. There is nothing to pass positionally and no way to mis-order the
+     * binding, which is why this takes no parameters beyond the predicate itself.
+     *
+     * Pass a {@link RepositoryQuery} instead of a bare predicate to add `order by`, `limit` or
+     * `offset`, or to run with no predicate at all (`{}`). For a read the built statement cannot
+     * express - a join, a union, a CTE - use {@link queryStatement}. For reads whose shape does not
+     * map onto the aggregate - counts, group-bys, projections - use {@link queryRaw}, which performs
      * no deserialization.
      *
-     * @param {string} where - The `where` predicate, without the `where` keyword.
-     * @param {...ReadonlyArray<any>} params - Values bound to the predicate's `?` placeholders.
+     * @param {SnapshotPredicate | RepositoryQuery} whereOrQuery - A predicate from {@link querySet}, or the predicate and the clauses that follow it.
      * @returns {Promise<Array<T>>} The deserialized aggregates; empty when nothing matched.
-     * @throws {ArgumentException} If the predicate is a whole statement, keeps the `where` keyword, is empty, or contains a ';'.
+     * @throws {ArgumentException} If the predicate is a whole statement, keeps the `where` keyword, is empty, or contains a ';'; if orderBy is empty or contains a ';'; or if limit or offset is not a non-negative integer.
      */
-    protected query(where: string, ...params: ReadonlyArray<any>): Promise<Array<T>>;
-    /**
-     * @param {SnapshotPredicate} where - A predicate from {@link querySet}. It carries its own values, so none are passed alongside it.
-     * @returns {Promise<Array<T>>} The deserialized aggregates; empty when nothing matched.
-     */
-    protected query(where: SnapshotPredicate): Promise<Array<T>>;
-    /**
-     * @param {RepositoryQuery} query - The predicate and the clauses that follow it.
-     * @param {...ReadonlyArray<any>} params - Values bound to the predicate's `?` placeholders, when it is a raw string.
-     * @returns {Promise<Array<T>>} The deserialized aggregates; empty when nothing matched.
-     */
-    protected query(query: RepositoryQuery, ...params: ReadonlyArray<any>): Promise<Array<T>>;
-    protected async query(whereOrQuery: string | SnapshotPredicate | RepositoryQuery, ...params: ReadonlyArray<any>): Promise<Array<T>>
+    protected async query(whereOrQuery: SnapshotPredicate | RepositoryQuery): Promise<Array<T>>
     {
-        const built = RepositoryQueryBuilder.build(this.table, whereOrQuery, params);
+        const built = RepositoryQueryBuilder.build(this.table, whereOrQuery, []);
 
         return this._deserialize(await this.queryRaw<any>(built.sql, ...built.params));
     }
@@ -279,7 +276,7 @@ export abstract class SnapshotBaseRepository<T extends AggregateRoot<TState, TDo
      * a parameter rather than something a caller filters out afterwards because it goes into the statement,
      * which is what lets the read stop at the first match instead of materializing every one.
      *
-     * Unlike {@link BaseRepository.queryRaw}, this applies the same filtering {@link query} does.
+     * Unlike {@link queryRaw}, this applies the same filtering {@link query} does.
      * A hand-written condition reaches it through `SnapshotQuerySet.raw`, so there is no need to assemble a
      * statement to ask a yes-or-no question.
      *
@@ -301,7 +298,7 @@ export abstract class SnapshotBaseRepository<T extends AggregateRoot<TState, TDo
      * How many rows match - without deserializing them.
      *
      * The counterpart to {@link exists}, and scoped the same way. For a count broken down by something -
-     * a group-by - use {@link BaseRepository.queryRaw}: that shape is a projection rather than a single
+     * a group-by - use {@link queryRaw}: that shape is a projection rather than a single
      * number, and this cannot express it.
      *
      * @param {SnapshotPredicate} [predicate] - What to count; omitted counts every row.
@@ -313,6 +310,24 @@ export abstract class SnapshotBaseRepository<T extends AggregateRoot<TState, TDo
         const result = await this.queryRaw<{ count: number; }>(built.sql, ...built.params);
 
         return result.rows[0].count;
+    }
+
+    /**
+     * Runs a raw SQL query and returns the unprocessed {@link QueryResult}.
+     *
+     * For reads whose shape does not map onto the aggregate - counts, group-bys, projections - so no
+     * deserialization is attempted. Build any expression over `data` from {@link querySet}'s
+     * `expressionFor`, so a grouping or filtering expression still matches the index it was created
+     * from.
+     *
+     * @template TRow - The expected shape of each returned row.
+     * @param {string} sql - The statement to run.
+     * @param {...ReadonlyArray<any>} params - Values bound to the statement's `?` placeholders.
+     * @returns {Promise<QueryResult<TRow>>} The raw query result.
+     */
+    protected queryRaw<TRow>(sql: string, ...params: ReadonlyArray<any>): Promise<QueryResult<TRow>>
+    {
+        return executeRawQuery<TRow>(this.db, sql, params);
     }
 
     /**
@@ -330,6 +345,51 @@ export abstract class SnapshotBaseRepository<T extends AggregateRoot<TState, TDo
     protected async queryStatement(sql: string, ...params: ReadonlyArray<any>): Promise<Array<T>>
     {
         return this._deserialize(await this.queryRaw<any>(sql, ...params));
+    }
+
+    /**
+     * The body both save doors share; `owned` is the whole of what separates them.
+     */
+    private async _save(value: T, unitOfWork: UnitOfWork, owned: boolean): Promise<void>
+    {
+        given(value, "value").ensureHasValue().ensureIsObject().ensureIsType(this._eventStreamRepository.aggregateType);
+
+        if (!value.isNew && !value.hasChanges)
+            return;
+
+        try
+        {
+            // always the non-committing door: this repository decides whether the transaction gets
+            // committed, and the event stream write has to land or not land with the snapshot write
+            await this._eventStreamRepository.saveWithin(value, unitOfWork);
+
+            // both branches write the same row from the same values; the conflict clause is the only
+            // difference, and it is what makes a second save of a known aggregate an update rather
+            // than a primary key violation
+            const sql = value.isNew
+                ? `insert into ${this.table}
+                            (id, data)
+                            values(?, ?);`
+                : `insert into ${this.table}
+                            (id, data)
+                            values(?, ?)
+                            on conflict (id) do update
+                            set data = excluded.data;`;
+
+            await this.db.executeCommandWithinUnitOfWork(unitOfWork, sql, value.id, value.snapshot());
+
+            if (owned)
+                await unitOfWork.commit();
+        }
+        catch (error)
+        {
+            await this.logger.logError(error as any);
+
+            if (owned)
+                await unitOfWork.rollback();
+
+            throw error;
+        }
     }
 
     private _deserialize(queryResult: QueryResult<any>): Array<T>

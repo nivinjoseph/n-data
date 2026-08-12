@@ -333,7 +333,7 @@ export class SnapshotIndex<T>
      *
      * @param {string} path - The key to add.
      * @param {JsonValueType} [type] - Optional type to cast this path's extracted text to.
-     * @returns {this} This index, for chaining.
+     * @returns {this} A new index covering this one's paths and that one - the receiver is unchanged.
      * @throws {ArgumentNullException} If path is null or undefined.
      * @throws {ArgumentException} If path is not a string, is empty or whitespace, is not one or more '.' delimited bare JSON keys, is already indexed by this index, or type is not a JsonValueType.
      */
@@ -351,11 +351,13 @@ export class SnapshotIndex<T>
             `path '${trimmedPath}' is already indexed by this index`
         );
 
+        const next = this._clone();
+
         // built eagerly, so a malformed path or type throws at the declaration site; and built once,
         // so the expression the index is created from is the same one handed back for predicates
-        this._expressionsByPath.set(trimmedPath, SnapshotIndex._createExpression(trimmedPath, type));
+        next._expressionsByPath.set(trimmedPath, SnapshotIndex._createExpression(trimmedPath, type));
 
-        return this;
+        return next;
     }
 
     /**
@@ -432,13 +434,14 @@ export class SnapshotIndex<T>
      * `if not exists` and nothing here drops anything, so the constraint stays enforced until the
      * index is dropped by hand.
      *
-     * @returns {this} This index, for chaining.
+     * @returns {this} A new index, unique - the receiver is unchanged.
      */
     public asUnique(): this
     {
-        this._isUnique = true;
+        const next = this._clone();
+        next._isUnique = true;
 
-        return this;
+        return next;
     }
 
     /**
@@ -448,7 +451,7 @@ export class SnapshotIndex<T>
      * characters, which a composite over a long table name will.
      *
      * @param {string} name - The suffix to use.
-     * @returns {this} This index, for chaining.
+     * @returns {this} A new index under that name - the receiver is unchanged.
      * @throws {ArgumentNullException} If name is null or undefined.
      * @throws {ArgumentException} If name is not a string, is empty or whitespace, is not a valid identifier fragment, or is already set.
      */
@@ -463,8 +466,33 @@ export class SnapshotIndex<T>
             // rest of the API instead of InvalidOperationException
             .ensure(() => this._name == null, "name is already set");
 
-        this._name = name.trim();
+        const next = this._clone();
+        next._name = name.trim();
 
-        return this;
+        return next;
+    }
+
+    /**
+     * Copy-on-write, so each builder call hands back a new index and the receiver stays as it was.
+     *
+     * This matches `SnapshotQuerySet`, which has always cloned. The two used to disagree: `andPath`,
+     * `asUnique` and `withName` returned `this` and mutated in place, so `const b = a.asUnique()` left
+     * `a` unique as well - and carrying one builder's mental model over to the other silently changed
+     * what got created. `SnapshotTableInfo` even documented the consequence, that a builder mutated
+     * after a create call still answered for a path no index covered. It cannot now.
+     *
+     * The `this` return type is kept rather than widened to `SnapshotIndex<T>`: the constructor is
+     * private, so there is no subclass for the two to differ on, and keeping it means no signature
+     * here changed shape.
+     */
+    private _clone(): this
+    {
+        const next = new SnapshotIndex<T>();
+
+        this._expressionsByPath.forEach((v, k) => next._expressionsByPath.set(k, v));
+        next._isUnique = this._isUnique;
+        next._name = this._name;
+
+        return <this>next;
     }
 }

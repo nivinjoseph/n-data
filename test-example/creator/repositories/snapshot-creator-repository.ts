@@ -124,14 +124,25 @@ export class SnapshotCreatorRepository
         });
     }
 
+    /**
+     * How many creators hold each role, within this studio.
+     *
+     * A projection, so it goes through the raw door - `query` deserializes each row into an aggregate
+     * and a group-by has no aggregate to be. That door is named `queryRawAcrossOrganizations` because
+     * it adds no filter, so the scope has to be put back by hand; `organizationPredicate` is the one
+     * canonical spelling of it, and splicing its `sql` while spreading its `params` in the same place
+     * keeps the positional binding honest. The grouping expression comes from the declaration, so it
+     * is the same expression the index was built on.
+     */
     public async countByRole(): Promise<ReadonlyArray<{ role: string; count: number; }>>
     {
         const expression = this.querySet.expressionFor("role");
+        const scope = this.organizationPredicate;
 
-        const result = await this.queryRaw<{ role: string; count: number; }>(
+        const result = await this.queryRawAcrossOrganizations<{ role: string; count: number; }>(
             `select ${expression} as role, cast(count(*) as int) as count
-             from ${this.table} where organization_id = ? group by 1 order by 2 desc;`,
-            this.domainContext.organizationId);
+             from ${this.table} where ${scope.sql} group by 1 order by 2 desc;`,
+            ...scope.params);
 
         return result.rows;
     }

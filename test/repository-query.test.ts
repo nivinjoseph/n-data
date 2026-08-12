@@ -88,11 +88,13 @@ await describe("RepositoryQueryBuilder tests", async () =>
         await test("orderBy, limit and offset are appended in SQL order, with the row counts bound", async () =>
         {
             const built = RepositoryQueryBuilder.build("receipt_snaps", {
-                where: "(data->>'status') = ?",
+                // a hand-written predicate now reaches `where` as a SnapshotPredicate, which carries
+                // its own values - the bare-string form and its positional params are gone
+                where: { sql: "(data->>'status') = ?", params: ["sent"] },
                 orderBy: "((data->>'total')::numeric) desc",
                 limit: 20,
                 offset: 40
-            }, ["sent"], ORG);
+            }, [], ORG);
 
             assert.strictEqual(built.sql,
                 `select data from receipt_snaps where organization_id = ? and ((data->>'status') = ?) `
@@ -370,7 +372,7 @@ await describe("RepositoryQueryBuilder tests", async () =>
         {
             assert.throws(() => RepositoryQueryBuilder.build("order_snaps", "", []), ArgumentException);
             assert.throws(() => RepositoryQueryBuilder.build("order_snaps", "   ", []), ArgumentException);
-            assert.throws(() => RepositoryQueryBuilder.build("order_snaps", { where: "  " }, []), ArgumentException);
+            assert.throws(() => RepositoryQueryBuilder.build("order_snaps", { where: { sql: "  ", params: [] } }, []), ArgumentException);
             assert.throws(() => RepositoryQueryBuilder.build("order_snaps", { orderBy: "" }, []), ArgumentException);
         });
 
@@ -433,7 +435,7 @@ await describe("RepositoryQueryBuilder tests", async () =>
             creator = new DbTableCreator(db, new SilentLogger());
 
             await db.executeCommand("drop table if exists receipt_events; drop table if exists receipt_snaps;");
-            await creator.createSnapshotTableForOrgAggregate(receiptType, [statusIndex]);
+            await creator.createSnapshotTableForOrgAggregate(receiptType, { indexes: [statusIndex], arrayIndexes: [] });
 
             // enough rows, spread over enough organizations and statuses, that the planner has a real
             // choice - without this every plan is a seq scan and the index assertions pass vacuously.

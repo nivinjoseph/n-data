@@ -4,7 +4,7 @@ import { Exception } from "@nivinjoseph/n-exception";
 import { Logger } from "@nivinjoseph/n-log";
 import assert from "node:assert";
 import test, { after, before, describe } from "node:test";
-import { DataHelper, Db, DbConnectionConfig, DbConnectionFactory, DbTableCreator, JsonValueType, KnexPgDb, KnexPgDbConnectionFactory, QueryResult, SnapshotArrayIndex, SnapshotIndex } from "../src/index.js";
+import { DataHelper, Db, DbConnectionConfig, DbConnectionFactory, DbTableCreator, JsonValueType, KnexPgDb, KnexPgDbConnectionFactory, QueryResult, SnapshotArrayIndex, SnapshotIndex, SnapshotQuerySet, SnapshotTableOptions } from "../src/index.js";
 import { TransactionProvider } from "../src/unit-of-work/transaction-provider.js";
 
 
@@ -203,7 +203,7 @@ await describe("DbTableCreator tests", async () =>
             const info = await creator.createSnapshotTableForAggregate(orderType);
 
             assert.strictEqual(info.tableName, DataHelper.createSnapshotTableName(orderType));
-            assert.deepStrictEqual(info.indexes, []);
+            assert.deepStrictEqual(info.createdIndexes, []);
             assert.deepStrictEqual(db.commands, [
                 "create table if not exists order_snaps ( id varchar(40) primary key, data jsonb not null );"
             ]);
@@ -214,12 +214,12 @@ await describe("DbTableCreator tests", async () =>
             const { creator, db } = createCreator();
 
             const statusIndex = SnapshotIndex.forPath<OrderState>("status");
-            const info = await creator.createSnapshotTableForAggregate(orderType, [statusIndex]);
+            const info = await creator.createSnapshotTableForAggregate(orderType, { indexes: [statusIndex], arrayIndexes: [] });
 
             // the table shape is identical to the no-indexes case
             assert.strictEqual(db.commands[0], "create table if not exists order_snaps ( id varchar(40) primary key, data jsonb not null );");
             assert.strictEqual(db.commands[1], "create index if not exists idx_order_snaps_status on order_snaps((data->>'status'));");
-            assert.deepStrictEqual(info.indexes.map(t => t.expressions), [["(data->>'status')"]]);
+            assert.deepStrictEqual(info.createdIndexes.map(t => t.expressions), [["(data->>'status')"]]);
 
             // and the declaration hands back the very expression the index was created from
             assert.strictEqual(statusIndex.expressionForPath("status"), "(data->>'status')");
@@ -229,7 +229,7 @@ await describe("DbTableCreator tests", async () =>
         {
             const { creator, db } = createCreator();
 
-            await creator.createSnapshotTableForAggregate(orderType, [SnapshotIndex.forPath<OrderState>("total", JsonValueType.numeric)]);
+            await creator.createSnapshotTableForAggregate(orderType, { indexes: [SnapshotIndex.forPath<OrderState>("total", JsonValueType.numeric)], arrayIndexes: [] });
 
             assert.strictEqual(db.commands[1], "create index if not exists idx_order_snaps_total on order_snaps(((data->>'total')::numeric));");
         });
@@ -239,10 +239,10 @@ await describe("DbTableCreator tests", async () =>
             const { creator, db } = createCreator();
 
             const cityIndex = SnapshotIndex.forPath<OrderState>("customer.city");
-            const info = await creator.createSnapshotTableForAggregate(orderType, [cityIndex]);
+            const info = await creator.createSnapshotTableForAggregate(orderType, { indexes: [cityIndex], arrayIndexes: [] });
 
             assert.strictEqual(db.commands[1], "create index if not exists idx_order_snaps_customer_city on order_snaps((data#>>'{\"customer\",\"city\"}'));");
-            assert.deepStrictEqual(info.indexes.map(t => t.paths), [["customer.city"]]);
+            assert.deepStrictEqual(info.createdIndexes.map(t => t.paths), [["customer.city"]]);
             assert.strictEqual(cityIndex.expressionForPath("customer.city"), "(data#>>'{\"customer\",\"city\"}')");
         });
 
@@ -263,10 +263,10 @@ await describe("DbTableCreator tests", async () =>
         {
             const { creator, db } = createCreator();
 
-            await creator.createSnapshotTableForOrgAggregate(invoiceType, [
+            await creator.createSnapshotTableForOrgAggregate(invoiceType, { indexes: [
                 SnapshotIndex.forPath<InvoiceState>("status"),
                 SnapshotIndex.forPath<InvoiceState>("total", JsonValueType.numeric)
-            ]);
+            ], arrayIndexes: [] });
 
             assert.deepStrictEqual(db.commands, [
                 "create table if not exists invoice_snaps ( id varchar(40) primary key, organization_id varchar(40) not null, data jsonb not null );",
@@ -283,7 +283,7 @@ await describe("DbTableCreator tests", async () =>
             const { creator, db } = createCreator();
 
             const membersIndex = SnapshotArrayIndex.forPath<TeamState>("members");
-            const info = await creator.createSnapshotTableForAggregate(teamType, { arrayIndexes: [membersIndex] });
+            const info = await creator.createSnapshotTableForAggregate(teamType, { indexes: [], arrayIndexes: [membersIndex] });
 
             // the table shape is identical to the no-indexes case: nothing is added, the index is
             // built directly over the extraction expression
@@ -293,7 +293,7 @@ await describe("DbTableCreator tests", async () =>
             ]);
 
             // -> not ->>: the index is over the array AS JSONB, since @> is a jsonb operator
-            assert.deepStrictEqual(info.indexes, [{
+            assert.deepStrictEqual(info.createdIndexes, [{
                 name: "idx_team_snaps_members_gin",
                 paths: ["members"],
                 expressions: ["(data->'members')"],
@@ -303,7 +303,7 @@ await describe("DbTableCreator tests", async () =>
 
             // and the declaration's predicate embeds the very expression the index was created from
             assert.ok(membersIndex.containmentForPath("members").contains({ userId: "u1" }).sql
-                .contains(info.indexes[0].expressions[0]));
+                .contains(info.createdIndexes[0].expressions[0]));
         });
 
         await test("a nested array path uses #> and an underscored index name", async () =>
@@ -311,6 +311,7 @@ await describe("DbTableCreator tests", async () =>
             const { creator, db } = createCreator();
 
             await creator.createSnapshotTableForAggregate(orderType, {
+                indexes: [],
                 arrayIndexes: [SnapshotArrayIndex.forPath<OrderState>("customer.nicknames")]
             });
 
@@ -324,6 +325,7 @@ await describe("DbTableCreator tests", async () =>
             const { creator, db } = createCreator();
 
             await creator.createSnapshotTableForAggregate(teamType, {
+                indexes: [],
                 arrayIndexes: [SnapshotArrayIndex.forPath<TeamState>("members").withName("m")]
             });
 
@@ -366,7 +368,7 @@ await describe("DbTableCreator tests", async () =>
                 "create index if not exists idx_order_snaps_scores_gin on order_snaps using gin((data->'scores') jsonb_path_ops);"
             ]);
 
-            assert.deepStrictEqual(info.indexes.map(t => t.method), [undefined, undefined, "gin", "gin"]);
+            assert.deepStrictEqual(info.createdIndexes.map(t => t.method), [undefined, undefined, "gin", "gin"]);
         });
 
         // THE org-table change: a GIN index cannot lead with organization_id, so it is not a
@@ -376,6 +378,7 @@ await describe("DbTableCreator tests", async () =>
             const { creator, db } = createCreator();
 
             const info = await creator.createSnapshotTableForOrgAggregate(invoiceType, {
+                indexes: [],
                 arrayIndexes: [SnapshotArrayIndex.forPath<InvoiceState>("labels")]
             });
 
@@ -387,8 +390,8 @@ await describe("DbTableCreator tests", async () =>
 
             // organization_id is NOT prepended to the GIN index, and leadingColumn does not claim it -
             // reporting one would be a claim the caller builds a predicate on
-            assert.strictEqual(info.indexes[0].leadingColumn, undefined);
-            assert.deepStrictEqual(info.indexes[0].expressions, ["(data->'labels')"]);
+            assert.strictEqual(info.createdIndexes[0].leadingColumn, undefined);
+            assert.deepStrictEqual(info.createdIndexes[0].expressions, ["(data->'labels')"]);
         });
 
         await test("an org table with a btree index skips the standalone one even alongside an array index", async () =>
@@ -407,35 +410,55 @@ await describe("DbTableCreator tests", async () =>
             ]);
         });
 
-        // the options object is an addition, not a replacement: every existing migration passes a
-        // bare array and must keep emitting byte-identical DDL
-        await test("the bare-array and options-object forms are interchangeable", async () =>
+        // a query set satisfies SnapshotTableOptions by shape, and this is the assertion that keeps
+        // that true: the recommended form and the explicit one have to emit byte-identical DDL, or
+        // "the migration creates what the repository queries" stops being a guarantee
+        await test("a query set and the equivalent options object are interchangeable", async () =>
         {
-            const bare = createCreator();
-            const wrapped = createCreator();
+            const viaSet = createCreator();
+            const viaOptions = createCreator();
 
-            const indexes = [SnapshotIndex.forPath<OrderState>("status"), SnapshotIndex.forPath<OrderState>("orderNumber").asUnique()];
+            const querySet = SnapshotQuerySet.for<OrderState>()
+                .withPath("status")
+                .withPath("orderNumber", { unique: true })
+                .withArrayPath("tags");
 
-            const bareInfo = await bare.creator.createSnapshotTableForAggregate(orderType, indexes);
-            const wrappedInfo = await wrapped.creator.createSnapshotTableForAggregate(orderType, { indexes });
+            const setInfo = await viaSet.creator.createSnapshotTableForAggregate(orderType, querySet);
+            const optionsInfo = await viaOptions.creator.createSnapshotTableForAggregate(orderType, {
+                indexes: [...querySet.indexes],
+                arrayIndexes: [...querySet.arrayIndexes]
+            });
 
-            assert.deepStrictEqual(bare.db.commands, wrapped.db.commands);
-            assert.deepStrictEqual(bareInfo, wrappedInfo);
+            assert.deepStrictEqual(viaSet.db.commands, viaOptions.db.commands);
+            assert.deepStrictEqual(setInfo, optionsInfo);
 
-            const bareOrg = createCreator();
-            const wrappedOrg = createCreator();
+            // and omitting the argument means the same as two empty collections
+            const omitted = createCreator();
+            const explicit = createCreator();
 
-            await bareOrg.creator.createSnapshotTableForOrgAggregate(invoiceType);
-            await wrappedOrg.creator.createSnapshotTableForOrgAggregate(invoiceType, {});
+            await omitted.creator.createSnapshotTableForOrgAggregate(invoiceType);
+            await explicit.creator.createSnapshotTableForOrgAggregate(invoiceType, { indexes: [], arrayIndexes: [] });
 
-            assert.deepStrictEqual(bareOrg.db.commands, wrappedOrg.db.commands);
+            assert.deepStrictEqual(omitted.db.commands, explicit.db.commands);
+        });
+
+        // the whole reason both fields are required: this shape used to compile, create every btree
+        // index, and silently omit every GIN one
+        await test("passing only a query set's btree indexes does not compile", () =>
+        {
+            const querySet = SnapshotQuerySet.for<OrderState>().withPath("status").withArrayPath("tags");
+
+            // @ts-expect-error - arrayIndexes is required, so the GIN index cannot be dropped silently
+            const options: SnapshotTableOptions<OrderState> = { indexes: [...querySet.indexes] };
+
+            assert.ok(options);
         });
 
         await test("a unique index emits a unique index under a _uq name", async () =>
         {
             const { creator, db } = createCreator();
 
-            await creator.createSnapshotTableForAggregate(orderType, [SnapshotIndex.forPath<OrderState>("email").asUnique()]);
+            await creator.createSnapshotTableForAggregate(orderType, { indexes: [SnapshotIndex.forPath<OrderState>("email").asUnique()], arrayIndexes: [] });
 
             assert.strictEqual(db.commands[1], "create unique index if not exists idx_order_snaps_email_uq on order_snaps((data->>'email'));");
         });
@@ -444,7 +467,7 @@ await describe("DbTableCreator tests", async () =>
         {
             const { creator, db } = createCreator();
 
-            await creator.createSnapshotTableForOrgAggregate(invoiceType, [SnapshotIndex.forPath<InvoiceState>("invoiceNumber").asUnique()]);
+            await creator.createSnapshotTableForOrgAggregate(invoiceType, { indexes: [SnapshotIndex.forPath<InvoiceState>("invoiceNumber").asUnique()], arrayIndexes: [] });
 
             // leading organization_id makes the uniqueness per organization rather than global
             assert.strictEqual(db.commands[1], "create unique index if not exists idx_invoice_snaps_invoicenumber_uq on invoice_snaps(organization_id, (data->>'invoiceNumber'));");
@@ -455,8 +478,8 @@ await describe("DbTableCreator tests", async () =>
             const once = createCreator();
             const twice = createCreator();
 
-            await once.creator.createSnapshotTableForAggregate(orderType, [SnapshotIndex.forPath<OrderState>("email").asUnique()]);
-            await twice.creator.createSnapshotTableForAggregate(orderType, [SnapshotIndex.forPath<OrderState>("email").asUnique().asUnique()]);
+            await once.creator.createSnapshotTableForAggregate(orderType, { indexes: [SnapshotIndex.forPath<OrderState>("email").asUnique()], arrayIndexes: [] });
+            await twice.creator.createSnapshotTableForAggregate(orderType, { indexes: [SnapshotIndex.forPath<OrderState>("email").asUnique().asUnique()], arrayIndexes: [] });
 
             assert.deepStrictEqual(once.db.commands, twice.db.commands);
         });
@@ -465,11 +488,11 @@ await describe("DbTableCreator tests", async () =>
         {
             const { creator, db } = createCreator();
 
-            await creator.createSnapshotTableForAggregate(orderType, [
+            await creator.createSnapshotTableForAggregate(orderType, { indexes: [
                 SnapshotIndex.forPath<OrderState>("email").asUnique(),
                 SnapshotIndex.forPath<OrderState>("status"),
                 SnapshotIndex.forPath<OrderState>("total", JsonValueType.numeric).asUnique()
-            ]);
+            ], arrayIndexes: [] });
 
             assert.deepStrictEqual(db.commands.slice(1), [
                 "create unique index if not exists idx_order_snaps_email_uq on order_snaps((data->>'email'));",
@@ -482,7 +505,7 @@ await describe("DbTableCreator tests", async () =>
         {
             const { creator, db } = createCreator();
 
-            await creator.createSnapshotTableForOrgAggregate(invoiceType, [SnapshotIndex.forPath<InvoiceState>("email").asUnique()]);
+            await creator.createSnapshotTableForOrgAggregate(invoiceType, { indexes: [SnapshotIndex.forPath<InvoiceState>("email").asUnique()], arrayIndexes: [] });
 
             assert.strictEqual(db.commands.length, 2);
             assert.ok(!db.commands.contains("create index if not exists idx_invoice_snaps on invoice_snaps(organization_id);"));
@@ -496,8 +519,8 @@ await describe("DbTableCreator tests", async () =>
             const untyped = createCreator();
             const typed = createCreator();
 
-            await untyped.creator.createSnapshotTableForAggregate(orderType, [SnapshotIndex.forPath<OrderState>("total")]);
-            await typed.creator.createSnapshotTableForAggregate(orderType, [SnapshotIndex.forPath<OrderState>("total", JsonValueType.numeric)]);
+            await untyped.creator.createSnapshotTableForAggregate(orderType, { indexes: [SnapshotIndex.forPath<OrderState>("total")], arrayIndexes: [] });
+            await typed.creator.createSnapshotTableForAggregate(orderType, { indexes: [SnapshotIndex.forPath<OrderState>("total", JsonValueType.numeric)], arrayIndexes: [] });
 
             const nameOf = (sql: string): string => sql.split(" on ")[0].replace("create index if not exists ", "");
 
@@ -512,11 +535,11 @@ await describe("DbTableCreator tests", async () =>
             const plain = createCreator();
 
             const paddedIndex = SnapshotIndex.forRawPath<OrderState>("  status  ");
-            const paddedInfo = await padded.creator.createSnapshotTableForAggregate(orderType, [paddedIndex]);
-            await plain.creator.createSnapshotTableForAggregate(orderType, [SnapshotIndex.forPath<OrderState>("status")]);
+            const paddedInfo = await padded.creator.createSnapshotTableForAggregate(orderType, { indexes: [paddedIndex], arrayIndexes: [] });
+            await plain.creator.createSnapshotTableForAggregate(orderType, { indexes: [SnapshotIndex.forPath<OrderState>("status")], arrayIndexes: [] });
 
             // the reported path is the JSON key actually extracted, not the padded input
-            assert.deepStrictEqual(paddedInfo.indexes.map(t => t.paths), [["status"]]);
+            assert.deepStrictEqual(paddedInfo.createdIndexes.map(t => t.paths), [["status"]]);
             assert.deepStrictEqual(padded.db.commands, plain.db.commands);
 
             // and the readback resolves from either spelling, since the stored key is trimmed
@@ -529,7 +552,7 @@ await describe("DbTableCreator tests", async () =>
             const { creator, db } = createCreator();
 
             const skuIndex = SnapshotIndex.forPath<OrderState>("tenantCode").andPath("sku").asUnique();
-            const info = await creator.createSnapshotTableForAggregate(orderType, [skuIndex]);
+            const info = await creator.createSnapshotTableForAggregate(orderType, { indexes: [skuIndex], arrayIndexes: [] });
 
             assert.strictEqual(db.commands[1],
                 "create unique index if not exists idx_order_snaps_tenantcode_sku_uq on order_snaps((data->>'tenantCode'), (data->>'sku'));");
@@ -537,8 +560,8 @@ await describe("DbTableCreator tests", async () =>
             // column order is declaration order, and that is what decides what is searchable:
             // 'sku' is the second column, so a predicate on it alone cannot use this index even
             // though its expression is available. `indexes` is what says so; see the test below.
-            assert.deepStrictEqual(info.indexes[0].paths, ["tenantCode", "sku"]);
-            assert.deepStrictEqual(info.indexes[0].expressions, ["(data->>'tenantCode')", "(data->>'sku')"]);
+            assert.deepStrictEqual(info.createdIndexes[0].paths, ["tenantCode", "sku"]);
+            assert.deepStrictEqual(info.createdIndexes[0].expressions, ["(data->>'tenantCode')", "(data->>'sku')"]);
 
             // every member of a composite reads back, each naming its own column
             assert.strictEqual(skuIndex.expressionForPath("tenantCode"), "(data->>'tenantCode')");
@@ -550,12 +573,12 @@ await describe("DbTableCreator tests", async () =>
             const plain = createCreator();
             const org = createCreator();
 
-            const plainInfo = await plain.creator.createSnapshotTableForAggregate(orderType, [
+            const plainInfo = await plain.creator.createSnapshotTableForAggregate(orderType, { indexes: [
                 SnapshotIndex.forPath<OrderState>("tenantCode").andPath("sku").asUnique(),
                 SnapshotIndex.forPath<OrderState>("status")
-            ]);
+            ], arrayIndexes: [] });
 
-            assert.deepStrictEqual(plainInfo.indexes, [
+            assert.deepStrictEqual(plainInfo.createdIndexes, [
                 {
                     name: "idx_order_snaps_tenantcode_sku_uq",
                     paths: ["tenantCode", "sku"],
@@ -573,11 +596,11 @@ await describe("DbTableCreator tests", async () =>
             ]);
 
             // an org index reports the real column a predicate must also constrain
-            const orgInfo = await org.creator.createSnapshotTableForOrgAggregate(invoiceType, [
+            const orgInfo = await org.creator.createSnapshotTableForOrgAggregate(invoiceType, { indexes: [
                 SnapshotIndex.forPath<InvoiceState>("status")
-            ]);
+            ], arrayIndexes: [] });
 
-            assert.deepStrictEqual(orgInfo.indexes, [
+            assert.deepStrictEqual(orgInfo.createdIndexes, [
                 {
                     name: "idx_invoice_snaps_status",
                     paths: ["status"],
@@ -594,36 +617,70 @@ await describe("DbTableCreator tests", async () =>
 
             const info = await creator.createSnapshotTableForAggregate(orderType);
 
-            assert.deepStrictEqual(info.indexes, []);
+            assert.deepStrictEqual(info.createdIndexes, []);
         });
 
         // the DDL and the returned metadata come from one synchronous pass, so a builder mutated
         // after the handoff cannot make the contract advertise an index that was never created
-        await test("mutating a builder after the call cannot desynchronise the returned contract", async () =>
+        // this used to assert that mutating a builder after the call could not put the returned
+        // contract out of step, and it could: `andPath` returned `this` and mutated, so a builder handed to a
+        // create call could grow a path mid-flight and afterwards answer for one no index covered.
+        // The builders are copy-on-write now, matching `SnapshotQuerySet`, so there is no mutation to
+        // survive - the guarantee is stronger and the test says so
+        await test("a builder cannot be mutated, so it can never disagree with what was created", async () =>
         {
             const { creator, db } = createCreator();
             const index = SnapshotIndex.forPath<OrderState>("status");
 
-            const pending = creator.createSnapshotTableForAggregate(orderType, [index]);
-            index.andPath("total", JsonValueType.numeric);          // mid-flight mutation
+            const pending = creator.createSnapshotTableForAggregate(orderType, { indexes: [index], arrayIndexes: [] });
+            const grown = index.andPath("total", JsonValueType.numeric);    // a new index, not a mutation
             const info = await pending;
 
-            // the contract describes exactly what was emitted, not the mutated builder
-            assert.strictEqual(info.indexes.length, 1);
-            assert.deepStrictEqual(info.indexes[0].paths, ["status"]);
+            assert.notStrictEqual(grown, index);
+            assert.deepStrictEqual(index.paths, ["status"]);
+            assert.deepStrictEqual(grown.paths, ["status", "total"]);
+
+            // the contract describes exactly what was emitted, and so does the builder it came from
+            assert.strictEqual(info.createdIndexes.length, 1);
+            assert.deepStrictEqual(info.createdIndexes[0].paths, ["status"]);
             assert.strictEqual(db.commands[1], "create index if not exists idx_order_snaps_status on order_snaps((data->>'status'));");
 
-            // and this is exactly why the returned record is not a pointer back to the builder: the
-            // builder now answers for a path no index covers, while the record still does not list it
-            assert.strictEqual(index.expressionForPath("total"), "((data->>'total')::numeric)");
-            assert.ok(!info.indexes[0].paths.contains("total"));
+            // the receiver never learned the new path, so it cannot answer for one no index covers
+            assert.throws(() => index.expressionForPath("total"));
+            assert.strictEqual(grown.expressionForPath("total"), "((data->>'total')::numeric)");
+            assert.ok(!info.createdIndexes[0].paths.contains("total"));
+        });
+
+        await test("asUnique and withName also copy, leaving the receiver as it was", async () =>
+        {
+            const plain = SnapshotIndex.forPath<OrderState>("email");
+            const unique = plain.asUnique();
+            const named = plain.withName("em");
+
+            assert.notStrictEqual(unique, plain);
+            assert.notStrictEqual(named, plain);
+
+            assert.strictEqual(plain.isUnique, false);
+            assert.strictEqual(unique.isUnique, true);
+
+            assert.strictEqual(plain.nameSuffix, "email");
+            assert.strictEqual(named.nameSuffix, "em");
+            // the name went onto the copy only, so the receiver can still be named
+            assert.strictEqual(unique.nameSuffix, "email");
+
+            const array = SnapshotArrayIndex.forPath<OrderState>("tags");
+            const arrayNamed = array.withName("tg");
+
+            assert.notStrictEqual(arrayNamed, array);
+            assert.strictEqual(array.nameSuffix, "tags");
+            assert.strictEqual(arrayNamed.nameSuffix, "tg");
         });
 
         await test("a composite index need not be unique", async () =>
         {
             const { creator, db } = createCreator();
 
-            await creator.createSnapshotTableForAggregate(orderType, [SnapshotIndex.forPath<OrderState>("status").andPath("createdAt")]);
+            await creator.createSnapshotTableForAggregate(orderType, { indexes: [SnapshotIndex.forPath<OrderState>("status").andPath("createdAt")], arrayIndexes: [] });
 
             assert.strictEqual(db.commands[1],
                 "create index if not exists idx_order_snaps_status_createdat on order_snaps((data->>'status'), (data->>'createdAt'));");
@@ -633,9 +690,9 @@ await describe("DbTableCreator tests", async () =>
         {
             const { creator, db } = createCreator();
 
-            await creator.createSnapshotTableForOrgAggregate(invoiceType, [
+            await creator.createSnapshotTableForOrgAggregate(invoiceType, { indexes: [
                 SnapshotIndex.forPath<InvoiceState>("series").andPath("invoiceNumber").asUnique()
-            ]);
+            ], arrayIndexes: [] });
 
             assert.strictEqual(db.commands[1],
                 "create unique index if not exists idx_invoice_snaps_series_invoicenumber_uq on invoice_snaps(organization_id, (data->>'series'), (data->>'invoiceNumber'));");
@@ -645,9 +702,9 @@ await describe("DbTableCreator tests", async () =>
         {
             const { creator, db } = createCreator();
 
-            await creator.createSnapshotTableForAggregate(orderType, [
+            await creator.createSnapshotTableForAggregate(orderType, { indexes: [
                 SnapshotIndex.forPath<OrderState>("tenantCode").andPath("sku").asUnique().withName("tenant_sku")
-            ]);
+            ], arrayIndexes: [] });
 
             assert.strictEqual(db.commands[1],
                 "create unique index if not exists idx_order_snaps_tenant_sku_uq on order_snaps((data->>'tenantCode'), (data->>'sku'));");
@@ -660,9 +717,9 @@ await describe("DbTableCreator tests", async () =>
         {
             const { creator, db } = createCreator();
 
-            await creator.createSnapshotTableForAggregate(orderType, [
+            await creator.createSnapshotTableForAggregate(orderType, { indexes: [
                 SnapshotIndex.forPath<OrderState>("status").andPath("createdAt", JsonValueType.bigint)
-            ]);
+            ], arrayIndexes: [] });
 
             assert.strictEqual(db.commands[1],
                 "create index if not exists idx_order_snaps_status_createdat on order_snaps((data->>'status'), ((data->>'createdAt')::bigint));");
@@ -672,9 +729,9 @@ await describe("DbTableCreator tests", async () =>
         {
             const { creator, db } = createCreator();
 
-            await creator.createSnapshotTableForAggregate(orderType, [
+            await creator.createSnapshotTableForAggregate(orderType, { indexes: [
                 SnapshotIndex.forPath<OrderState>("minTotal", JsonValueType.numeric).andPath("maxTotal", JsonValueType.numeric)
-            ]);
+            ], arrayIndexes: [] });
 
             assert.strictEqual(db.commands[1],
                 "create index if not exists idx_order_snaps_mintotal_maxtotal on order_snaps(((data->>'minTotal')::numeric), ((data->>'maxTotal')::numeric));");
@@ -685,7 +742,7 @@ await describe("DbTableCreator tests", async () =>
             const withEmpty = createCreator();
             const withUndefined = createCreator();
 
-            await withEmpty.creator.createSnapshotTableForAggregate(orderType, []);
+            await withEmpty.creator.createSnapshotTableForAggregate(orderType, { indexes: [], arrayIndexes: [] });
             await withUndefined.creator.createSnapshotTableForAggregate(orderType);
 
             assert.deepStrictEqual(withEmpty.db.commands, withUndefined.db.commands);
@@ -757,7 +814,7 @@ await describe("DbTableCreator tests", async () =>
             const { creator } = createCreator();
 
             // @ts-expect-error - an InvoiceState index cannot be used on an Order snapshot table
-            await creator.createSnapshotTableForAggregate(orderType, [SnapshotIndex.forPath<InvoiceState>("invoiceNumber")]);
+            await creator.createSnapshotTableForAggregate(orderType, { indexes: [SnapshotIndex.forPath<InvoiceState>("invoiceNumber")], arrayIndexes: [] });
         });
 
         // the read side is checked by the same type as the write side, so there is one rule, not two.
@@ -979,7 +1036,7 @@ await describe("DbTableCreator tests", async () =>
             const { creator } = createCreator();
 
             // @ts-expect-error - an InvoiceState array index cannot be used on an Order snapshot table
-            await creator.createSnapshotTableForAggregate(orderType, { arrayIndexes: [SnapshotArrayIndex.forPath<InvoiceState>("labels")] });
+            await creator.createSnapshotTableForAggregate(orderType, { indexes: [], arrayIndexes: [SnapshotArrayIndex.forPath<InvoiceState>("labels")] });
         });
     });
 
@@ -1141,7 +1198,7 @@ await describe("DbTableCreator tests", async () =>
             const skuIndex = SnapshotIndex.forPath<OrderState>("tenantCode").andPath("sku").asUnique();
 
             const info = await creator.createSnapshotTableForAggregate(
-                orderType, [statusIndex, totalIndex, cityIndex, skuIndex]);
+                orderType, { indexes: [statusIndex, totalIndex, cityIndex, skuIndex], arrayIndexes: [] });
 
             assert.strictEqual(statusIndex.expressionForPath("status"), "(data->>'status')");
             assert.strictEqual(totalIndex.expressionForPath("total"), "((data->>'total')::numeric)");
@@ -1162,7 +1219,7 @@ await describe("DbTableCreator tests", async () =>
             for (const expression of expected)
             {
                 assert.ok(ddl.contains(expression), `expected the DDL to contain ${expression}`);
-                assert.ok(info.indexes.some(t => t.expressions.contains(expression)));
+                assert.ok(info.createdIndexes.some(t => t.expressions.contains(expression)));
             }
         });
 
@@ -1364,7 +1421,7 @@ await describe("DbTableCreator tests", async () =>
             const { creator } = createCreator();
 
             await assert.rejects(
-                () => creator.createSnapshotTableForAggregate(overlongType, [SnapshotIndex.forPath<OrderState>("status")]),
+                () => creator.createSnapshotTableForAggregate(overlongType, { indexes: [SnapshotIndex.forPath<OrderState>("status")], arrayIndexes: [] }),
                 (error: Error) =>
                 {
                     assert.ok(error.message.contains("tableName"), `expected a tableName error, got: ${error.message}`);
@@ -1434,8 +1491,8 @@ await describe("DbTableCreator tests", async () =>
         {
             const { creator } = createCreator();
 
-            await assert.rejects(() => creator.createSnapshotTableForAggregate(orderType, [SnapshotIndex.forPath<OrderState>("status"), SnapshotIndex.forPath<OrderState>("status")]));
-            await assert.rejects(() => creator.createSnapshotTableForAggregate(orderType, [SnapshotIndex.forPath<OrderState>("status"), SnapshotIndex.forRawPath<OrderState>("  status  ")]));
+            await assert.rejects(() => creator.createSnapshotTableForAggregate(orderType, { indexes: [SnapshotIndex.forPath<OrderState>("status"), SnapshotIndex.forPath<OrderState>("status")], arrayIndexes: [] }));
+            await assert.rejects(() => creator.createSnapshotTableForAggregate(orderType, { indexes: [SnapshotIndex.forPath<OrderState>("status"), SnapshotIndex.forRawPath<OrderState>("  status  ")], arrayIndexes: [] }));
         });
 
         await test("rejects the same index declared twice under different names", async () =>
@@ -1444,10 +1501,10 @@ await describe("DbTableCreator tests", async () =>
 
             // distinct names, so a name collision cannot be what rejects this
             await assert.rejects(
-                () => creator.createSnapshotTableForAggregate(orderType, [
+                () => creator.createSnapshotTableForAggregate(orderType, { indexes: [
                     SnapshotIndex.forPath<OrderState>("tenantCode").andPath("sku").withName("a"),
                     SnapshotIndex.forPath<OrderState>("tenantCode").andPath("sku").withName("b")
-                ]),
+                ], arrayIndexes: [] }),
                 (error: Error) =>
                 {
                     assert.ok(error.message.contains("declared twice"), `expected a duplicate-index error, got: ${error.message}`);
@@ -1461,10 +1518,10 @@ await describe("DbTableCreator tests", async () =>
 
             // distinct names, so only the type conflict can be what rejects this
             await assert.rejects(
-                () => creator.createSnapshotTableForAggregate(orderType, [
+                () => creator.createSnapshotTableForAggregate(orderType, { indexes: [
                     SnapshotIndex.forPath<OrderState>("total").withName("a"),
                     SnapshotIndex.forPath<OrderState>("total", JsonValueType.numeric).withName("b")
-                ]),
+                ], arrayIndexes: [] }),
                 (error: Error) =>
                 {
                     assert.ok(error.message.contains("different types"), `expected a type-conflict error, got: ${error.message}`);
@@ -1478,10 +1535,10 @@ await describe("DbTableCreator tests", async () =>
             const { creator, db } = createCreator();
 
             // 'sku' alone for lookups, and as part of a composite natural key
-            await creator.createSnapshotTableForAggregate(orderType, [
+            await creator.createSnapshotTableForAggregate(orderType, { indexes: [
                 SnapshotIndex.forPath<OrderState>("sku"),
                 SnapshotIndex.forPath<OrderState>("tenantCode").andPath("sku").asUnique()
-            ]);
+            ], arrayIndexes: [] });
 
             assert.strictEqual(db.commands.length, 3);
             assert.strictEqual(db.commands[1], "create index if not exists idx_order_snaps_sku on order_snaps((data->>'sku'));");
@@ -1494,9 +1551,9 @@ await describe("DbTableCreator tests", async () =>
             const { creator } = createCreator();
 
             // both derive the suffix 'created_at', and `if not exists` would silently skip the second
-            await assert.rejects(() => creator.createSnapshotTableForAggregate(orderType, [SnapshotIndex.forRawPath<OrderState>("created.at"), SnapshotIndex.forRawPath<OrderState>("created_at")]));
+            await assert.rejects(() => creator.createSnapshotTableForAggregate(orderType, { indexes: [SnapshotIndex.forRawPath<OrderState>("created.at"), SnapshotIndex.forRawPath<OrderState>("created_at")], arrayIndexes: [] }));
             // case only differences fold to the same identifier
-            await assert.rejects(() => creator.createSnapshotTableForAggregate(orderType, [SnapshotIndex.forRawPath<OrderState>("createdAt"), SnapshotIndex.forRawPath<OrderState>("createdat")]));
+            await assert.rejects(() => creator.createSnapshotTableForAggregate(orderType, { indexes: [SnapshotIndex.forRawPath<OrderState>("createdAt"), SnapshotIndex.forRawPath<OrderState>("createdat")], arrayIndexes: [] }));
         });
 
         await test("rejects a path whose index name would overflow the identifier limit", async () =>
@@ -1504,16 +1561,16 @@ await describe("DbTableCreator tests", async () =>
             const { creator } = createCreator();
 
             // idx_ (4) + order_snaps (11) + _ (1) + 48 = 64, one over
-            await assert.rejects(() => creator.createSnapshotTableForAggregate(orderType, [SnapshotIndex.forRawPath<OrderState>("a".repeat(48))]));
-            await assert.doesNotReject(() => creator.createSnapshotTableForAggregate(orderType, [SnapshotIndex.forRawPath<OrderState>("a".repeat(47))]));
+            await assert.rejects(() => creator.createSnapshotTableForAggregate(orderType, { indexes: [SnapshotIndex.forRawPath<OrderState>("a".repeat(48))], arrayIndexes: [] }));
+            await assert.doesNotReject(() => creator.createSnapshotTableForAggregate(orderType, { indexes: [SnapshotIndex.forRawPath<OrderState>("a".repeat(47))], arrayIndexes: [] }));
         });
 
         await test("the identifier limit is 3 chars tighter for a unique index, because of the _uq suffix", async () =>
         {
             const { creator } = createCreator();
 
-            await assert.rejects(() => creator.createSnapshotTableForAggregate(orderType, [SnapshotIndex.forRawPath<OrderState>("a".repeat(45)).asUnique()]));
-            await assert.doesNotReject(() => creator.createSnapshotTableForAggregate(orderType, [SnapshotIndex.forRawPath<OrderState>("a".repeat(44)).asUnique()]));
+            await assert.rejects(() => creator.createSnapshotTableForAggregate(orderType, { indexes: [SnapshotIndex.forRawPath<OrderState>("a".repeat(45)).asUnique()], arrayIndexes: [] }));
+            await assert.doesNotReject(() => creator.createSnapshotTableForAggregate(orderType, { indexes: [SnapshotIndex.forRawPath<OrderState>("a".repeat(44)).asUnique()], arrayIndexes: [] }));
         });
 
         await test("rejects a unique index whose _uq name collides with a plain index's name", async () =>
@@ -1521,10 +1578,10 @@ await describe("DbTableCreator tests", async () =>
             const { creator } = createCreator();
 
             // 'email' + unique -> idx_order_snaps_email_uq, and so does the literal path 'email_uq'
-            await assert.rejects(() => creator.createSnapshotTableForAggregate(orderType, [
+            await assert.rejects(() => creator.createSnapshotTableForAggregate(orderType, { indexes: [
                 SnapshotIndex.forPath<OrderState>("email").asUnique(),
                 SnapshotIndex.forRawPath<OrderState>("email_uq")
-            ]));
+            ], arrayIndexes: [] }));
         });
 
         // the contrast to the above, and the reason the _uq suffix exists: the same path can
@@ -1533,10 +1590,10 @@ await describe("DbTableCreator tests", async () =>
         {
             const { creator, db } = createCreator();
 
-            await creator.createSnapshotTableForAggregate(orderType, [
+            await creator.createSnapshotTableForAggregate(orderType, { indexes: [
                 SnapshotIndex.forPath<OrderState>("email").asUnique(),
                 SnapshotIndex.forPath<OrderState>("email")
-            ]);
+            ], arrayIndexes: [] });
 
             assert.strictEqual(db.commands[1], "create unique index if not exists idx_order_snaps_email_uq on order_snaps((data->>'email'));");
             assert.strictEqual(db.commands[2], "create index if not exists idx_order_snaps_email on order_snaps((data->>'email'));");
@@ -1552,14 +1609,14 @@ await describe("DbTableCreator tests", async () =>
                 expressionForRawPath: (): string => "(data->>'status')"
             };
 
-            await assert.rejects(() => creator.createSnapshotTableForAggregate(orderType, [notABuilder as unknown as SnapshotIndex<OrderState>]));
+            await assert.rejects(() => creator.createSnapshotTableForAggregate(orderType, { indexes: [notABuilder as unknown as SnapshotIndex<OrderState>], arrayIndexes: [] }));
         });
 
         await test("no DDL is emitted when validation fails", async () =>
         {
             const { creator, db } = createCreator();
 
-            await assert.rejects(() => creator.createSnapshotTableForAggregate(orderType, [SnapshotIndex.forPath<OrderState>("status"), SnapshotIndex.forPath<OrderState>("status")]));
+            await assert.rejects(() => creator.createSnapshotTableForAggregate(orderType, { indexes: [SnapshotIndex.forPath<OrderState>("status"), SnapshotIndex.forPath<OrderState>("status")], arrayIndexes: [] }));
 
             assert.deepStrictEqual(db.commands, []);
         });
@@ -1569,11 +1626,13 @@ await describe("DbTableCreator tests", async () =>
             const { creator, db } = createCreator();
 
             await assert.rejects(() => creator.createSnapshotTableForAggregate(teamType, {
+                indexes: [],
                 arrayIndexes: [SnapshotArrayIndex.forPath<TeamState>("members"), SnapshotArrayIndex.forPath<TeamState>("members")]
             }));
 
             // identity is the path alone - an explicit name does not make it a different index
             await assert.rejects(() => creator.createSnapshotTableForAggregate(teamType, {
+                indexes: [],
                 arrayIndexes: [SnapshotArrayIndex.forPath<TeamState>("members"), SnapshotArrayIndex.forPath<TeamState>("members").withName("m")]
             }));
 
@@ -1609,16 +1668,23 @@ await describe("DbTableCreator tests", async () =>
             };
 
             await assert.rejects(() => creator.createSnapshotTableForAggregate(teamType, {
+                indexes: [],
                 arrayIndexes: [notABuilder as unknown as SnapshotArrayIndex<TeamState>]
             }));
         });
 
-        await test("rejects a second argument that is neither an array nor an options object", async () =>
+        await test("rejects a second argument that is not an options object", async () =>
         {
             const { creator } = createCreator();
 
             await assert.rejects(() => creator.createSnapshotTableForAggregate(orderType, "status" as any));
             await assert.rejects(() => creator.createSnapshotTableForOrgAggregate(invoiceType, 7 as any));
+
+            // the bare array is gone, and a JavaScript caller still passing one has to be told rather
+            // than quietly given a table with no indexes - which is what reading `.indexes` off an
+            // array would have produced
+            await assert.rejects(
+                () => creator.createSnapshotTableForAggregate(orderType, [SnapshotIndex.forPath<OrderState>("status")] as any));
         });
 
         // the budget is one char tighter than a unique index's, because _gin is one char longer
@@ -1628,11 +1694,13 @@ await describe("DbTableCreator tests", async () =>
             const { creator, db } = createCreator();
 
             await creator.createSnapshotTableForAggregate(orderType, {
+                indexes: [],
                 arrayIndexes: [SnapshotArrayIndex.forPath<OrderState>("tags").withName("a".repeat(43))]
             });
             assert.strictEqual(db.commands.length, 2);
 
             await assert.rejects(() => creator.createSnapshotTableForAggregate(orderType, {
+                indexes: [],
                 arrayIndexes: [SnapshotArrayIndex.forPath<OrderState>("tags").withName("a".repeat(44))]
             }));
         });
@@ -1697,11 +1765,11 @@ await describe("DbTableCreator tests", async () =>
 
         await test("expression indexes are created over the json paths, with no column added", async () =>
         {
-            await creator.createSnapshotTableForOrgAggregate(invoiceType, [
+            await creator.createSnapshotTableForOrgAggregate(invoiceType, { indexes: [
                 SnapshotIndex.forPath<InvoiceState>("status"),
                 SnapshotIndex.forPath<InvoiceState>("total", JsonValueType.numeric),
                 SnapshotIndex.forPath<InvoiceState>("customer.city")
-            ]);
+            ], arrayIndexes: [] });
 
             const columns = await db.executeQuery<any>(
                 `select column_name from information_schema.columns where table_name = 'invoice_snaps' order by ordinal_position;`);
@@ -1742,7 +1810,7 @@ await describe("DbTableCreator tests", async () =>
             const cityIndex = SnapshotIndex.forPath<OrderState>("customer.city");
 
             await db.executeCommand("drop table if exists order_snaps;");
-            await creator.createSnapshotTableForAggregate(orderType, [statusIndex, totalIndex, cityIndex]);
+            await creator.createSnapshotTableForAggregate(orderType, { indexes: [statusIndex, totalIndex, cityIndex], arrayIndexes: [] });
 
             // enough rows, with statistics, that an index scan is the cheaper plan for a selective
             // predicate - otherwise every plan is a seq scan and the assertions below are vacuous
@@ -1784,7 +1852,7 @@ await describe("DbTableCreator tests", async () =>
             const skuIndex = SnapshotIndex.forPath<OrderState>("tenantCode").andPath("sku");
 
             await db.executeCommand("drop table if exists order_snaps;");
-            await creator.createSnapshotTableForAggregate(orderType, [skuIndex]);
+            await creator.createSnapshotTableForAggregate(orderType, { indexes: [skuIndex], arrayIndexes: [] });
             await db.executeCommand(
                 `insert into order_snaps (id, data)
                  select 'ord_' || g, json_build_object('tenantCode', 'tc' || (g % 500), 'sku', 'sku' || (g % 500))::jsonb
@@ -1816,7 +1884,7 @@ await describe("DbTableCreator tests", async () =>
             const statusIndex = SnapshotIndex.forPath<InvoiceState>("status");
 
             await db.executeCommand("drop table if exists invoice_snaps;");
-            await creator.createSnapshotTableForOrgAggregate(invoiceType, [statusIndex]);
+            await creator.createSnapshotTableForOrgAggregate(invoiceType, { indexes: [statusIndex], arrayIndexes: [] });
             await db.executeCommand(
                 `insert into invoice_snaps (id, organization_id, data)
                  select 'inv_' || g, 'org' || (g % 5), json_build_object('status', 'st' || (g % 500))::jsonb
@@ -1847,7 +1915,7 @@ await describe("DbTableCreator tests", async () =>
             const emailIndex = SnapshotIndex.forPath<OrderState>("email");
 
             await db.executeCommand("drop table if exists order_snaps;");
-            await creator.createSnapshotTableForAggregate(orderType, [emailIndex]);
+            await creator.createSnapshotTableForAggregate(orderType, { indexes: [emailIndex], arrayIndexes: [] });
             await db.executeCommand(
                 `insert into order_snaps (id, data)
                  select 'ord_' || g, json_build_object('email', 'user' || (g % 500) || '@x.com')::jsonb
@@ -1873,7 +1941,7 @@ await describe("DbTableCreator tests", async () =>
         await test("a unique index compares extracted text exactly - no case folding, no trimming", async () =>
         {
             await db.executeCommand("drop table if exists order_snaps;");
-            await creator.createSnapshotTableForAggregate(orderType, [SnapshotIndex.forPath<OrderState>("email").asUnique()]);
+            await creator.createSnapshotTableForAggregate(orderType, { indexes: [SnapshotIndex.forPath<OrderState>("email").asUnique()], arrayIndexes: [] });
 
             const insert = `insert into order_snaps (id, data) values(?, ?);`;
             await db.executeCommand(insert, "ord_1", JSON.stringify({ email: "a@x.com" }));
@@ -1907,8 +1975,8 @@ await describe("DbTableCreator tests", async () =>
             // stricter than Postgres needs for this particular pair - which is exactly what the
             // identical index definitions below show - but it costs nothing, since declaring both is
             // a modelling mistake regardless.
-            await creator.createSnapshotTableForAggregate(orderType, [uncast]);
-            await creator.createSnapshotTableForAggregate(orderType, [textCast]);
+            await creator.createSnapshotTableForAggregate(orderType, { indexes: [uncast], arrayIndexes: [] });
+            await creator.createSnapshotTableForAggregate(orderType, { indexes: [textCast], arrayIndexes: [] });
 
             const defs = await db.executeQuery<any>(
                 `select indexdef from pg_indexes where tablename = 'order_snaps' and indexname like 'idx_%' order by indexname;`);
@@ -1961,7 +2029,7 @@ await describe("DbTableCreator tests", async () =>
         await test("OrgSnapshotBaseRepository's insert and upsert succeed against a table with indexes", async () =>
         {
             const statusIndex = SnapshotIndex.forPath<InvoiceState>("status");
-            await creator.createSnapshotTableForOrgAggregate(invoiceType, [statusIndex]);
+            await creator.createSnapshotTableForOrgAggregate(invoiceType, { indexes: [statusIndex], arrayIndexes: [] });
 
             // the exact statement OrgSnapshotBaseRepository.save emits for a new aggregate
             await db.executeCommand(
@@ -1984,7 +2052,7 @@ await describe("DbTableCreator tests", async () =>
         await test("a unique expression index is accepted and enforces uniqueness on the extracted value", async () =>
         {
             await db.executeCommand("drop table if exists order_snaps;");
-            await creator.createSnapshotTableForAggregate(orderType, [SnapshotIndex.forPath<OrderState>("email").asUnique()]);
+            await creator.createSnapshotTableForAggregate(orderType, { indexes: [SnapshotIndex.forPath<OrderState>("email").asUnique()], arrayIndexes: [] });
 
             const indexes = await db.executeQuery<any>(
                 `select indexdef from pg_indexes where tablename = 'order_snaps' and indexname = 'idx_order_snaps_email_uq';`);
@@ -2007,7 +2075,7 @@ await describe("DbTableCreator tests", async () =>
         await test("rows whose data omits the unique key do not collide with each other", async () =>
         {
             await db.executeCommand("drop table if exists order_snaps;");
-            await creator.createSnapshotTableForAggregate(orderType, [SnapshotIndex.forPath<OrderState>("email").asUnique()]);
+            await creator.createSnapshotTableForAggregate(orderType, { indexes: [SnapshotIndex.forPath<OrderState>("email").asUnique()], arrayIndexes: [] });
 
             const insert = `insert into order_snaps (id, data) values(?, ?);`;
 
@@ -2022,7 +2090,7 @@ await describe("DbTableCreator tests", async () =>
         await test("uniqueness on an org table is scoped to the organization, not global", async () =>
         {
             await db.executeCommand("drop table if exists invoice_snaps;");
-            await creator.createSnapshotTableForOrgAggregate(invoiceType, [SnapshotIndex.forPath<InvoiceState>("invoiceNumber").asUnique()]);
+            await creator.createSnapshotTableForOrgAggregate(invoiceType, { indexes: [SnapshotIndex.forPath<InvoiceState>("invoiceNumber").asUnique()], arrayIndexes: [] });
 
             // the exact statement OrgSnapshotBaseRepository.save emits for a new aggregate
             const insert = `insert into invoice_snaps (id, organization_id, data) values(?, ?, ?);`;
@@ -2075,7 +2143,7 @@ await describe("DbTableCreator tests", async () =>
         await test("a cast expression compares numerically where an uncast one compares as text", async () =>
         {
             const totalIndex = SnapshotIndex.forPath<OrderState>("total", JsonValueType.numeric);
-            await creator.createSnapshotTableForAggregate(orderType, [totalIndex]);
+            await creator.createSnapshotTableForAggregate(orderType, { indexes: [totalIndex], arrayIndexes: [] });
 
             await db.executeCommand(
                 `insert into order_snaps (id, data) values ('a', ?), ('b', ?) on conflict (id) do update set data = excluded.data;`,
@@ -2094,9 +2162,9 @@ await describe("DbTableCreator tests", async () =>
         await test("a composite unique constraint enforces the tuple, not the members", async () =>
         {
             await db.executeCommand("drop table if exists order_snaps;");
-            await creator.createSnapshotTableForAggregate(orderType, [
+            await creator.createSnapshotTableForAggregate(orderType, { indexes: [
                 SnapshotIndex.forPath<OrderState>("tenantCode").andPath("sku").asUnique()
-            ]);
+            ], arrayIndexes: [] });
 
             const insert = `insert into order_snaps (id, data) values(?, ?);`;
 
@@ -2115,9 +2183,9 @@ await describe("DbTableCreator tests", async () =>
         await test("a composite does not constrain rows missing a member", async () =>
         {
             await db.executeCommand("drop table if exists order_snaps;");
-            await creator.createSnapshotTableForAggregate(orderType, [
+            await creator.createSnapshotTableForAggregate(orderType, { indexes: [
                 SnapshotIndex.forPath<OrderState>("tenantCode").andPath("sku").asUnique()
-            ]);
+            ], arrayIndexes: [] });
 
             const insert = `insert into order_snaps (id, data) values(?, ?);`;
 
@@ -2131,7 +2199,7 @@ await describe("DbTableCreator tests", async () =>
         await test("a composite non-unique index is created and is not unique", async () =>
         {
             await db.executeCommand("drop table if exists order_snaps;");
-            await creator.createSnapshotTableForAggregate(orderType, [SnapshotIndex.forPath<OrderState>("status").andPath("createdAt")]);
+            await creator.createSnapshotTableForAggregate(orderType, { indexes: [SnapshotIndex.forPath<OrderState>("status").andPath("createdAt")], arrayIndexes: [] });
 
             const indexes = await db.executeQuery<any>(
                 `select indexdef from pg_indexes where tablename = 'order_snaps' and indexname = 'idx_order_snaps_status_createdat';`);
@@ -2148,9 +2216,9 @@ await describe("DbTableCreator tests", async () =>
         await test("a mixed-type composite is created and accepts inserts", async () =>
         {
             await db.executeCommand("drop table if exists order_snaps;");
-            await creator.createSnapshotTableForAggregate(orderType, [
+            await creator.createSnapshotTableForAggregate(orderType, { indexes: [
                 SnapshotIndex.forPath<OrderState>("status").andPath("createdAt", JsonValueType.bigint)
-            ]);
+            ], arrayIndexes: [] });
 
             const indexes = await db.executeQuery<any>(
                 `select indexdef from pg_indexes where tablename = 'order_snaps' and indexname = 'idx_order_snaps_status_createdat';`);
@@ -2186,9 +2254,9 @@ await describe("DbTableCreator tests", async () =>
         await test("a composite on an org table is unique per organization", async () =>
         {
             await db.executeCommand("drop table if exists invoice_snaps;");
-            await creator.createSnapshotTableForOrgAggregate(invoiceType, [
+            await creator.createSnapshotTableForOrgAggregate(invoiceType, { indexes: [
                 SnapshotIndex.forPath<InvoiceState>("series").andPath("invoiceNumber").asUnique()
-            ]);
+            ], arrayIndexes: [] });
 
             const insert = `insert into invoice_snaps (id, organization_id, data) values(?, ?, ?);`;
             const tuple = JSON.stringify({ series: "A", invoiceNumber: "001" });
@@ -2236,7 +2304,7 @@ await describe("DbTableCreator tests", async () =>
             await db.executeCommand("drop table if exists order_snaps;");
             // declared raw, since "meta" is not on OrderState - so it reads back raw too
             const nullIndex = SnapshotIndex.forRawPath<OrderState>("meta.null");
-            await creator.createSnapshotTableForAggregate(orderType, [nullIndex]);
+            await creator.createSnapshotTableForAggregate(orderType, { indexes: [nullIndex], arrayIndexes: [] });
 
             await db.executeCommand(
                 `insert into order_snaps (id, data) values(?, ?);`,
@@ -2259,7 +2327,7 @@ await describe("DbTableCreator tests", async () =>
         await test("an index over an unbounded value breaks writes only once the value is incompressible", async () =>
         {
             await db.executeCommand("drop table if exists order_snaps;");
-            await creator.createSnapshotTableForAggregate(orderType, [SnapshotIndex.forRawPath<OrderState>("notes")]);
+            await creator.createSnapshotTableForAggregate(orderType, { indexes: [SnapshotIndex.forRawPath<OrderState>("notes")], arrayIndexes: [] });
 
             const insert = `insert into order_snaps (id, data) values(?, ?);`;
 
@@ -2279,7 +2347,7 @@ await describe("DbTableCreator tests", async () =>
         await test("the repositories' on-conflict upsert does not absorb a unique-expression violation", async () =>
         {
             await db.executeCommand("drop table if exists order_snaps;");
-            await creator.createSnapshotTableForAggregate(orderType, [SnapshotIndex.forPath<OrderState>("email").asUnique()]);
+            await creator.createSnapshotTableForAggregate(orderType, { indexes: [SnapshotIndex.forPath<OrderState>("email").asUnique()], arrayIndexes: [] });
 
             await db.executeCommand(
                 `insert into order_snaps (id, data) values(?, ?);`,
@@ -2333,7 +2401,7 @@ await describe("DbTableCreator tests", async () =>
         const createTeams = async (): Promise<void> =>
         {
             await db.executeCommand("drop table if exists team_snaps;");
-            await creator.createSnapshotTableForAggregate(teamType, { arrayIndexes: [membersIndex] });
+            await creator.createSnapshotTableForAggregate(teamType, { indexes: [], arrayIndexes: [membersIndex] });
         };
 
         // 50,000 teams, each with two members: userId is highly selective (500 distinct),
@@ -2414,7 +2482,7 @@ await describe("DbTableCreator tests", async () =>
         await test("a multi-field match requires one element to carry every field", async () =>
         {
             await db.executeCommand("drop table if exists team_snaps;");
-            await creator.createSnapshotTableForAggregate(teamType, { arrayIndexes: [membersIndex] });
+            await creator.createSnapshotTableForAggregate(teamType, { indexes: [], arrayIndexes: [membersIndex] });
 
             // u1 IS a member, but deactivated. u2 is active. No single member is both u1 and active.
             await db.executeCommand(
@@ -2457,7 +2525,7 @@ await describe("DbTableCreator tests", async () =>
         await test("containment is partial over an element's fields, and absent fields never match", async () =>
         {
             await db.executeCommand("drop table if exists team_snaps;");
-            await creator.createSnapshotTableForAggregate(teamType, { arrayIndexes: [membersIndex] });
+            await creator.createSnapshotTableForAggregate(teamType, { indexes: [], arrayIndexes: [membersIndex] });
 
             await db.executeCommand(`insert into team_snaps (id, data) values(?, ?);`,
                 "full", JSON.stringify({ name: "f", members: [{ userId: "u1", role: "admin", isDeactivated: false }] }));
@@ -2478,7 +2546,7 @@ await describe("DbTableCreator tests", async () =>
         await test("containsAll and containsAny mean intersection and union", async () =>
         {
             await db.executeCommand("drop table if exists team_snaps;");
-            await creator.createSnapshotTableForAggregate(teamType, { arrayIndexes: [membersIndex] });
+            await creator.createSnapshotTableForAggregate(teamType, { indexes: [], arrayIndexes: [membersIndex] });
 
             const insert = `insert into team_snaps (id, data) values(?, ?);`;
             await db.executeCommand(insert, "both", JSON.stringify({ name: "b", members: [{ role: "admin" }, { role: "owner" }] }));
@@ -2513,7 +2581,7 @@ await describe("DbTableCreator tests", async () =>
         await test("absent keys and empty arrays never match, in either direction", async () =>
         {
             await db.executeCommand("drop table if exists team_snaps;");
-            await creator.createSnapshotTableForAggregate(teamType, { arrayIndexes: [membersIndex] });
+            await creator.createSnapshotTableForAggregate(teamType, { indexes: [], arrayIndexes: [membersIndex] });
 
             const insert = `insert into team_snaps (id, data) values(?, ?);`;
             await db.executeCommand(insert, "absent", JSON.stringify({ name: "a" }));
@@ -2535,6 +2603,7 @@ await describe("DbTableCreator tests", async () =>
         {
             await db.executeCommand("drop table if exists order_snaps;");
             await creator.createSnapshotTableForAggregate(orderType, {
+                indexes: [],
                 arrayIndexes: [SnapshotArrayIndex.forPath<OrderState>("tags")]
             });
             await db.executeCommand(
@@ -2568,7 +2637,7 @@ await describe("DbTableCreator tests", async () =>
             await db.executeCommand("drop table if exists invoice_snaps;");
 
             const labelsIndex = SnapshotArrayIndex.forPath<InvoiceState>("labels");
-            const info = await creator.createSnapshotTableForOrgAggregate(invoiceType, { arrayIndexes: [labelsIndex] });
+            const info = await creator.createSnapshotTableForOrgAggregate(invoiceType, { indexes: [], arrayIndexes: [labelsIndex] });
 
             const indexes = await db.executeQuery<any>(
                 `select indexname, indexdef from pg_indexes where tablename = 'invoice_snaps' order by indexname;`);
@@ -2581,7 +2650,7 @@ await describe("DbTableCreator tests", async () =>
             assert.ok(!byName.get("idx_invoice_snaps_labels_gin")!.contains("organization_id"));
             // ...so the standalone one must exist, and leadingColumn must not claim otherwise
             assert.ok(byName.has("idx_invoice_snaps"));
-            assert.strictEqual(info.indexes[0].leadingColumn, undefined);
+            assert.strictEqual(info.createdIndexes[0].leadingColumn, undefined);
 
             // 7 organizations against 500 labels, deliberately coprime: with a shared factor every
             // row carrying a given label lands in ONE organization, and the scoped-vs-unscoped
@@ -2618,6 +2687,7 @@ await describe("DbTableCreator tests", async () =>
             // core, so this needs btree_gin - not a trusted extension on PG 12
             await db.executeCommand("drop table if exists invoice_snaps;");
             await creator.createSnapshotTableForOrgAggregate(invoiceType, {
+                indexes: [],
                 arrayIndexes: [SnapshotArrayIndex.forPath<InvoiceState>("labels")]
             });
             await assert.rejects(() => db.executeCommand(
@@ -2644,7 +2714,7 @@ await describe("DbTableCreator tests", async () =>
         await test("SnapshotBaseRepository's insert and upsert succeed against a table with an array index", async () =>
         {
             await db.executeCommand("drop table if exists team_snaps;");
-            await creator.createSnapshotTableForAggregate(teamType, { arrayIndexes: [membersIndex] });
+            await creator.createSnapshotTableForAggregate(teamType, { indexes: [], arrayIndexes: [membersIndex] });
 
             // the exact statement SnapshotBaseRepository.save emits for a new aggregate
             await db.executeCommand(

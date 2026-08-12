@@ -41,13 +41,23 @@ export class InMemoryCreatorRepository implements CreatorRepository
         return Promise.resolve(creator);
     }
 
-    public getAll(...ids: Array<string>): Promise<Array<Creator>>
+    // the two reads are kept as distinct here as they are on the real repository. A double that
+    // folded them back together - or that disagreed about what an empty id list means - is how a
+    // test passes on behavior production does not have
+    public getByIds(ids: ReadonlyArray<string>): Promise<Array<Creator>>
     {
         given(ids, "ids").ensureHasValue().ensureIsArray();
 
-        const creators = this._scoped();
+        const trimmed = ids.map(t => t.trim()).where(t => t.isNotEmptyOrWhiteSpace());
+        if (trimmed.isEmpty)
+            return Promise.resolve([]);
 
-        return Promise.resolve(ids.isEmpty ? creators : creators.where(t => ids.contains(t.id)));
+        return Promise.resolve(this._scoped().where(t => trimmed.contains(t.id)));
+    }
+
+    public getAll(): Promise<Array<Creator>>
+    {
+        return Promise.resolve(this._scoped());
     }
 
     public checkIfEmailExists(email: string, excludeId?: string): Promise<boolean>
@@ -109,7 +119,24 @@ export class InMemoryCreatorRepository implements CreatorRepository
         return Promise.resolve(counts);
     }
 
-    public save(value: Creator, _unitOfWork?: UnitOfWork): Promise<void>
+    public save(value: Creator): Promise<void>
+    {
+        return this._save(value);
+    }
+
+    /**
+     * There is no transaction to join, so this is `save` - the map takes the write either way.
+     *
+     * The distinction the two doors draw is about who commits, and a map commits nothing. What the
+     * double cannot reproduce is the *atomicity* the real `saveWithin` buys, so a test that depends
+     * on several writes landing together needs the real repository.
+     */
+    public saveWithin(value: Creator, _unitOfWork: UnitOfWork): Promise<void>
+    {
+        return this._save(value);
+    }
+
+    private _save(value: Creator): Promise<void>
     {
         given(value, "value").ensureHasValue().ensureIsType(Creator)
             .ensure(t => t.organizationId === this._domainContext.organizationId,

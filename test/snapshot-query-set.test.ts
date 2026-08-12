@@ -290,9 +290,108 @@ await describe("SnapshotQuerySet tests", async () =>
                     // @ts-expect-error - and so did the value check
                     return this.query(this.querySet.eq("total", "100"));
                 }
+
+                // the raw-string predicate and its positional parameters are gone. They enforced
+                // different rules from `querySet.raw`, and which source the values came from depended
+                // on the *runtime* type of `where` - so `query({ where: predicate }, value)` was
+                // compile-legal and threw. A hand-written fragment goes through `raw`, which carries
+                // its own values
+                public rejectedRawString(): Promise<Array<Ticket>>
+                {
+                    // @ts-expect-error - a predicate is a SnapshotPredicate, not a string
+                    return this.query("(data->>'status') = ?", "open");
+                }
+
+                public rejectedRawStringInQuery(): Promise<Array<Ticket>>
+                {
+                    // @ts-expect-error - and RepositoryQuery.where is narrowed the same way
+                    return this.query({ where: "(data->>'status') = ?" }, "open");
+                }
+
+                public acceptedRaw(): Promise<Array<Ticket>>
+                {
+                    // the surviving door, and it validates the fragment on the way in
+                    return this.query(this.querySet.raw(`${this.querySet.expressionFor("status")} like ?`, "op%"));
+                }
+
+                // `getAll` takes no arguments and `getByIds` takes an array, which is what keeps the
+                // two apart. As one rest-parameter method they were the same *call* over an empty
+                // list, so the empty case had to mean either everything or nothing - and whichever it
+                // meant, the callers expecting the other got it silently.
+                public async rejectedGetAllWithIds(): Promise<void>
+                {
+                    // @ts-expect-error - getAll is the whole set; it takes no ids
+                    await this.getAll("tkt_1");
+                }
+
+                public async rejectedGetAllSpread(): Promise<void>
+                {
+                    const ids = ["tkt_1", "tkt_2"];
+
+                    // @ts-expect-error - and a spread cannot reach it either, which is the point
+                    await this.getAll(...ids);
+                }
+
+                public async rejectedGetByIdsSpread(): Promise<void>
+                {
+                    // @ts-expect-error - getByIds takes the array itself, not a rest parameter
+                    await this.getByIds("tkt_1", "tkt_2");
+                }
+
+                public async acceptedReads(): Promise<void>
+                {
+                    await this.getAll();
+                    await this.getByIds([]);
+                    await this.getByIds(["tkt_1", "tkt_2"]);
+                }
+
+                // An org repository gets exactly one raw door, and it is named for the fact that
+                // nothing scopes it. Both of the rejections below have been real at some point:
+                // `queryRaw` was the inherited name before it was moved off the base, and
+                // `executeRawQuery` was the neutrally-named body that briefly replaced it there -
+                // which defeated the exercise, since a protected member is inherited by all four
+                // classes and so left this class with two unscoped doors instead of one. Nothing
+                // asserted either was gone until now.
+                // `@ts-expect-error` is the assertion - tsc reports an unused one as an error, so
+                // these fail the build if either door reopens. The trailing disables are for the
+                // *lint* rule, which sees a call on a type the compiler could not resolve, which is
+                // exactly what is being asserted. Trailing rather than on their own line because
+                // `@ts-expect-error` has to be the last comment before the call.
+                public async rejectedInheritedRawDoor(): Promise<void>
+                {
+                    // @ts-expect-error - the plain variants' name; not on an org repository
+                    await this.queryRaw<unknown>("select 1;"); // eslint-disable-line @typescript-eslint/no-unsafe-call
+                }
+
+                public async rejectedNeutralRawDoor(): Promise<void>
+                {
+                    // @ts-expect-error - the shared body is a free function now, not an inherited member
+                    await this.executeRawQuery<unknown>("select 1;"); // eslint-disable-line @typescript-eslint/no-unsafe-call
+                }
+
+                public async acceptedRawDoor(): Promise<void>
+                {
+                    // the one that survives, and the name says what it does not do
+                    await this.queryRawAcrossOrganizations<unknown>("select 1;");
+                }
             }
 
             assert.strictEqual(typeof TicketRepository, "function");
+        });
+
+        // the shape that used to compile, create every btree index, and silently omit every GIN one
+        await test("a query set's btree indexes alone are not accepted by the creator", async () =>
+        {
+            const rejected = async (creator: DbTableCreator): Promise<void> =>
+            {
+                // @ts-expect-error - the bare array form is gone; pass the set, or both collections
+                await creator.createSnapshotTableForOrgAggregate(ticketType, indexes.indexes);
+
+                // @ts-expect-error - and arrayIndexes is required, so it cannot be dropped by omission
+                await creator.createSnapshotTableForOrgAggregate(ticketType, { indexes: [...indexes.indexes] });
+            };
+
+            assert.strictEqual(typeof rejected, "function");
         });
     });
 
@@ -455,6 +554,34 @@ await describe("SnapshotQuerySet tests", async () =>
             assert.throws(() => indexes.raw(""), ArgumentException);
             assert.throws(() => indexes.raw("   "), ArgumentException);
             assert.throws(() => indexes.raw("a = ?; drop table x", 1), ArgumentException);
+        });
+
+        // `raw` and the predicate a RepositoryQuery carries used to enforce different rules, and
+        // `raw` parenthesizes what it is given - so `raw("select 1 from t")` reached the builder as
+        // "(select 1 from t)" and passed an anchored `^\s*select` guard that "select 1 from t" fails.
+        // Both doors share one validator now, and it runs before the parentheses go on
+        await test("a raw fragment that is a whole statement throws, at construction", async () =>
+        {
+            assert.throws(() => indexes.raw("select 1 from ticket_snaps"), ArgumentException);
+            assert.throws(() => indexes.raw("  SELECT data from ticket_snaps"), ArgumentException);
+            assert.throws(() => indexes.raw("with x as (select 1) select * from x"), ArgumentException);
+        });
+
+        await test("a raw fragment that keeps the 'where' keyword throws, at construction", async () =>
+        {
+            assert.throws(() => indexes.raw("where status = ?", "open"), ArgumentException);
+            assert.throws(() => indexes.raw("  WHERE status = ?", "open"), ArgumentException);
+        });
+
+        await test("a legitimate raw fragment still passes, and parenthesizes itself", async () =>
+        {
+            const predicate = indexes.raw(`${indexes.expressionFor("status")} like ?`, "op%");
+
+            assert.strictEqual(predicate.sql, "((data->>'status') like ?)");
+            assert.deepStrictEqual(predicate.params, ["op%"]);
+
+            // "select" only trips the guard as the leading keyword, not as a substring
+            assert.ok(indexes.raw("selected = ?", true).sql.contains("selected"));
         });
 
         await test("a bad direction throws", async () =>

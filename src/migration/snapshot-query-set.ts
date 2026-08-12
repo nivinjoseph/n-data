@@ -1,4 +1,5 @@
 import { given } from "@nivinjoseph/n-defensive";
+import { validateBooleanFragment } from "../repository/sql-fragment.js";
 import { JsonValueType, SnapshotIndex, SnapshotPath } from "./snapshot-index.js";
 import { SnapshotArrayContainment, SnapshotArrayElement, SnapshotArrayIndex, SnapshotArrayPath, SnapshotElementMatch } from "./snapshot-array-index.js";
 
@@ -7,8 +8,12 @@ import { SnapshotArrayContainment, SnapshotArrayElement, SnapshotArrayIndex, Sna
  *
  * Always parenthesized, so a fragment stays contained wherever it is spliced - which is what makes
  * {@link SnapshotQuerySet.and} and {@link SnapshotQuerySet.or} safe to nest to any depth.
- * `SnapshotArrayPredicate` is structurally one of these, so a containment fragment composes with the
- * rest with no adaptation.
+ * `SnapshotArrayPredicate` extends this, narrowing `params` to the jsonb documents a containment
+ * fragment binds, so a containment fragment composes with the rest with no adaptation.
+ *
+ * **This is the only shape a repository's `query` accepts as a predicate.** Every one comes from a
+ * `SnapshotQuerySet` - a typed comparison, a combinator, or {@link SnapshotQuerySet.raw} - and each
+ * carries its own values, so there is nothing to pass positionally and no binding order to get wrong.
  */
 export interface SnapshotPredicate
 {
@@ -284,7 +289,7 @@ export class SnapshotQuerySet<TState, TIndexed extends SnapshotCasts = NoDeclare
      *
      * Order matters: btree serves only a leading prefix of an index's columns, so the second path of
      * a composite is not independently searchable however exactly its expression matches. That is a
-     * property of the plan, not of the types, so it is not expressible here - read `info.indexes`
+     * property of the plan, not of the types, so it is not expressible here - read `info.createdIndexes`
      * from the create call for the column order.
      *
      * @param {TSpecs} paths - The keys to index, in index order; each a path or a `{ path, type }` pair.
@@ -504,16 +509,19 @@ export class SnapshotQuerySet<TState, TIndexed extends SnapshotCasts = NoDeclare
      *
      * @param {string} sql - A boolean fragment. Parenthesized for you; bind values with `?`.
      * @param {...ReadonlyArray<any>} params - Values bound to the fragment's placeholders.
-     * @throws {ArgumentException} If sql is empty or contains a ';'.
+     * @throws {ArgumentException} If sql is empty, is a whole statement, keeps the `where` keyword, or contains a ';'.
      */
     public raw(sql: string, ...params: ReadonlyArray<any>): SnapshotPredicate
     {
-        given(sql, "sql").ensureHasValue().ensureIsString()
-            .ensure(t => t.isNotEmptyOrWhiteSpace(), "sql is empty")
-            .ensure(t => !t.contains(";"), "sql must not contain a ';'");
+        // validated *before* the parentheses go on, which is the whole point of the shared function:
+        // both of its regexes are anchored, so `(select 1 from t)` would sail past checks that
+        // `select 1 from t` fails. This is now the library's only door for a hand-written fragment,
+        // so it is the only place that ordering has to be right.
+        const validated = validateBooleanFragment(sql, "sql");
+
         given(params, "params").ensureHasValue().ensureIsArray();
 
-        return { sql: `(${sql.trim()})`, params: [...params] };
+        return { sql: `(${validated})`, params: [...params] };
     }
 
     /**

@@ -8,6 +8,7 @@ import { CommonInstaller } from "../common/ioc/common-installer.js";
 import { CreatorFactory } from "../creator/factories/creator-factory.js";
 import { CreatorEmailUnavailableException } from "../creator/exceptions/creator-email-unavailable-exception.js";
 import { CreatorDomainInstaller } from "../creator/ioc/creator-domain-installer.js";
+import { Creator } from "../creator/creator.js";
 import { CreatorRepository } from "../creator/repositories/creator-repository.js";
 import { EventStreamCreatorRepository } from "../creator/repositories/event-stream-creator-repository.js";
 import { SnapshotCreatorRepository } from "../creator/repositories/snapshot-creator-repository.js";
@@ -383,6 +384,86 @@ await describe("The example application", async () =>
             assert.ok(all.every(t => t.organizationId === studioAId));
         });
 
+        // `getAll` means everything and `getByIds` means a lookup, and they are separate methods
+        // because as one - `getAll(...ids)` - they were the same *call* when the list was empty. That
+        // forced the empty case to stand for either everything or nothing, and whichever was chosen
+        // silently betrayed the callers expecting the other.
+        await test("getAll takes the whole studio; getByIds over an empty list takes nothing", async () =>
+        {
+            domainContext.organizationId = studioAId;
+
+            await inScope(async s =>
+            {
+                const repository = s.resolve<CreatorRepository>("CreatorRepository");
+
+                // asking for zero ids is unremarkable now: the caller passed an array
+                assert.strictEqual((await repository.getByIds([])).length, 0);
+                assert.strictEqual((await repository.getByIds(["   "])).length, 0);
+                assert.strictEqual((await repository.getByIds(["crt_nosuchcreator"])).length, 0);
+
+                const all = await repository.getAll();
+                assert.strictEqual(all.length, 3);
+                // and still scoped - `getAll` is this studio's rows, never the whole table
+                assert.ok(all.every(t => t.organizationId === studioAId));
+
+                const some = await repository.getByIds(all.take(2).map(t => t.id));
+                assert.strictEqual(some.length, 2);
+            });
+
+            // and the same on the event stream repository, where `getAll` replays every aggregate -
+            // the read the whole class depends on, since it has no query surface of its own
+            await inScope(async s =>
+            {
+                const eventStream = s.resolve<EventStreamCreatorRepository>("EventStreamCreatorRepository");
+
+                assert.strictEqual((await eventStream.getByIds([])).length, 0);
+                assert.strictEqual((await eventStream.getAll()).length, 3);
+            });
+        });
+
+        // The regression that prompted the split. Both event stream repositories answer every domain
+        // question by loading the studio's aggregates and filtering in memory, so when `getAll()`
+        // briefly returned nothing, thirteen methods across the two of them silently returned nothing
+        // too - `checkIfEmailExists` among them, a uniqueness check that could never find a
+        // collision. Nothing caught it, because the container registers the *snapshot* repositories
+        // under the "CreatorRepository" and "StudioRepository" keys, so these were never exercised.
+        // They are resolved by their own keys here for exactly that reason.
+        await test("the event stream repositories' in-memory reads work, resolved by their own key", async () =>
+        {
+            domainContext.organizationId = studioAId;
+
+            await inScope(async s =>
+            {
+                const creators = s.resolve<EventStreamCreatorRepository>("EventStreamCreatorRepository");
+
+                assert.strictEqual(await creators.checkIfEmailExists("ada@example.com"), true);
+                assert.strictEqual(await creators.checkIfEmailExists("nobody@example.com"), false);
+
+                const ada = await creators.getByEmail("ada@example.com");
+                assert.strictEqual(ada?.displayName, "Ada Lovelace");
+                assert.strictEqual(await creators.getByEmail("nobody@example.com"), null);
+
+                assert.strictEqual(await creators.countActive(), 3);
+                assert.strictEqual((await creators.getByRole("lead")).length, 1);
+                assert.strictEqual((await creators.countByRole()).length, 3);
+            });
+
+            await inScope(async s =>
+            {
+                const studios = s.resolve<EventStreamStudioRepository>("EventStreamStudioRepository");
+
+                // the studio slugs were minted in the block above this one
+                const studio = await studios.get(studioAId);
+
+                assert.strictEqual(await studios.checkIfSlugExists(studio.slug), true);
+                assert.strictEqual(await studios.checkIfSlugExists("no-such-slug"), false);
+                // the studio is allowed to keep its own slug, which is what excludeId is for
+                assert.strictEqual(await studios.checkIfSlugExists(studio.slug, studio.id), false);
+
+                assert.strictEqual((await studios.getBySlug(studio.slug))?.id, studioAId);
+            });
+        });
+
         await test("the same email is free in another studio", async () =>
         {
             domainContext.organizationId = studioBId;
@@ -614,6 +695,29 @@ await describe("The example application", async () =>
 
     await describe("The unit of work", async () =>
     {
+        // The compiler is the assertion here: `tsc` reports an unused '@ts-expect-error' as an error,
+        // so a line that stops being rejected fails the build. The closure is never invoked - what is
+        // being checked is that the call does not typecheck, not what it would do.
+        await test("which door commits is a compile-time choice, not an argument", () =>
+        {
+            const rejected = async (repository: CreatorRepository, creator: Creator,
+                unitOfWork: UnitOfWork): Promise<void> =>
+            {
+                // `save` owns its transaction and takes nothing else. Passing a unit of work used to
+                // compile and silently suppress the commit - and passing the repository's *own*
+                // `unitOfWork`, a public getter, read as though it changed nothing at all
+                // @ts-expect-error - save takes the value alone
+                await repository.save(creator, unitOfWork);
+
+                // and the non-committing door will not silently own the transaction either: the unit
+                // of work is required, so a forgotten argument is an error rather than a mode switch
+                // @ts-expect-error - saveWithin requires the unit of work
+                await repository.saveWithin(creator);
+            };
+
+            assert.strictEqual(typeof rejected, "function");
+        });
+
         await test("an explicit unit of work makes two saves one transaction, and a rollback undoes both", async () =>
         {
             domainContext.organizationId = studioAId;
@@ -638,10 +742,11 @@ await describe("The example application", async () =>
                 grace!.updateProfile("Grace H");
                 creatorId = grace!.id;
 
-                // passing the unit of work explicitly hands the transaction boundary to this caller: the
-                // repository no longer commits for us
-                await repository.save(ada!, unitOfWork);
-                await repository.save(grace!, unitOfWork);
+                // `saveWithin` rather than `save`: the transaction boundary is this caller's, and the
+                // repository commits nothing. Which door is used is what decides that now - it is no
+                // longer inferred from whether a second argument happens to be present
+                await repository.saveWithin(ada!, unitOfWork);
+                await repository.saveWithin(grace!, unitOfWork);
 
                 await unitOfWork.rollback();
             }
@@ -687,11 +792,11 @@ await describe("The example application", async () =>
 
                 const ada = await repository.getByEmail("ada@example.com");
                 ada!.updateProfile("Ada L");
-                await repository.save(ada!, unitOfWork);
+                await repository.saveWithin(ada!, unitOfWork);
 
                 const alan = await repository.getByEmail("alan@example.com");
                 alan!.changeRole("lead");
-                await repository.save(alan!, unitOfWork);
+                await repository.saveWithin(alan!, unitOfWork);
 
                 assert.strictEqual(eventStreamRepository.savedEvents.length, 0);
 

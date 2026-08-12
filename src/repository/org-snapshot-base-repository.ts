@@ -8,14 +8,16 @@ import { AggregateNotFoundException } from "./aggregate-not-found-exception.js";
 import { OrgEventStreamBaseRepository } from "./org-event-stream-base-repository.js";
 import { RepositoryQuery, RepositoryQueryBuilder } from "./repository-query.js";
 import { QueryResult } from "../db/query-result.js";
+import { executeRawQuery } from "./raw-query.js";
 import { SnapshotPredicate, SnapshotQuerySet } from "../migration/snapshot-query-set.js";
 
 /**
  * The organization-scoped counterpart to `SnapshotBaseRepository`.
  *
  * The snapshot table holds `id` (the primary key), `organization_id`, and `data` (the
- * serialized state as jsonb). {@link get} and {@link getAll} cover lookup by id and scope
- * themselves to the current organization automatically.
+ * serialized state as jsonb). {@link get} and {@link getByIds} cover lookup by id, {@link getAll}
+ * takes every row this organization has, and all three scope themselves to the current
+ * organization automatically.
  *
  * **{@link query} scopes itself to the current organization too, so a subclass never writes that
  * filter.** It owns the statement - `select data from <table> where organization_id = ? and (<your
@@ -54,14 +56,14 @@ import { SnapshotPredicate, SnapshotQuerySet } from "../migration/snapshot-query
  *
  * That leading column is also why no expression here is independently searchable: btree serves only a
  * leading prefix, so a predicate must constrain `organization_id` before any indexed expression can
- * be used - which the filter {@link query} adds already does. `info.indexes` reports it as
+ * be used - which the filter {@link query} adds already does. `info.createdIndexes` reports it as
  * `leadingColumn`.
  *
  * **An array index is the one exception.** A `SnapshotArrayIndex` builds a GIN index, which *cannot*
  * lead with `organization_id` - a multicolumn GIN over a varchar column needs the `btree_gin`
  * extension, which is not trusted on Postgres 12 and would demand superuser at migration time. So
  * declaring one always creates the standalone `(organization_id)` index too, for the planner to
- * BitmapAnd the GIN scan against, and `info.indexes[i].leadingColumn` is `undefined` for it - read it
+ * BitmapAnd the GIN scan against, and `info.createdIndexes[i].leadingColumn` is `undefined` for it - read it
  * rather than assuming. The organization filter is still applied either way: tenant isolation is a
  * correctness rule independent of the plan.
  *
@@ -145,6 +147,26 @@ export abstract class OrgSnapshotBaseRepository<T extends OrgAggregateRoot<TStat
      */
     protected abstract get querySet(): SnapshotQuerySet<TState, any, any>;
 
+    /**
+     * The `organization_id = ?` filter {@link query} prepends, as a predicate you can splice into a
+     * statement of your own.
+     *
+     * The companion to {@link queryAcrossOrganizations} and {@link queryRawAcrossOrganizations}:
+     * those two leave the tenant boundary, and this is how a statement that only needed the *shape*
+     * they allow - a CTE, a `distinct on`, a group-by - gets the filter back without re-deriving it.
+     * Splice `sql` and spread `params` in the same order the fragments appear; positional binding is
+     * unforgiving.
+     *
+     * It exposes nothing new - `domainContext.organizationId` is public - it just means the filter is
+     * written once, here, rather than once per statement that needs it.
+     *
+     * @returns {SnapshotPredicate} The filter and the current organization's id.
+     */
+    protected get organizationPredicate(): SnapshotPredicate
+    {
+        return { sql: "organization_id = ?", params: [this.domainContext.organizationId] };
+    }
+
     public override get domainContext(): OrgDomainContext { return super.domainContext as OrgDomainContext; }
     public get eventStreamRepository(): OrgEventStreamBaseRepository<T, TState, TDomainEvent> { return this._eventStreamRepository; }
 
@@ -162,14 +184,40 @@ export abstract class OrgSnapshotBaseRepository<T extends OrgAggregateRoot<TStat
     }
 
 
-    public async getAll(...ids: ReadonlyArray<string>): Promise<Array<T>>
+    /**
+     * The aggregates with these ids, within the current organization.
+     *
+     * Ids that are blank once trimmed are dropped, and if that leaves none the result is empty -
+     * asking for zero ids returns zero aggregates, which is unremarkable because the caller passed an
+     * array. It was not always: as `getAll(...ids)` this shared a signature with {@link getAll}, so
+     * the empty case had to stand for either everything or nothing and could not be read off the call.
+     *
+     * @param {ReadonlyArray<string>} ids - The aggregate ids to load.
+     * @returns {Promise<Array<T>>} The aggregates found; empty when none of the ids matched, or when no usable id was given.
+     */
+    public async getByIds(ids: ReadonlyArray<string>): Promise<Array<T>>
     {
         given(ids, "ids").ensureHasValue().ensureIsArray();
-        ids = ids.map(t => t.trim()).where(t => t.isNotEmptyOrWhiteSpace());
 
-        if (ids.isNotEmpty)
-            return this.query(`id in (${ids.map(() => "?").join(",")})`, ...ids);
+        const trimmed = ids.map(t => t.trim()).where(t => t.isNotEmptyOrWhiteSpace());
+        if (trimmed.isEmpty)
+            return [];
 
+        return this.query(RepositoryQueryBuilder.idPredicate("id", trimmed));
+    }
+
+    /**
+     * Every row in the snapshot table **for the current organization**.
+     *
+     * Unbounded within the tenant, and takes no arguments so that it can only be called on purpose.
+     * It is {@link query} with no predicate, so the organization filter is still prepended - this is
+     * one studio's rows, never the whole table. Crossing that boundary takes
+     * {@link queryAcrossOrganizations}, which is named for it.
+     *
+     * @returns {Promise<Array<T>>} Every aggregate in the current organization, deserialized.
+     */
+    public getAll(): Promise<Array<T>>
+    {
         return this.query({});
     }
 
@@ -178,7 +226,7 @@ export abstract class OrgSnapshotBaseRepository<T extends OrgAggregateRoot<TStat
         given(id, "id").ensureHasValue().ensureIsString();
         id = id.trim();
 
-        const result = await this.query("id = ?", id);
+        const result = await this.query(RepositoryQueryBuilder.idPredicate("id", [id]));
 
         if (result.length !== 1)
             throw new AggregateNotFoundException(this._eventStreamRepository.aggregateType, id);
@@ -186,56 +234,33 @@ export abstract class OrgSnapshotBaseRepository<T extends OrgAggregateRoot<TStat
         return result[0];
     }
 
-    public async save(value: T, unitOfWork?: UnitOfWork): Promise<void>
+    /**
+     * Saves the snapshot and the underlying event stream in a transaction this repository owns, and
+     * commits it - or rolls it back and rethrows if anything fails.
+     *
+     * The transaction is this repository's own {@link BaseRepository.unitOfWork}. If anything else
+     * was queued on that same instance, **this commits that too**, because a unit of work commits as
+     * a whole. Use {@link saveWithin} when several writes have to land together.
+     *
+     * @param {T} value - The aggregate to save. A no-op when it is neither new nor changed.
+     */
+    public save(value: T): Promise<void>
     {
-        given(value, "value").ensureHasValue().ensureIsObject().ensureIsType(this._eventStreamRepository.aggregateType)
-            .ensure(t => t.organizationId === this.domainContext.organizationId);
+        return this._save(value, this.unitOfWork, true);
+    }
 
-        given(unitOfWork, "unitOfWork").ensureIsObject();
+    /**
+     * Saves the snapshot and the underlying event stream into a transaction the caller owns, and
+     * **does not commit**.
+     *
+     * @param {T} value - The aggregate to save. A no-op when it is neither new nor changed.
+     * @param {UnitOfWork} unitOfWork - The caller's transaction. Required; committing it is theirs to do.
+     */
+    public saveWithin(value: T, unitOfWork: UnitOfWork): Promise<void>
+    {
+        given(unitOfWork, "unitOfWork").ensureHasValue().ensureIsObject();
 
-        if (!value.isNew && !value.hasChanges)
-            return;
-
-        try
-        {
-            await this._eventStreamRepository.save(value, unitOfWork ?? this.unitOfWork);
-
-            let sql = "";
-            const params = [];
-
-            if (value.isNew)
-            {
-                sql = `insert into ${this.table}
-                            (id, organization_id, data)
-                            values(?, ?, ?);`;
-
-                params.push(value.id, this.domainContext.organizationId, value.snapshot());
-            }
-            else
-            {
-                sql = `insert into ${this.table}
-                            (id, organization_id, data)
-                            values(?, ?, ?)
-                            on conflict (id) do update
-                            set data = excluded.data;`;
-
-                params.push(value.id, this.domainContext.organizationId, value.snapshot());
-            }
-
-            await this.db.executeCommandWithinUnitOfWork(unitOfWork ?? this.unitOfWork, sql, ...params);
-
-            if (!unitOfWork)
-                await this.unitOfWork.commit();
-        }
-        catch (error)
-        {
-            await this.logger.logError(error as any);
-
-            if (!unitOfWork)
-                await this.unitOfWork.rollback();
-
-            throw error;
-        }
+        return this._save(value, unitOfWork, false);
     }
 
     /**
@@ -245,41 +270,34 @@ export abstract class OrgSnapshotBaseRepository<T extends OrgAggregateRoot<TStat
      * This owns the statement: `select data from <this.table> where organization_id = ? and (<your
      * predicate>)`. So what you supply is the predicate, without the `where` keyword - and the
      * organization filter is added for you, ahead of it, which is both the tenant isolation and the
-     * leading index column every btree index on this table needs. Parameters bind with `?`
-     * placeholders and are passed positionally; never interpolate a value into the predicate.
+     * leading index column every btree index on this table needs.
+     *
+     * **A predicate always carries its own values.** Every one comes from {@link querySet} - a typed
+     * `eq`/`gt`/`in`/`contains`, a combinator, or `raw` for a hand-written fragment - and each binds
+     * its own `?` placeholders. There is nothing to pass positionally and no way to mis-order the
+     * binding against the organization value that precedes it, which is why this takes no parameters
+     * beyond the predicate itself.
      *
      * The predicate is parenthesized, so a top-level `or` in it stays contained rather than escaping
      * the organization filter.
      *
-     * Pass a {@link RepositoryQuery} instead of a string to add `order by`, `limit` or `offset`, or to
-     * run with no predicate at all (`{}`). For a read that genuinely spans organizations, and only
-     * then, use {@link queryAcrossOrganizations}. For reads whose shape does not map onto the
-     * aggregate - counts, group-bys, projections - use {@link BaseRepository.queryRaw}, which
-     * performs no deserialization.
+     * Pass a {@link RepositoryQuery} instead of a bare predicate to add `order by`, `limit` or
+     * `offset`, or to run with no predicate at all (`{}`). For a read that genuinely spans
+     * organizations, and only then, use {@link queryAcrossOrganizations}. For reads whose shape does
+     * not map onto the aggregate - counts, group-bys, projections - use
+     * {@link queryRawAcrossOrganizations}, which performs no deserialization and, as its name says,
+     * adds no organization filter either.
      *
-     * @param {string} where - The `where` predicate, without the `where` keyword.
-     * @param {...ReadonlyArray<any>} params - Values bound to the predicate's `?` placeholders.
+     * @param {SnapshotPredicate | RepositoryQuery} whereOrQuery - A predicate from {@link querySet}, or the predicate and the clauses that follow it.
      * @returns {Promise<Array<T>>} The deserialized aggregates; empty when nothing matched.
-     * @throws {ArgumentException} If the predicate is a whole statement, keeps the `where` keyword, is empty, or contains a ';'.
+     * @throws {ArgumentException} If the predicate is a whole statement, keeps the `where` keyword, is empty, or contains a ';'; if orderBy is empty or contains a ';'; or if limit or offset is not a non-negative integer.
      */
-    protected query(where: string, ...params: ReadonlyArray<any>): Promise<Array<T>>;
-    /**
-     * @param {SnapshotPredicate} where - A predicate from {@link querySet}. It carries its own values, so none are passed alongside it.
-     * @returns {Promise<Array<T>>} The deserialized aggregates; empty when nothing matched.
-     */
-    protected query(where: SnapshotPredicate): Promise<Array<T>>;
-    /**
-     * @param {RepositoryQuery} query - The predicate and the clauses that follow it.
-     * @param {...ReadonlyArray<any>} params - Values bound to the predicate's `?` placeholders, when it is a raw string.
-     * @returns {Promise<Array<T>>} The deserialized aggregates; empty when nothing matched.
-     */
-    protected query(query: RepositoryQuery, ...params: ReadonlyArray<any>): Promise<Array<T>>;
-    protected async query(whereOrQuery: string | SnapshotPredicate | RepositoryQuery, ...params: ReadonlyArray<any>): Promise<Array<T>>
+    protected async query(whereOrQuery: SnapshotPredicate | RepositoryQuery): Promise<Array<T>>
     {
-        const built = RepositoryQueryBuilder.build(this.table, whereOrQuery, params,
+        const built = RepositoryQueryBuilder.build(this.table, whereOrQuery, [],
             this.domainContext.organizationId);
 
-        return this._deserialize(await this.queryRaw<any>(built.sql, ...built.params));
+        return this._deserialize(await this.queryRawAcrossOrganizations<any>(built.sql, ...built.params));
     }
 
     /**
@@ -290,7 +308,7 @@ export abstract class OrgSnapshotBaseRepository<T extends OrgAggregateRoot<TStat
      * a parameter rather than something a caller filters out afterwards because it goes into the statement,
      * which is what lets the read stop at the first match instead of materializing every one.
      *
-     * Unlike {@link BaseRepository.queryRaw}, this applies the same filtering {@link query} does - the organization filter included.
+     * Unlike {@link queryRawAcrossOrganizations}, this applies the same filtering {@link query} does - the organization filter included.
      * A hand-written condition reaches it through `SnapshotQuerySet.raw`, so there is no need to assemble a
      * statement to ask a yes-or-no question.
      *
@@ -305,14 +323,14 @@ export abstract class OrgSnapshotBaseRepository<T extends OrgAggregateRoot<TStat
     {
         const built = RepositoryQueryBuilder.buildExists(this.table, predicate, excludeId, this.domainContext.organizationId);
 
-        return !(await this.queryRaw<unknown>(built.sql, ...built.params)).isEmpty;
+        return !(await this.queryRawAcrossOrganizations<unknown>(built.sql, ...built.params)).isEmpty;
     }
 
     /**
      * How many rows match - without deserializing them.
      *
      * The counterpart to {@link exists}, and scoped the same way. For a count broken down by something -
-     * a group-by - use {@link BaseRepository.queryRaw}: that shape is a projection rather than a single
+     * a group-by - use {@link queryRawAcrossOrganizations}: that shape is a projection rather than a single
      * number, and this cannot express it.
      *
      * @param {SnapshotPredicate} [predicate] - What to count; omitted counts every row within the current organization.
@@ -321,9 +339,34 @@ export abstract class OrgSnapshotBaseRepository<T extends OrgAggregateRoot<TStat
     protected async count(predicate?: SnapshotPredicate): Promise<number>
     {
         const built = RepositoryQueryBuilder.buildCount(this.table, predicate, this.domainContext.organizationId);
-        const result = await this.queryRaw<{ count: number; }>(built.sql, ...built.params);
+        const result = await this.queryRawAcrossOrganizations<{ count: number; }>(built.sql, ...built.params);
 
         return result.rows[0].count;
+    }
+
+    /**
+     * Runs a raw SQL query, **with no organization filter added**, and returns the unprocessed
+     * {@link QueryResult}.
+     *
+     * For reads whose shape does not map onto the aggregate - counts, group-bys, projections. It is
+     * named for its consequence, like {@link queryAcrossOrganizations}: nothing here scopes the read,
+     * so a statement meant to stay within one organization has to constrain the column itself.
+     * {@link organizationPredicate} is how, and leading, so the index is used.
+     *
+     * **This is the only raw door on this class, but not the only way to reach the database.**
+     * `this.db` is right there, and has to be - the snapshot repositories are constructed from an
+     * event stream repository's `db`, and TypeScript's `protected` does not reach across sibling
+     * classes, so it is public. The naming here is guidance about which door reads as the obvious
+     * one, not a boundary the type system enforces. It is worth knowing which it is.
+     *
+     * @template TRow - The expected shape of each returned row.
+     * @param {string} sql - The statement to run.
+     * @param {...ReadonlyArray<any>} params - Values bound to the statement's `?` placeholders.
+     * @returns {Promise<QueryResult<TRow>>} The raw query result.
+     */
+    protected queryRawAcrossOrganizations<TRow>(sql: string, ...params: ReadonlyArray<any>): Promise<QueryResult<TRow>>
+    {
+        return executeRawQuery<TRow>(this.db, sql, params);
     }
 
     /**
@@ -346,7 +389,54 @@ export abstract class OrgSnapshotBaseRepository<T extends OrgAggregateRoot<TStat
      */
     protected async queryAcrossOrganizations(sql: string, ...params: ReadonlyArray<any>): Promise<Array<T>>
     {
-        return this._deserialize(await this.queryRaw<any>(sql, ...params));
+        return this._deserialize(await this.queryRawAcrossOrganizations<any>(sql, ...params));
+    }
+
+    /**
+     * The body both save doors share; `owned` is the whole of what separates them.
+     */
+    private async _save(value: T, unitOfWork: UnitOfWork, owned: boolean): Promise<void>
+    {
+        given(value, "value").ensureHasValue().ensureIsObject().ensureIsType(this._eventStreamRepository.aggregateType)
+            .ensure(t => t.organizationId === this.domainContext.organizationId);
+
+        if (!value.isNew && !value.hasChanges)
+            return;
+
+        try
+        {
+            // always the non-committing door: this repository decides whether the transaction gets
+            // committed, and the event stream write has to land or not land with the snapshot write
+            await this._eventStreamRepository.saveWithin(value, unitOfWork);
+
+            // both branches write the same row from the same values; the conflict clause is the only
+            // difference, and it is what makes a second save of a known aggregate an update rather
+            // than a primary key violation
+            const sql = value.isNew
+                ? `insert into ${this.table}
+                            (id, organization_id, data)
+                            values(?, ?, ?);`
+                : `insert into ${this.table}
+                            (id, organization_id, data)
+                            values(?, ?, ?)
+                            on conflict (id) do update
+                            set data = excluded.data;`;
+
+            await this.db.executeCommandWithinUnitOfWork(unitOfWork, sql,
+                value.id, this.domainContext.organizationId, value.snapshot());
+
+            if (owned)
+                await unitOfWork.commit();
+        }
+        catch (error)
+        {
+            await this.logger.logError(error as any);
+
+            if (owned)
+                await unitOfWork.rollback();
+
+            throw error;
+        }
     }
 
     private _deserialize(queryResult: QueryResult<any>): Array<T>

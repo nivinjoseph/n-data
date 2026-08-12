@@ -34,13 +34,23 @@ export class InMemoryStudioRepository implements StudioRepository
         return Promise.resolve(studio);
     }
 
-    public getAll(...ids: Array<string>): Promise<Array<Studio>>
+    // the two reads are kept as distinct here as they are on the real repository. A double that
+    // folded them back together - or that disagreed about what an empty id list means - is how a
+    // test passes on behavior production does not have
+    public getByIds(ids: ReadonlyArray<string>): Promise<Array<Studio>>
     {
         given(ids, "ids").ensureHasValue().ensureIsArray();
 
-        const studios = [...this._studios.values()];
+        const trimmed = ids.map(t => t.trim()).where(t => t.isNotEmptyOrWhiteSpace());
+        if (trimmed.isEmpty)
+            return Promise.resolve([]);
 
-        return Promise.resolve(ids.isEmpty ? studios : studios.where(t => ids.contains(t.id)));
+        return Promise.resolve([...this._studios.values()].where(t => trimmed.contains(t.id)));
+    }
+
+    public getAll(): Promise<Array<Studio>>
+    {
+        return Promise.resolve([...this._studios.values()]);
     }
 
     public checkIfSlugExists(slug: string, excludeId?: string): Promise<boolean>
@@ -81,7 +91,24 @@ export class InMemoryStudioRepository implements StudioRepository
         return Promise.resolve([...this._studios.values()].orderByDesc(t => t.creatorCount).take(count));
     }
 
-    public save(value: Studio, _unitOfWork?: UnitOfWork): Promise<void>
+    public save(value: Studio): Promise<void>
+    {
+        return this._save(value);
+    }
+
+    /**
+     * There is no transaction to join, so this is `save` - the map takes the write either way.
+     *
+     * The distinction the two doors draw is about who commits, and a map commits nothing. What the
+     * double cannot reproduce is the *atomicity* the real `saveWithin` buys, so a test that depends
+     * on several writes landing together needs the real repository.
+     */
+    public saveWithin(value: Studio, _unitOfWork: UnitOfWork): Promise<void>
+    {
+        return this._save(value);
+    }
+
+    private _save(value: Studio): Promise<void>
     {
         given(value, "value").ensureHasValue().ensureIsType(Studio);
 

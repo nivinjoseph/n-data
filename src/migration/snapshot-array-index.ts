@@ -1,5 +1,9 @@
 import { given } from "@nivinjoseph/n-defensive";
 import { PreviousDepth } from "./snapshot-index.js";
+// type-only, and it has to stay that way: `snapshot-query-set` imports `SnapshotArrayIndex` as a
+// value, so a value import back would close a runtime cycle. `import type` is erased, so there is
+// no cycle to close - the two modules only meet in the type system
+import type { SnapshotPredicate } from "./snapshot-query-set.js";
 
 /**
  * The scalars jsonb carries, and so the only values this API can match.
@@ -140,14 +144,17 @@ export type SnapshotElementMatch<TElement> =
 /**
  * A predicate fragment and the values that bind to its `?` placeholders, in order.
  *
- * The two are produced by one call and never separately, because for a variadic predicate the
+ * A {@link SnapshotPredicate} whose parameters are known to be jsonb documents - which is the whole
+ * of the difference, and why this is a subtype rather than an alias. Being narrower, it goes
+ * anywhere a `SnapshotPredicate` goes: straight to a repository's `query`, or into
+ * `SnapshotQuerySet.and`/`or` alongside the scalar predicates, with no adaptation and nothing to
+ * splice by hand.
+ *
+ * The two halves are produced by one call and never separately, because for a variadic predicate the
  * placeholder count is not fixed - {@link SnapshotArrayContainment.containsAny} over three matches
- * emits three. `sql` is a whole predicate, so on its own it goes straight to a repository's `query`:
- * `this.query(p.sql, ...p.params)`. Combined with another fragment, splice and spread in the **same
- * order the fragments appear** - `` this.query(`${p.sql} and ${expression} = ?`, ...p.params, value) ``,
- * and the reverse order takes the values reversed too. Positional binding is unforgiving.
+ * emits three, and pairing them up afterwards is not something a caller should be doing.
  */
-export interface SnapshotArrayPredicate
+export interface SnapshotArrayPredicate extends SnapshotPredicate
 {
     /**
      * A fully parenthesized boolean fragment, e.g. `((data->'members') @> cast(? as jsonb))`.
@@ -157,6 +164,9 @@ export interface SnapshotArrayPredicate
     /**
      * The jsonb documents to bind, already serialized, positionally matching {@link sql}'s
      * placeholders.
+     *
+     * Narrower than `SnapshotPredicate.params`, which is `ReadonlyArray<any>`: every value here has
+     * already been through `JSON.stringify`. That narrowing is why the two types stayed separate.
      */
     readonly params: ReadonlyArray<string>;
 }
@@ -485,7 +495,7 @@ export class SnapshotArrayIndex<T>
      * characters.
      *
      * @param {string} name - The suffix to use.
-     * @returns {this} This index, for chaining.
+     * @returns {this} A new index under that name - the receiver is unchanged.
      * @throws {ArgumentNullException} If name is null or undefined.
      * @throws {ArgumentException} If name is not a string, is empty or whitespace, is not a valid identifier fragment, or is already set.
      */
@@ -500,9 +510,13 @@ export class SnapshotArrayIndex<T>
             // rest of the API instead of InvalidOperationException
             .ensure(() => this._name == null, "name is already set");
 
-        this._name = name.trim();
+        // copy-on-write, matching `SnapshotIndex` and `SnapshotQuerySet`. The `this` return type is
+        // kept rather than widened: the constructor is private, so there is no subclass for the two
+        // to differ on, and keeping it means this signature did not change shape
+        const next = new SnapshotArrayIndex<T>(this._path);
+        next._name = name.trim();
 
-        return this;
+        return <this>next;
     }
 
     /**
