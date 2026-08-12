@@ -18,13 +18,14 @@ import { StudioRepository } from "./studio-repository.js";
  * `SnapshotIndex` could be declared, queried through `expressionForPath`, and left out of the array the
  * migration consumed - a silent sequential scan with nothing failing at startup.
  *
- * It also makes the paths and values checkable. `this.indexes.eq("slug", …)` accepts only a path
+ * It also makes the paths and values checkable. `this.querySet.eq("slug", …)` accepts only a path
  * declared here - not merely one that exists on `StudioState` - and only a value of that leaf's type.
  * `gt("creatorCount", 5)` compiles because a numeric cast was declared; without one it would not,
  * because an uncast extraction compares as text and `'9' > '100'`.
  *
- * The `indexes` override is what carries that narrow type to the call sites: the base declares the
- * property at a widened type, since it cannot know which paths a subclass chose.
+ * The `querySet` override is what carries that narrow type to the call sites: the base declares the
+ * property at a widened type, since it cannot know which paths a subclass chose. It returns the
+ * `indexes` static unchanged - one object, named on each side for the job that side does with it.
  *
  * @class SnapshotStudioRepository
  */
@@ -50,7 +51,7 @@ export class SnapshotStudioRepository
         .withPath("isArchived")
         .withArrayPath("tags");
 
-    protected override get indexes(): typeof SnapshotStudioRepository.indexes
+    protected override get querySet(): typeof SnapshotStudioRepository.indexes
     {
         return SnapshotStudioRepository.indexes;
     }
@@ -67,14 +68,14 @@ export class SnapshotStudioRepository
 
         // `exists` rather than `query`: the answer is yes or no, so there is no aggregate to deserialize.
         // `excludeId` is what makes this usable from a rename - the studio is allowed to keep its own slug.
-        return this.exists(this.indexes.eq("slug", slug), excludeId);
+        return this.exists(this.querySet.eq("slug", slug), excludeId);
     }
 
     public async getBySlug(slug: string): Promise<Studio | null>
     {
         given(slug, "slug").ensureHasValue().ensureIsString();
 
-        const result = await this.query(this.indexes.eq("slug", slug));
+        const result = await this.query(this.querySet.eq("slug", slug));
 
         // at most one, because the index is unique
         return result.isEmpty ? null : result[0];
@@ -86,16 +87,16 @@ export class SnapshotStudioRepository
 
         // the archived exclusion composes with the tier match rather than being a second query, and the
         // combinator parenthesizes both sides so neither can escape the other
-        return this.query(this.indexes.and(
-            this.indexes.eq("plan.tier", tier),
-            this.indexes.eq("isArchived", false)));
+        return this.query(this.querySet.and(
+            this.querySet.eq("plan.tier", tier),
+            this.querySet.eq("isArchived", false)));
     }
 
     public getByTag(tag: string): Promise<Array<Studio>>
     {
         given(tag, "tag").ensureHasValue().ensureIsString();
 
-        return this.query(this.indexes.contains("tags", tag));
+        return this.query(this.querySet.contains("tags", tag));
     }
 
     public getLargest(count: number): Promise<Array<Studio>>
@@ -103,8 +104,8 @@ export class SnapshotStudioRepository
         given(count, "count").ensureHasValue().ensureIsNumber().ensure(t => t > 0);
 
         return this.query({
-            where: this.indexes.eq("isArchived", false),
-            orderBy: this.indexes.orderBy("creatorCount", "desc"),
+            where: this.querySet.eq("isArchived", false),
+            orderBy: this.querySet.orderBy("creatorCount", "desc"),
             limit: count
         });
     }
@@ -122,10 +123,10 @@ export class SnapshotStudioRepository
         given(minCreatorCount, "minCreatorCount").ensureHasValue().ensureIsNumber();
 
         return this.query({
-            where: this.indexes.and(
-                this.indexes.in("plan.tier", tiers),
-                this.indexes.gt("creatorCount", minCreatorCount)),
-            orderBy: this.indexes.orderBy("creatorCount", "desc")
+            where: this.querySet.and(
+                this.querySet.in("plan.tier", tiers),
+                this.querySet.gt("creatorCount", minCreatorCount)),
+            orderBy: this.querySet.orderBy("creatorCount", "desc")
         });
     }
 
@@ -138,7 +139,7 @@ export class SnapshotStudioRepository
      */
     public async getCountByPlanTier(): Promise<ReadonlyArray<{ tier: string; count: number; }>>
     {
-        const expression = this.indexes.expressionFor("plan.tier");
+        const expression = this.querySet.expressionFor("plan.tier");
 
         const result = await this.queryRaw<{ tier: string; count: number; }>(
             `select ${expression} as tier, cast(count(*) as int) as count
@@ -159,10 +160,10 @@ export class SnapshotStudioRepository
         given(tier, "tier").ensureHasValue().ensureIsString();
 
         return this.queryStatement(
-            `select distinct on (${this.indexes.expressionFor("slug")}) data
+            `select distinct on (${this.querySet.expressionFor("slug")}) data
              from ${this.table}
-             where ${this.indexes.expressionFor("plan.tier")} = ?
-             order by ${this.indexes.expressionFor("slug")};`,
+             where ${this.querySet.expressionFor("plan.tier")} = ?
+             order by ${this.querySet.expressionFor("slug")};`,
             tier);
     }
 }

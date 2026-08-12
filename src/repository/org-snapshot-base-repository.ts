@@ -25,7 +25,7 @@ import { SnapshotPredicate, SnapshotQuerySet } from "../migration/snapshot-query
  * that is genuinely meant to span tenants.
  *
  * As with the plain variant, what is queryable is declared with a `SnapshotQuerySet` handed to
- * `super` and exposed by overriding {@link indexes} - one object that both the migration creates the
+ * `super` and exposed by overriding {@link querySet} - one object that both the migration creates the
  * table from and the predicates are built by, so a queried index is necessarily a created one, and so
  * every path and value is checked against that declaration at compile time.
  *
@@ -77,7 +77,7 @@ import { SnapshotPredicate, SnapshotQuerySet } from "../migration/snapshot-query
  *         .withPath("issuedAt", { type: JsonValueType.bigint })
  *         .withArrayPath("labels");
  *
- *     protected override get indexes(): typeof InvoiceRepository.indexes { return InvoiceRepository.indexes; }
+ *     protected override get querySet(): typeof InvoiceRepository.indexes { return InvoiceRepository.indexes; }
  *
  *     public constructor(eventStreamRepository: InvoiceEventStreamRepository)
  *     {
@@ -88,19 +88,19 @@ import { SnapshotPredicate, SnapshotQuerySet } from "../migration/snapshot-query
  *     {
  *         // the predicate only - the organization filter is added ahead of it, for isolation and
  *         // because the index leads with it
- *         return this.query(this.indexes.eq("status", status));
+ *         return this.query(this.querySet.eq("status", status));
  *     }
  *
  *     public getByLabel(label: string): Promise<Array<Invoice>>
  *     {
- *         return this.query(this.indexes.contains("labels", label));
+ *         return this.query(this.querySet.contains("labels", label));
  *     }
  *
  *     public getRecentByStatus(status: string): Promise<Array<Invoice>>
  *     {
  *         return this.query({
- *             where: this.indexes.eq("status", status),
- *             orderBy: this.indexes.orderBy("issuedAt", "desc"),
+ *             where: this.querySet.eq("status", status),
+ *             orderBy: this.querySet.orderBy("issuedAt", "desc"),
  *             limit: 20
  *         });
  *     }
@@ -125,8 +125,12 @@ export abstract class OrgSnapshotBaseRepository<T extends OrgAggregateRoot<TStat
      * ```typescript
      * public static readonly indexes = SnapshotQuerySet.for<InvoiceState>().withPath("status");
      *
-     * protected override get indexes(): typeof InvoiceRepository.indexes { return InvoiceRepository.indexes; }
+     * protected override get querySet(): typeof InvoiceRepository.indexes { return InvoiceRepository.indexes; }
      * ```
+     *
+     * The two names in that line are deliberate, not an oversight to be tidied up. One object wears the
+     * name of the job each side does with it: the migration reads the static to create the table's
+     * *indexes*, and this getter is what the *queries* below are built from.
      *
      * The `typeof` is what carries the narrow type to the call sites, and it is the whole point: at the
      * widened type `eq` accepts *any* string as a path - including `organizationId`, which is a column here
@@ -139,7 +143,7 @@ export abstract class OrgSnapshotBaseRepository<T extends OrgAggregateRoot<TStat
      * it with an instance field rather than a static, and a subclass field initializer runs *after*
      * `super()` - so a constructor-time read would see `undefined`.
      */
-    protected abstract get indexes(): SnapshotQuerySet<TState, any, any>;
+    protected abstract get querySet(): SnapshotQuerySet<TState, any, any>;
 
     public override get domainContext(): OrgDomainContext { return super.domainContext as OrgDomainContext; }
     public get eventStreamRepository(): OrgEventStreamBaseRepository<T, TState, TDomainEvent> { return this._eventStreamRepository; }
@@ -260,7 +264,7 @@ export abstract class OrgSnapshotBaseRepository<T extends OrgAggregateRoot<TStat
      */
     protected query(where: string, ...params: ReadonlyArray<any>): Promise<Array<T>>;
     /**
-     * @param {SnapshotPredicate} where - A predicate from {@link indexes}. It carries its own values, so none are passed alongside it.
+     * @param {SnapshotPredicate} where - A predicate from {@link querySet}. It carries its own values, so none are passed alongside it.
      * @returns {Promise<Array<T>>} The deserialized aggregates; empty when nothing matched.
      */
     protected query(where: SnapshotPredicate): Promise<Array<T>>;

@@ -17,22 +17,22 @@ import { SnapshotOrderBy, SnapshotPredicate } from "../migration/snapshot-query-
  * ```typescript
  * // a typed predicate from the repository's SnapshotQuerySet - it carries its own params
  * this.query({
- *     where: this.indexes.eq("status", status),
- *     orderBy: this.indexes.orderBy("placedAt", "desc"),
+ *     where: this.querySet.eq("status", status),
+ *     orderBy: this.querySet.orderBy("placedAt", "desc"),
  *     limit: 50
  * });
  *
  * // ordering on two keys
  * this.query({
- *     where: this.indexes.eq("status", status),
- *     orderBy: [this.indexes.orderBy("series"), this.indexes.orderBy("revision", "desc")]
+ *     where: this.querySet.eq("status", status),
+ *     orderBy: [this.querySet.orderBy("series"), this.querySet.orderBy("revision", "desc")]
  * });
  *
  * // a raw predicate, with its params passed positionally
- * this.query({ where: `${this.indexes.expressionFor("status")} = ?`, limit: 50 }, status);
+ * this.query({ where: `${this.querySet.expressionFor("status")} = ?`, limit: 50 }, status);
  *
  * // no predicate at all
- * this.query({ orderBy: this.indexes.orderBy("placedAt", "desc"), limit: 10 });
+ * this.query({ orderBy: this.querySet.orderBy("placedAt", "desc"), limit: 10 });
  * ```
  */
 export interface RepositoryQuery

@@ -136,7 +136,7 @@ export class OrderRepository extends SnapshotBaseRepository<Order, OrderState, O
 
     // required by the base, which declares it abstract at a widened type — forgetting it is a compile
     // error, and the `typeof` is what carries the narrow type to the call sites
-    protected override get indexes(): typeof OrderRepository.indexes { return OrderRepository.indexes; }
+    protected override get querySet(): typeof OrderRepository.indexes { return OrderRepository.indexes; }
 
     public constructor(eventStreamRepository: OrderEventStreamRepository)
     {
@@ -147,33 +147,33 @@ export class OrderRepository extends SnapshotBaseRepository<Order, OrderState, O
     // pass is a predicate built from the set above.
     public getByStatus(status: string): Promise<Array<Order>>
     {
-        return this.query(this.indexes.eq("status", status));
+        return this.query(this.querySet.eq("status", status));
     }
 
     // a number, because `total` declared a numeric cast. Without one this would not compile —
     // uncast, the extraction compares as text and '9' > '100'.
     public getOverTotal(total: number): Promise<Array<Order>>
     {
-        return this.query(this.indexes.gt("total", total));
+        return this.query(this.querySet.gt("total", total));
     }
 
     public getByTag(tag: string): Promise<Array<Order>>
     {
-        return this.query(this.indexes.contains("tags", tag));
+        return this.query(this.querySet.contains("tags", tag));
     }
 
     // predicates compose, and every combinator parenthesizes its result
     public getRushIn(city: string, statuses: ReadonlyArray<string>): Promise<Array<Order>>
     {
-        return this.query(this.indexes.and(
-            this.indexes.eq("customer.city", city),
-            this.indexes.in("status", statuses)));
+        return this.query(this.querySet.and(
+            this.querySet.eq("customer.city", city),
+            this.querySet.in("status", statuses)));
     }
 
     // Ordering and paging go on the object form, which also takes no predicate at all
     public getLargestOrders(count: number): Promise<Array<Order>>
     {
-        return this.query({ orderBy: this.indexes.orderBy("total", "desc"), limit: count });
+        return this.query({ orderBy: this.querySet.orderBy("total", "desc"), limit: count });
     }
 
     // A projection that does not map onto the aggregate goes through queryRaw,
@@ -181,7 +181,7 @@ export class OrderRepository extends SnapshotBaseRepository<Order, OrderState, O
     public async getCountByStatus(): Promise<ReadonlyArray<{ status: string; count: number; }>>
     {
         const result = await this.queryRaw<{ status: string; count: number; }>(
-            `select ${this.indexes.expressionFor("status")} as status, cast(count(*) as int) as count
+            `select ${this.querySet.expressionFor("status")} as status, cast(count(*) as int) as count
              from ${this.table} group by 1;`);
 
         return result.rows;
@@ -192,11 +192,11 @@ export class OrderRepository extends SnapshotBaseRepository<Order, OrderState, O
 The paths a query can name are exactly the ones declared above — not merely the ones that exist on `OrderState`:
 
 ```typescript
-this.indexes.eq("status", "sent");        // ok
-this.indexes.eq("placedAt", "2024-01");   // error: on OrderState, but never declared here
-this.indexes.eq("total", "100");          // error: total is a number
-this.indexes.eq("nope", "x");             // error: not a path on OrderState
-this.indexes.contains("status", "sent");  // error: status is not an array path
+this.querySet.eq("status", "sent");        // ok
+this.querySet.eq("placedAt", "2024-01");   // error: on OrderState, but never declared here
+this.querySet.eq("total", "100");          // error: total is a number
+this.querySet.eq("nope", "x");             // error: not a path on OrderState
+this.querySet.contains("status", "sent");  // error: status is not an array path
 ```
 
 ```typescript
@@ -244,7 +244,7 @@ export class TeamRepository extends SnapshotBaseRepository<Team, TeamState, Team
 {
     public static readonly indexes = SnapshotQuerySet.for<TeamState>().withArrayPath("members");
 
-    protected override get indexes(): typeof TeamRepository.indexes { return TeamRepository.indexes; }
+    protected override get querySet(): typeof TeamRepository.indexes { return TeamRepository.indexes; }
 
     public constructor(eventStreamRepository: TeamEventStreamRepository)
     {
@@ -256,7 +256,7 @@ export class TeamRepository extends SnapshotBaseRepository<Team, TeamState, Team
         // ONE containment document, so both fields must hold on the SAME member element.
         // `{ userld }` or `{ isDeactivated: "false" }` would be compile errors — the element
         // type is resolved from the path literal.
-        return this.query(this.indexes.contains("members", { userId, isDeactivated: false }));
+        return this.query(this.querySet.contains("members", { userId, isDeactivated: false }));
     }
 }
 
@@ -286,7 +286,7 @@ export class InvoiceRepository extends OrgSnapshotBaseRepository<Invoice, Invoic
 {
     public static readonly indexes = SnapshotQuerySet.for<InvoiceState>().withPath("status");
 
-    protected override get indexes(): typeof InvoiceRepository.indexes { return InvoiceRepository.indexes; }
+    protected override get querySet(): typeof InvoiceRepository.indexes { return InvoiceRepository.indexes; }
 
     public constructor(eventStreamRepository: InvoiceEventStreamRepository)
     {
@@ -297,7 +297,7 @@ export class InvoiceRepository extends OrgSnapshotBaseRepository<Invoice, Invoic
     {
         // identical to the plain variant above — `organization_id = ?` is prepended for you,
         // ahead of this predicate, which is both the isolation and the leading index column
-        return this.query(this.indexes.eq("status", status));
+        return this.query(this.querySet.eq("status", status));
     }
 
     // -> select data from invoice_snaps

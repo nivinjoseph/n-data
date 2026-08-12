@@ -264,7 +264,7 @@ export interface SnapshotArrayContainment<TElement>
  * {
  *     public static readonly indexes = SnapshotQuerySet.for<TeamState>().withArrayPath("members");
  *
- *     protected override get indexes(): typeof TeamRepository.indexes { return TeamRepository.indexes; }
+ *     protected override get querySet(): typeof TeamRepository.indexes { return TeamRepository.indexes; }
  *
  *     public constructor(eventStreamRepository: TeamEventStreamRepository)
  *     {
@@ -274,7 +274,7 @@ export interface SnapshotArrayContainment<TElement>
  *     public getActiveTeamsForUser(userId: string): Promise<Array<Team>>
  *     {
  *         // ONE containment document: both fields must hold on the SAME member element
- *         return this.query(this.indexes.contains("members", { userId, isDeactivated: false }));
+ *         return this.query(this.querySet.contains("members", { userId, isDeactivated: false }));
  *     }
  * }
  *

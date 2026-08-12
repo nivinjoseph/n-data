@@ -210,30 +210,30 @@ await describe("SnapshotQuerySet tests", async () =>
     // stops compiling, the documented pattern is wrong.
     await describe("The documented subclass pattern", async () =>
     {
-        // The base declares `indexes` abstract, so omitting it is a compile error rather than a silent
+        // The base declares `querySet` abstract, so omitting it is a compile error rather than a silent
         // downgrade. That is the whole reason it is abstract: at the widened type `eq` accepts any string
         // as a path and a numeric path with no declared cast, so a subclass that simply forgot would keep
         // value checking and quietly lose path and cast checking.
-        await test("a subclass that omits indexes does not compile", async () =>
+        await test("a subclass that omits querySet does not compile", async () =>
         {
             const rejected = (): void =>
             {
-                class NoIndexesEventStreamRepository extends OrgEventStreamBaseRepository<Ticket, TicketState, OrgDomainEvent<TicketState>>
+                class NoQuerySetEventStreamRepository extends OrgEventStreamBaseRepository<Ticket, TicketState, OrgDomainEvent<TicketState>>
                 {
                     protected onSave(): Promise<void> { return Promise.resolve(); }
                 }
 
-                // @ts-expect-error - non-abstract class does not implement inherited abstract member 'indexes'
-                class NoIndexesRepository extends OrgSnapshotBaseRepository<Ticket, TicketState, OrgDomainEvent<TicketState>>
+                // @ts-expect-error - non-abstract class does not implement inherited abstract member 'querySet'
+                class NoQuerySetRepository extends OrgSnapshotBaseRepository<Ticket, TicketState, OrgDomainEvent<TicketState>>
                 {
-                    public constructor(eventStreamRepository: NoIndexesEventStreamRepository)
+                    public constructor(eventStreamRepository: NoQuerySetEventStreamRepository)
                     {
                         super(eventStreamRepository);
                     }
                 }
 
                 // referenced so the declaration is not elided before the compiler checks it
-                assert.strictEqual(typeof NoIndexesRepository, "function");
+                assert.strictEqual(typeof NoQuerySetRepository, "function");
             };
 
             assert.strictEqual(typeof rejected, "function");
@@ -248,11 +248,11 @@ await describe("SnapshotQuerySet tests", async () =>
 
             class TicketRepository extends OrgSnapshotBaseRepository<Ticket, TicketState, OrgDomainEvent<TicketState>>
             {
-                // static and instance members live in separate namespaces, so the declaration and the
-                // override can share the name - which is what the docs show
+                // one object, two names: the migration reads the `indexes` static to create them, and the
+                // override is what the queries below are built from
                 public static readonly indexes = indexes;
 
-                protected override get indexes(): typeof TicketRepository.indexes { return TicketRepository.indexes; }
+                protected override get querySet(): typeof TicketRepository.indexes { return TicketRepository.indexes; }
 
                 public constructor(eventStreamRepository: TicketEventStreamRepository)
                 {
@@ -261,34 +261,34 @@ await describe("SnapshotQuerySet tests", async () =>
 
                 public getByStatus(status: string): Promise<Array<Ticket>>
                 {
-                    return this.query(this.indexes.eq("status", status));
+                    return this.query(this.querySet.eq("status", status));
                 }
 
                 public getOverTotal(total: number): Promise<Array<Ticket>>
                 {
-                    return this.query(this.indexes.gt("total", total));
+                    return this.query(this.querySet.gt("total", total));
                 }
 
                 public getRecent(count: number): Promise<Array<Ticket>>
                 {
-                    return this.query({ orderBy: this.indexes.orderBy("total", "desc"), limit: count });
+                    return this.query({ orderBy: this.querySet.orderBy("total", "desc"), limit: count });
                 }
 
                 public getBySku(sku: string): Promise<Array<Ticket>>
                 {
-                    return this.query(this.indexes.contains("lines", { sku }));
+                    return this.query(this.querySet.contains("lines", { sku }));
                 }
 
                 public rejectedPath(): Promise<Array<Ticket>>
                 {
                     // @ts-expect-error - the narrow type reached here: 'unindexed' was never declared
-                    return this.query(this.indexes.eq("unindexed", "x"));
+                    return this.query(this.querySet.eq("unindexed", "x"));
                 }
 
                 public rejectedValue(): Promise<Array<Ticket>>
                 {
                     // @ts-expect-error - and so did the value check
-                    return this.query(this.indexes.eq("total", "100"));
+                    return this.query(this.querySet.eq("total", "100"));
                 }
             }
 

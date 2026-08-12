@@ -96,5 +96,5 @@ inline, so the suite pays that once instead of once per pool. A process that mig
 **One declaration, two consumers.** Each snapshot repository declares a `SnapshotQuerySet` as a static, the
 migration creates the table's indexes from that same object, and every predicate in the repository is built by
 it. That is what makes an index that is queried necessarily one that was created — and what makes
-`this.indexes.eq("slug", …)` reject a path the repository never declared, or a value of the wrong type for the
+`this.querySet.eq("slug", …)` reject a path the repository never declared, or a value of the wrong type for the
 leaf it names.

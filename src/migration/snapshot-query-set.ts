@@ -138,7 +138,7 @@ export type SnapshotCastRequired<TP extends string> = {
  *
  *     // the base declares this abstract at a widened type, because it does not know the paths; the
  *     // `typeof` here is what gives the call sites the narrow one
- *     protected override get indexes(): typeof OrderRepository.indexes { return OrderRepository.indexes; }
+ *     protected override get querySet(): typeof OrderRepository.indexes { return OrderRepository.indexes; }
  *
  *     public constructor(eventStreamRepository: OrderEventStreamRepository)
  *     {
@@ -147,26 +147,26 @@ export type SnapshotCastRequired<TP extends string> = {
  *
  *     public getByStatus(status: string): Promise<Array<Order>>
  *     {
- *         return this.query(this.indexes.eq("status", status));
+ *         return this.query(this.querySet.eq("status", status));
  *     }
  *
  *     public getOverTotal(total: number): Promise<Array<Order>>
  *     {
- *         return this.query(this.indexes.gt("total", total));
+ *         return this.query(this.querySet.gt("total", total));
  *     }
  *
  *     public getByTag(tag: string): Promise<Array<Order>>
  *     {
- *         return this.query(this.indexes.contains("tags", tag));
+ *         return this.query(this.querySet.contains("tags", tag));
  *     }
  *
  *     public getRecentRush(status: string, count: number): Promise<Array<Order>>
  *     {
  *         return this.query({
- *             where: this.indexes.and(
- *                 this.indexes.eq("status", status),
- *                 this.indexes.gt("total", 0)),
- *             orderBy: this.indexes.orderBy("total", "desc"),
+ *             where: this.querySet.and(
+ *                 this.querySet.eq("status", status),
+ *                 this.querySet.gt("total", 0)),
+ *             orderBy: this.querySet.orderBy("total", "desc"),
  *             limit: count
  *         });
  *     }

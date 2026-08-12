@@ -45,7 +45,7 @@ export class SnapshotCreatorRepository
         .withComposite(["role", "displayName"])
         .withArrayPath("skills");
 
-    protected override get indexes(): typeof SnapshotCreatorRepository.indexes
+    protected override get querySet(): typeof SnapshotCreatorRepository.indexes
     {
         return SnapshotCreatorRepository.indexes;
     }
@@ -63,20 +63,20 @@ export class SnapshotCreatorRepository
         // `exists` scopes to the current studio the same way `query` does, so this reads as the per-studio
         // question it is. `queryRaw` would not - that door gets no organization filter, which is why the two
         // statements further down have to constrain the column by hand.
-        return this.exists(this.indexes.eq("email", email), excludeId);
+        return this.exists(this.querySet.eq("email", email), excludeId);
     }
 
     public countActive(): Promise<number>
     {
         // what the studio's seat limit is checked against; scoped to this studio, like every read here
-        return this.count(this.indexes.eq("isDeactivated", false));
+        return this.count(this.querySet.eq("isDeactivated", false));
     }
 
     public async getByEmail(email: string): Promise<Creator | null>
     {
         given(email, "email").ensureHasValue().ensureIsString();
 
-        const result = await this.query(this.indexes.eq("email", email));
+        const result = await this.query(this.querySet.eq("email", email));
 
         // at most one within this studio, because the unique index leads with the organization
         return result.isEmpty ? null : result[0];
@@ -86,14 +86,14 @@ export class SnapshotCreatorRepository
     {
         given(role, "role").ensureHasValue().ensureIsString();
 
-        return this.query(this.indexes.eq("role", role));
+        return this.query(this.querySet.eq("role", role));
     }
 
     public getBySkill(skill: string): Promise<Array<Creator>>
     {
         given(skill, "skill").ensureHasValue().ensureIsString();
 
-        return this.query(this.indexes.contains("skills", skill));
+        return this.query(this.querySet.contains("skills", skill));
     }
 
     public getActiveInRoles(roles: ReadonlyArray<string>): Promise<Array<Creator>>
@@ -103,10 +103,10 @@ export class SnapshotCreatorRepository
         // the `in` sits inside an `and`, and both are parenthesized - without that the organization filter
         // `query` prepends could be escaped by a top-level `or`
         return this.query({
-            where: this.indexes.and(
-                this.indexes.in("role", roles),
-                this.indexes.eq("isDeactivated", false)),
-            orderBy: [this.indexes.orderBy("role"), this.indexes.orderBy("displayName")]
+            where: this.querySet.and(
+                this.querySet.in("role", roles),
+                this.querySet.eq("isDeactivated", false)),
+            orderBy: [this.querySet.orderBy("role"), this.querySet.orderBy("displayName")]
         });
     }
 
@@ -118,15 +118,15 @@ export class SnapshotCreatorRepository
         // a number, because `joinedAt` declared a bigint cast. Without one this would not compile - epoch
         // millis compared as text would order lexicographically
         return this.query({
-            where: this.indexes.gte("joinedAt", since),
-            orderBy: this.indexes.orderBy("joinedAt", "desc"),
+            where: this.querySet.gte("joinedAt", since),
+            orderBy: this.querySet.orderBy("joinedAt", "desc"),
             limit: count
         });
     }
 
     public async countByRole(): Promise<ReadonlyArray<{ role: string; count: number; }>>
     {
-        const expression = this.indexes.expressionFor("role");
+        const expression = this.querySet.expressionFor("role");
 
         const result = await this.queryRaw<{ role: string; count: number; }>(
             `select ${expression} as role, cast(count(*) as int) as count
@@ -148,7 +148,7 @@ export class SnapshotCreatorRepository
         given(email, "email").ensureHasValue().ensureIsString();
 
         return this.queryAcrossOrganizations(
-            `select data from ${this.table} where ${this.indexes.expressionFor("email")} = ?;`,
+            `select data from ${this.table} where ${this.querySet.expressionFor("email")} = ?;`,
             email);
     }
 }

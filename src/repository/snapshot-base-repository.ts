@@ -25,12 +25,12 @@ import { SnapshotPredicate, SnapshotQuerySet } from "../migration/snapshot-query
  * that shape cannot express.
  *
  * **Declare what is queryable with a `SnapshotQuerySet`, handed to `super` and exposed by overriding
- * {@link indexes}.** That one object is both what the migration creates the table's indexes from and
+ * {@link querySet}.** That one object is both what the migration creates the table's indexes from and
  * what the predicates are built by, so an index that is queried is necessarily one that was created.
  * `DbTableCreator` builds a btree expression index per path; nothing is added to the table, since the
  * index is built directly over the extraction expression.
  *
- * That single source is what the type checking rests on. `this.indexes.eq("status", value)` accepts
+ * That single source is what the type checking rests on. `this.querySet.eq("status", value)` accepts
  * only a path this repository declared - not merely one that exists on the state - and only a value of
  * that leaf's type. It also rejects a numeric comparison on a path declared without a
  * `JsonValueType`, because an uncast extraction compares as text and `'9' > '100'`.
@@ -75,7 +75,7 @@ import { SnapshotPredicate, SnapshotQuerySet } from "../migration/snapshot-query
  *
  *     // required by the base, which declares it abstract at a widened type; the `typeof` is what
  *     // carries the narrow one to the call sites
- *     protected override get indexes(): typeof OrderRepository.indexes { return OrderRepository.indexes; }
+ *     protected override get querySet(): typeof OrderRepository.indexes { return OrderRepository.indexes; }
  *
  *     public constructor(eventStreamRepository: OrderEventStreamRepository)
  *     {
@@ -84,24 +84,24 @@ import { SnapshotPredicate, SnapshotQuerySet } from "../migration/snapshot-query
  *
  *     public getByStatus(status: string): Promise<Array<Order>>
  *     {
- *         return this.query(this.indexes.eq("status", status));
+ *         return this.query(this.querySet.eq("status", status));
  *     }
  *
  *     public getOverTotal(total: number): Promise<Array<Order>>
  *     {
  *         // a number, because `total` declared a numeric cast - without one this would not compile
- *         return this.query(this.indexes.gt("total", total));
+ *         return this.query(this.querySet.gt("total", total));
  *     }
  *
  *     public getByTag(tag: string): Promise<Array<Order>>
  *     {
- *         return this.query(this.indexes.contains("tags", tag));
+ *         return this.query(this.querySet.contains("tags", tag));
  *     }
  *
  *     public getLargestOrders(count: number): Promise<Array<Order>>
  *     {
  *         // ordering and paging go on the object form; there is no predicate here
- *         return this.query({ orderBy: this.indexes.orderBy("total", "desc"), limit: count });
+ *         return this.query({ orderBy: this.querySet.orderBy("total", "desc"), limit: count });
  *     }
  * }
  *
@@ -124,8 +124,12 @@ export abstract class SnapshotBaseRepository<T extends AggregateRoot<TState, TDo
      * ```typescript
      * public static readonly indexes = SnapshotQuerySet.for<OrderState>().withPath("status");
      *
-     * protected override get indexes(): typeof OrderRepository.indexes { return OrderRepository.indexes; }
+     * protected override get querySet(): typeof OrderRepository.indexes { return OrderRepository.indexes; }
      * ```
+     *
+     * The two names in that line are deliberate, not an oversight to be tidied up. One object wears the
+     * name of the job each side does with it: the migration reads the static to create the table's
+     * *indexes*, and this getter is what the *queries* below are built from.
      *
      * The `typeof` is what carries the narrow type to the call sites, and it is the whole point: at the
      * widened type `eq` accepts *any* string as a path, and a numeric path with no declared cast, so an
@@ -137,7 +141,7 @@ export abstract class SnapshotBaseRepository<T extends AggregateRoot<TState, TDo
      * it with an instance field rather than a static, and a subclass field initializer runs *after*
      * `super()` - so a constructor-time read would see `undefined`.
      */
-    protected abstract get indexes(): SnapshotQuerySet<TState, any, any>;
+    protected abstract get querySet(): SnapshotQuerySet<TState, any, any>;
 
     public get eventStreamRepository(): EventStreamBaseRepository<T, TState, TDomainEvent> { return this._eventStreamRepository; }
 
@@ -250,7 +254,7 @@ export abstract class SnapshotBaseRepository<T extends AggregateRoot<TState, TDo
      */
     protected query(where: string, ...params: ReadonlyArray<any>): Promise<Array<T>>;
     /**
-     * @param {SnapshotPredicate} where - A predicate from {@link indexes}. It carries its own values, so none are passed alongside it.
+     * @param {SnapshotPredicate} where - A predicate from {@link querySet}. It carries its own values, so none are passed alongside it.
      * @returns {Promise<Array<T>>} The deserialized aggregates; empty when nothing matched.
      */
     protected query(where: SnapshotPredicate): Promise<Array<T>>;
