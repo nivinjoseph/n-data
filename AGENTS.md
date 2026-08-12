@@ -1,0 +1,102 @@
+# AGENTS.md
+
+Orientation for AI coding agents working in or against `@nivinjoseph/n-data` — a PostgreSQL data
+access layer over Knex, with event-sourcing repositories, caching, file storage and distributed
+locking. Part of the `@nivinjoseph/n-*` family (DI via `n-ject`, domain types via `n-domain`,
+guards via `n-defensive`, `Duration` via `n-util`).
+
+## Ground rules
+
+- **The interfaces in `src/` are the truth.** Where prose and a signature disagree, the signature
+  wins. Read the interface before writing a call.
+- **ESM only.** `"type": "module"`, `moduleResolution: NodeNext`. Relative imports need explicit
+  `.js` extensions, including from `.ts` sources. There is no CJS build and no `require` export.
+- **Node >= 24.10.**
+- **`src/index.ts` is the whole public surface.** If it is not re-exported there, it is internal —
+  including `MigrationDependencyKey` and `OperationType`, so branching on `DbException.operation`
+  means comparing against the string literals `"query"` / `"command"`.
+- **Guards run before anything else.** Nearly every public method opens with `given(...)` from
+  `n-defensive`. Bad input throws immediately with a message that names the argument, so read the
+  thrown message literally — it is usually the fix.
+
+## Reading order
+
+1. `README.md` — especially the Event Sourcing section, which is the deepest and most current part.
+2. `test-example/README.md` — a compile-checked worked application, plus operational detail the root
+   README does not carry.
+3. `src/index.ts` — the full export list.
+4. `test-example/test/example.test.ts` — end-to-end wiring and the scoping pattern.
+
+For `DbMigrator`, `KnexPgUnitOfWork`, `S3FileStore` and `StoredFile`, read the source: those files
+carry no doc comments. The snapshot and repository files, by contrast, are documented in depth and
+are worth reading before guessing.
+
+## Where the compiler already protects you
+
+Anything routed through `SnapshotQuerySet` / `SnapshotIndex` / `SnapshotArrayIndex` and the snapshot
+repositories is checked at compile time: a path that was never declared, a value of the wrong type,
+a numeric comparison on a path declared without a cast, and an array operator on a scalar path are
+all compile errors. Several errors are phrased as instructions — the *property name* in the error
+text tells you the fix. **Trust the compiler here instead of guessing**, and read the error rather
+than working around it.
+
+One declaration serves as both the migration's index spec and the query-time predicate factory, so
+a queried index is necessarily a created one. Do not hand-write the extraction expressions.
+
+## Traps
+
+Ordered roughly by how expensive they are to get wrong.
+
+- **`querySet` override type.** Type it `typeof MyRepository.indexes`. The base declares
+  `SnapshotQuerySet<TState, any, any>`, so repeating that widened type in the override compiles and
+  silently discards all path and cast checking. See `src/repository/snapshot-base-repository.ts:137`.
+- **A scope is a write boundary.** A scoped repository holds one transient `UnitOfWork`, and `save()`
+  commits it. A committed unit of work is dead, so a second `save()` in the same scope throws
+  `rolling back completed UnitOfWork`, which names neither cause nor fix. One scope per operation;
+  use `saveWithin(value, unitOfWork)` to share a transaction. Lifetimes: `Db` singleton, `UnitOfWork`
+  transient, repositories scoped.
+- **`save` commits, `saveWithin` does not** — and `save` commits the shared unit of work *whole*,
+  including anything another repository queued on it.
+- **`getAll()` takes no arguments and reads everything.** It is not `getByIds([])`, which takes an
+  array and returns nothing. Do not translate a v5 `getAll(...ids)` into `getAll(ids)`.
+- **`DbMigrator` has a required call order.** Configure, then `await bootstrap()`, then
+  `await runMigrations()` — the latter throws if bootstrap has not run. Supply *exactly one* of
+  `useSystemTable(name)` or `registerDbVersionProvider(cls)`; both or neither throws.
+  `useSystemTable` requires an all-lowercase name.
+- **Migration version is parsed from the class name.** `ExDbMigration_1` *is* version 1: exactly one
+  underscore, integer > 0 after it. **Renaming the class renumbers the migration.** Also,
+  `registerMigrations` takes bare `Function`s, so nothing checks that a class implements
+  `DbMigration`.
+- **DDL is `if not exists`, matched on name alone.** The derived index name encodes paths and
+  uniqueness but *not* `JsonValueType`. So adding a numeric cast to an already-indexed path silently
+  keeps the old uncast index, and dropping `.asUnique()` never drops the `_uq` index. Nothing here
+  alters or drops — that takes a hand-written migration.
+- **Expression indexes match textually.** A near-miss expression silently sequential-scans with no
+  error. This is why expressions must come from the declaration.
+- **`@inject` keys are fixed strings.** `"DbConnectionFactory"`, `"ReadDbConnectionFactory"`,
+  `"CacheRedisClient"`, `"RedisClient"`, `"Logger"`. `KnexPgDb` and `KnexPgReadDb` take *different*
+  keys despite the inheritance; the two Redis consumers take *different* keys for the same client
+  type. See the Dependency Injection section of the README.
+- **`InMemoryCacheService` does not check expiry on read.** `retrieve` never consults the eviction
+  map; expiry happens on a 5-minute sweep. A short-TTL value still reads back. Do not write a TTL
+  test against it and conclude the semantics are correct — verify against `RedisCacheService`.
+- **Lock keys are trimmed and lowercased**, so case-distinct ids collide. `RedisCacheService` also
+  prefixes cache keys with `bin_` while `InMemoryCacheService` does not.
+- **`KnexPgDbConnectionFactory` sets `Pg.defaults.ssl` process-wide** — but only on the
+  connection-string overload, not the `DbConnectionConfig` one.
+- **`S3FileStore` holds the caller's config by reference** and mutates `idGenerator` into it. Do not
+  share one config object across two stores.
+- **`DistributedLockConfig.driftFactor` is inert.** It is declared, documented, validated and
+  defaulted, but read nowhere. Do not reach for it to tune behavior.
+
+## Build and test
+
+- `yarn ts-build` — lint plus compile. Compilation is **in place**: `.js`/`.js.map` land beside every
+  `.ts` in `src/` and `test/`. `dist/` is a separate second pass (`yarn ts-build-dist`).
+- `dist/` is checked in and can lag `src/`. Never read it to learn the API — read `src/index.ts`.
+- `yarn test` runs `node --test` over compiled `./test/**/*.test.js` and needs Postgres and Redis via
+  `yarn setup-test-env`. Note the script ends in `|| true`, so **a failing suite still exits 0** —
+  read the output, do not trust the exit code.
+- `test-example/` is compiled and linted by the root config, so a change that breaks the example
+  breaks the build. That is deliberate: it is where API friction shows up as a compile error rather
+  than as an opinion. Keep it compiling.

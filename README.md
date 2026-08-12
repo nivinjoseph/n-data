@@ -39,7 +39,7 @@ yarn add @nivinjoseph/n-data
 
 ## Requirements
 
-- Node.js >= 20.10
+- Node.js >= 24.10
 - PostgreSQL database
 - Redis (for distributed locking and caching features)
 
@@ -51,11 +51,12 @@ yarn add @nivinjoseph/n-data
 import { KnexPgDb, DbConnectionConfig, KnexPgDbConnectionFactory } from '@nivinjoseph/n-data';
 
 // Configure database connection
+// Every field is a string, including port
 const config: DbConnectionConfig = {
     host: 'localhost',
-    port: 5432,
+    port: '5432',
     database: 'mydb',
-    user: 'postgres',
+    username: 'postgres',
     password: 'password'
 };
 
@@ -73,6 +74,52 @@ await db.executeCommand('INSERT INTO users (name, age) VALUES (?, ?)', 'John', 3
 await db.executeCommand('UPDATE users SET age = ? WHERE name = ?', 31, 'John');
 await db.executeCommand('DELETE FROM users WHERE name = ?', 'John');
 ```
+
+### Dependency Injection
+
+The implementation classes carry `@inject` decorators, so they resolve only if you register
+their dependencies under the exact keys they ask for. The keys are not configurable:
+
+| Class | Injects |
+| --- | --- |
+| `KnexPgReadDb` | `"ReadDbConnectionFactory"` |
+| `KnexPgDb` | `"DbConnectionFactory"` |
+| `KnexPgUnitOfWork` | `"DbConnectionFactory"` |
+| `RedisCacheService` | `"CacheRedisClient"` |
+| `RedisDistributedLockService` | `"RedisClient"` |
+| `DbMigrationScriptRunner` | `"Logger"` |
+
+Two of these are easy to get backwards. `KnexPgDb` extends `KnexPgReadDb`, but the two take
+**different** keys — register both factories if you use both classes. And the two Redis
+consumers take **different** keys for the same client type: `"CacheRedisClient"` for caching,
+`"RedisClient"` for locking.
+
+```typescript
+registry
+    .registerInstance("Logger", logger)
+    .registerInstance("DbConnectionFactory", new KnexPgDbConnectionFactory(dbConfig))
+    .registerSingleton("Db", KnexPgDb)
+    .registerTransient("UnitOfWork", KnexPgUnitOfWork);
+```
+
+**The lifetimes are load-bearing**, and getting one wrong produces a runtime error that names
+neither the cause nor the fix:
+
+- **`Db` is a singleton** — it wraps the connection pool, which is meant to be shared.
+- **`UnitOfWork` is transient.** It is single-use by construction: it holds one transaction,
+  and once committed or rolled back *every* method on it throws. A singleton would hand a dead
+  transaction to the second caller and accumulate commit callbacks across unrelated operations.
+- **Repositories are scoped**, so each scope resolves its own repository over its own unit of work.
+
+The consequence is that **a scope is a write boundary, not just a resolution boundary.** A scoped
+repository holds exactly one unit of work, and `save` with no explicit unit of work commits it. A
+committed unit of work is dead, so **a second `save` in the same scope fails** from inside the
+repository with `rolling back completed UnitOfWork`.
+
+One scope per operation is therefore the model — which a web application gets for free by scoping
+per request. Two writes that must share a transaction take an explicit unit of work instead, via
+`saveWithin`. See `test-example/common/ioc/common-installer.ts` for a complete installer and
+`test-example/test/example.test.ts` for the scoping pattern.
 
 ### Unit of Work
 
@@ -313,6 +360,7 @@ Both belong to the **snapshot** repositories only. An event stream repository re
 
 Things to get right:
 
+- **Type the `querySet` override as `typeof MyRepository.indexes`, never as `SnapshotQuerySet<TState, any, any>`.** The base class declares it widened, because it cannot name your set's type — so writing that same widened type in the override *compiles*, and silently discards path and cast checking while keeping value checking. Every guarantee in this section is then gone, with nothing failing to tell you. Return the set through `typeof`, as every example here does, and the declared paths flow into the type. This is the single highest-cost mistake available in this API, and it does not announce itself.
 - **Every expression comes from a declaration.** Postgres only uses an expression index when the query expression matches the indexed one *textually*. A near-miss — `data->>'total'` against an index on `((data->>'total')::numeric)` — silently falls back to a sequential scan, with no error and no warning. The expression *builder* is private to `SnapshotIndex`, so an expression can only originate from a declaration that also emits the DDL, and the set hands back the exact string its index was created from. A planner test proves the match, and proves the near-miss above does not.
 - **A query can only name a path the set declared.** Not merely one that exists on the state: `TIndexed` is the record of declared paths, so `eq("placedAt", …)` on an undeclared path is a compile error, and so is `orderBy` or `expressionFor` on one. That is what closes the gap the older pattern left open, where an index could be declared, queried, and never actually created.
 - **A numeric path needs a cast to be compared as a number.** `withPath("total", { type: JsonValueType.numeric })` is what makes `gt("total", 100)` compile; declared without one, the same call is rejected, because an uncast extraction compares as text and `'9' > '100'`. Text needs no cast (Postgres elides a redundant `::text`), and a boolean compares correctly as `'true'`/`'false'` for equality.
@@ -392,12 +440,20 @@ await redisClient.close();
 ### File Storage
 
 ```typescript
-import { S3FileStore, S3FileStoreConfig } from '@nivinjoseph/n-data';
+import { S3FileStore, S3FileStoreConfig, StoredFile } from '@nivinjoseph/n-data';
+import { Duration } from '@nivinjoseph/n-util';
 
-// Configure S3 storage
+// Configure S3 storage. Two buckets, not one: `makePublic` copies an object from the
+// private bucket into the public one — the private copy stays. `storedFileSignatureKey`
+// is required; it signs the StoredFile, and reads verify that signature, so a client
+// cannot hand back a tampered one.
 const config: S3FileStoreConfig = {
     region: 'us-east-1',
-    bucket: 'my-bucket',
+    privateBucket: 'my-private-bucket',
+    publicBucket: 'my-public-bucket',
+    storedFileSignatureKey: 'a-secret-signing-key',
+    // Optional, and all-or-nothing: supply both or neither. Omitted, the AWS SDK
+    // resolves credentials from the environment as usual.
     accessKeyId: 'your-access-key',
     secretAccessKey: 'your-secret-key'
 };
@@ -405,27 +461,48 @@ const config: S3FileStoreConfig = {
 // Create file store
 const fileStore = new S3FileStore(config);
 
-// Store and retrieve files
-await fileStore.store('path/to/file.txt', buffer);
-const file = await fileStore.retrieve('path/to/file.txt');
+// `store` returns a StoredFile — the handle every other method takes. It carries the
+// name, ext, size, mime, hash, signature and urls; it is not a path string.
+const stored: StoredFile = await fileStore.store('report.pdf', buffer);
+
+// Reads take the StoredFile, not a path
+const data: Buffer = await fileStore.retrieve(stored);
+
+// Promote to the public bucket; returns a new StoredFile carrying `publicUrl`
+const published = await fileStore.makePublic(stored);
+
+// Or hand the client a presigned url instead of proxying the bytes. Both return a
+// StoredFile whose `privateUrl` is the presigned url — despite the name, that is the
+// field to hand out. Default and maximum expiry is 7 days.
+const upload = await fileStore.createSignedUpload('report.pdf', buffer.length, fileHash);
+const download = await fileStore.createSignedDownload(stored, Duration.fromHours(1));
 ```
+
+`StoredFile` is a serializable domain entity, so it round-trips through your own storage:
+persist it beside whatever references the file, and pass it back to `retrieve` later.
+Reads verify its signature, so it must round-trip intact.
 
 ### Distributed Locking
 
 ```typescript
 import { RedisDistributedLockService, DistributedLockConfig } from '@nivinjoseph/n-data';
 import { Duration } from '@nivinjoseph/n-util';
+import { createClient } from 'redis';
 
-// Configure distributed lock
+// The service takes a Redis client — it does not connect for you, so there is no
+// host/port on the config
+const redisClient = await createClient({}).connect();
+
+// Optional. Every field has a default, so `new RedisDistributedLockService(client)`
+// is the normal case. Durations are `Duration`, not numbers.
 const config: DistributedLockConfig = {
-    host: 'localhost',
-    port: 6379,
     retryCount: 3,
-    retryDelay: 1000
+    retryDelay: Duration.fromMilliSeconds(400),
+    retryJitter: Duration.fromMilliSeconds(200)
 };
 
-// Create lock service
-const lockService = new RedisDistributedLockService(config);
+// Create lock service — client first, config second and optional
+const lockService = new RedisDistributedLockService(redisClient, config);
 
 // Acquire and release locks
 const lock = await lockService.lock('resource-key', Duration.fromSeconds(30));
@@ -435,6 +512,16 @@ try {
     await lock.release();
 }
 ```
+
+Two things to know about keys:
+
+- **Lock keys are trimmed and lowercased.** `lock('UserA')` and `lock('usera')` take the
+  same lock. If your keys are case-sensitive ids, prefix or encode them so two distinct
+  ids cannot fold together. `UnableToAcquireDistributedLockException` reports the
+  transformed key, not the one you passed.
+- **`RedisCacheService` prefixes cache keys with `bin_`; `InMemoryCacheService` does
+  not.** The two `CacheService` implementations are therefore not reading each other's
+  keys — relevant only if you swap implementations against data already in Redis.
 
 ## Contributing
 
