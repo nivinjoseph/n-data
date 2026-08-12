@@ -23,6 +23,7 @@ export { DbMigrationScriptRunner } from "./migration/db-migration-script-runner.
 export { DbTableCreator, SnapshotTableInfo, SnapshotTableIndexInfo, SnapshotTableOptions } from "./migration/db-table-creator.js";
 export { SnapshotIndex, SnapshotPath, JsonValueType } from "./migration/snapshot-index.js";
 export { SnapshotArrayIndex, SnapshotArrayPath, SnapshotArrayContainment, SnapshotArrayPredicate, SnapshotElementMatch, JsonScalar } from "./migration/snapshot-array-index.js";
+export { SnapshotQuerySet, SnapshotPredicate, SnapshotOrderBy, SnapshotPathSpec, SnapshotNumericType } from "./migration/snapshot-query-set.js";
 
 export { CacheService } from "./caching/cache-service.js";
 export { InMemoryCacheService } from "./caching/in-memory-cache-service.js";
@@ -39,6 +40,7 @@ export { S3FileStore } from "./file-store/s3-file-store.js";
 export { DataHelper, AggregateRootClass, AggregateRootClassOf, OrgAggregateRootClass, OrgAggregateRootClassOf } from "./repository/data-helper.js";
 export { Repository } from "./repository/repository.js";
 export { BaseRepository } from "./repository/base-repository.js";
+export { RepositoryQuery } from "./repository/repository-query.js";
 export { AggregateNotFoundException } from "./repository/aggregate-not-found-exception.js";
 export { EventStreamBaseRepository } from "./repository/event-stream-base-repository.js";
 export { OrgEventStreamBaseRepository } from "./repository/org-event-stream-base-repository.js";
