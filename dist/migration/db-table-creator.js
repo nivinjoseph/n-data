@@ -106,20 +106,87 @@ export class DbTableCreator {
             }]);
         return tableName;
     }
-    async createSnapshotTableForAggregate(aggregateType, indexesOrOptions) {
+    /**
+     * Creates the snapshot table for a plain aggregate.
+     *
+     * The snapshot table holds the latest materialized state of each aggregate, keyed by its
+     * `id` (the primary key, which is already indexed - so no index over `id` is created).
+     * The table name is derived via {@link DataHelper.createSnapshotTableName}.
+     *
+     * Each entry in `indexes` produces one expression index over the keys it names inside `data`; no
+     * column is added. Each entry in `arrayIndexes` produces a GIN containment index over the array
+     * as jsonb, which is what answers membership questions of it. Omit the argument entirely for a
+     * table with no indexes at all.
+     *
+     * `TState` is inferred from `aggregateType`, so every index's paths are checked against the
+     * aggregate's real state shape.
+     *
+     * **Prefer passing the repository's `SnapshotQuerySet`.** It carries both kinds of declaration and
+     * is the same object the repository builds its predicates from, so an index that is queried is
+     * necessarily one that was created. It satisfies `SnapshotTableOptions` by shape - `indexes` and
+     * `arrayIndexes` are exactly its two getters - so it needs no unwrapping here.
+     *
+     * The bare array of `SnapshotIndex` this used to accept is gone, and both fields of the options
+     * object are now required: that form had nowhere to put array indexes, so handing over
+     * `querySet.indexes` created every btree index, silently omitted every GIN one, and left
+     * `contains` sequential-scanning with nothing failing at migration time. Declaring btree indexes
+     * and no array ones is still perfectly legal - it is now spelt `arrayIndexes: []`, which says so.
+     *
+     * @param {AggregateRootClassOf<TState>} aggregateType - The aggregate class whose snapshot table is created.
+     * @param {SnapshotTableOptions<TState>} [options] - A repository's `SnapshotQuerySet`, or the two index collections. Omit for no indexes.
+     * @returns {Promise<SnapshotTableInfo>} A promise that resolves to the table's name and the indexes as created.
+     * @throws {ArgumentNullException} If aggregateType is null or undefined, or an element of either collection is null or undefined.
+     * @throws {ArgumentException} If aggregateType is not a function, the derived table or index name is invalid, or the indexes are invalid or duplicated.
+     * @throws {DbException} If a DDL command fails.
+     */
+    async createSnapshotTableForAggregate(aggregateType, options) {
         const tableName = this._validateTableName(DataHelper.createSnapshotTableName(aggregateType));
-        const { indexes, arrayIndexes } = this._normalizeOptions(indexesOrOptions);
+        const { indexes, arrayIndexes } = this._readOptions(options);
         this._validateIndexes(indexes, arrayIndexes);
         const plan = this._planIndexes(tableName, indexes, arrayIndexes);
         await this._createTable(tableName, [
             "id varchar(40) primary key",
             "data jsonb not null"
         ], plan.tableIndexes);
-        return { tableName, indexes: plan.infos };
+        return { tableName, createdIndexes: plan.infos };
     }
-    async createSnapshotTableForOrgAggregate(aggregateType, indexesOrOptions) {
+    /**
+     * Creates the snapshot table and its index for an organization-scoped aggregate.
+     *
+     * Like {@link createSnapshotTableForAggregate} but adds a non-null `organization_id`
+     * column, and every index leads with it because `OrgSnapshotBaseRepository` requires every query
+     * to constrain it - `get` and `getAll` do so themselves, and `query` obliges the caller to.
+     *
+     * When no btree `indexes` are given, an index over `(organization_id)` is created to support
+     * org-scoped scans. When there are, each of them already leads with `organization_id`,
+     * making a standalone one a strict subset of an index being built anyway - so it is skipped.
+     * That is sound rather than merely plausible: constraining a leading column alone does use the
+     * composite index, which is verified against Postgres by a planner test.
+     *
+     * An `arrayIndexes` declaration does **not** count towards that: a GIN index cannot lead with
+     * `organization_id`, because a multicolumn GIN over a varchar column needs the `btree_gin`
+     * extension, which is not trusted on Postgres 12 and would demand superuser at migration time. So
+     * a table whose only indexes are array ones still gets the standalone `(organization_id)` index -
+     * both to serve a plain org-scoped scan, and to give the planner something to BitmapAnd the GIN
+     * scan against.
+     *
+     * `TState` is inferred from `aggregateType`, so every index's paths are checked against the
+     * aggregate's real state shape.
+     *
+     * **Prefer passing the repository's `SnapshotQuerySet`**, for the same reason as on the plain
+     * variant: it is the object the repository queries through, so a declared index and a created one
+     * cannot diverge. Both fields of the options object are required for the reason given there.
+     *
+     * @param {OrgAggregateRootClassOf<TState>} aggregateType - The org-scoped aggregate class whose snapshot table is created.
+     * @param {SnapshotTableOptions<TState>} [options] - A repository's `SnapshotQuerySet`, or the two index collections. Omit for no indexes.
+     * @returns {Promise<SnapshotTableInfo>} A promise that resolves to the table's name and the indexes as created.
+     * @throws {ArgumentNullException} If aggregateType is null or undefined, or an element of either collection is null or undefined.
+     * @throws {ArgumentException} If aggregateType is not a function, the derived table or index name is invalid, or the indexes are invalid or duplicated.
+     * @throws {DbException} If a DDL command fails.
+     */
+    async createSnapshotTableForOrgAggregate(aggregateType, options) {
         const tableName = this._validateTableName(DataHelper.createSnapshotTableName(aggregateType));
-        const { indexes, arrayIndexes } = this._normalizeOptions(indexesOrOptions);
+        const { indexes, arrayIndexes } = this._readOptions(options);
         this._validateIndexes(indexes, arrayIndexes);
         const plan = this._planIndexes(tableName, indexes, arrayIndexes, "organization_id");
         // appended rather than unshifted, so the emission order of the declared indexes is unmoved
@@ -133,7 +200,7 @@ export class DbTableCreator {
             "organization_id varchar(40) not null",
             "data jsonb not null"
         ], plan.tableIndexes);
-        return { tableName, indexes: plan.infos };
+        return { tableName, createdIndexes: plan.infos };
     }
     /**
      * Validates an index name against Postgres's constraints and returns it trimmed.
@@ -174,25 +241,29 @@ export class DbTableCreator {
         return this.validateIndexName(indexName);
     }
     /**
-     * Resolves the two accepted second-argument shapes into one.
+     * Reads the two index collections off the options, or off a query set, which satisfies the same
+     * shape.
      *
-     * The bare array is the original signature and stays supported: every existing migration passes
-     * one. The object form is what a second index kind needs, and what a third would extend.
+     * Trivial by design, which is the change. It used to resolve three accepted shapes - a bare
+     * `SnapshotIndex` array, an options object with both fields optional, or a query set - and the
+     * bare array had nowhere to carry array indexes, so the shape a caller picked silently decided
+     * whether their GIN indexes got created. The array form is gone and both fields are required, so
+     * the only thing left to resolve is whether an argument was given at all.
      *
-     * @param {ReadonlyArray<SnapshotIndex<any>> | SnapshotTableOptions<any>} [value] - The caller's second argument.
-     * @returns {SnapshotTableOptions<any>} The two collections, either of which may be absent.
-     * @throws {ArgumentException} If value is neither an array nor an object.
+     * The guard is what stops a JavaScript caller passing a scalar: without it the two reads would
+     * come back undefined and the table would be created with no indexes, which fails nowhere and
+     * shows up later as a sequential scan. An array trips it too, and is meant to - it is the form
+     * that was removed, so the error is the migration instruction.
+     *
+     * @param {SnapshotTableOptions<any>} [options] - The caller's options, a query set, or nothing.
+     * @returns The btree and GIN declarations, in declaration order.
+     * @throws {ArgumentException} If options is neither absent nor an options-shaped object.
      */
-    _normalizeOptions(value) {
-        if (value == null)
-            return {};
-        if (Array.isArray(value))
-            return { indexes: value };
-        // guards a scalar arriving from JavaScript: without this it would fall through, read two
-        // undefined properties, and silently create a table with no indexes at all. It sits after the
-        // array branch because an array is not an object to n-defensive.
-        given(value, "indexes").ensureIsObject();
-        const options = value;
+    _readOptions(options) {
+        if (options == null)
+            return { indexes: [], arrayIndexes: [] };
+        given(options, "options").ensureIsObject()
+            .ensure(t => !Array.isArray(t), "options is an array; the bare index array is no longer accepted - pass { indexes, arrayIndexes }, or the repository's SnapshotQuerySet");
         return { indexes: options.indexes, arrayIndexes: options.arrayIndexes };
     }
     /**

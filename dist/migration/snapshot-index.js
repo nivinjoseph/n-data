@@ -65,34 +65,31 @@ export var JsonValueType;
  * because Postgres uses an expression index only when the query expression matches the indexed one
  * **textually**, and a near-miss silently becomes a sequential scan with no error and no warning.
  * The builder that produces an expression is private, so an expression can only originate from a
- * declaration that also emits the DDL - which is what makes the two impossible to diverge. So
- * declare each index next to the repository that queries
- * it, and let the migration consume the same declarations.
+ * declaration that also emits the DDL - which is what makes the two impossible to diverge.
+ *
+ * **`SnapshotQuerySet` is how a repository normally declares these, and reaching for this class
+ * directly is the exception.** The set binds the state in its own call, which is what lets it infer
+ * each path as a string *literal* and so check a query's paths against what is actually indexed rather
+ * than merely against the state shape. That is not available here: TypeScript has no partial
+ * type-argument inference, so `forPath<OrderState>("status")` - supplying the state explicitly - cannot
+ * also infer the path.
+ *
+ * What this class is still for is the path a typed signature cannot name: a computed or dynamic key, a
+ * `$`-prefixed serialized name, or a whole subtree, all through {@link forRawPath}. Pass such a
+ * declaration to `DbTableCreator` alongside a set, or on its own.
  *
  * @example
  * ```typescript
- * export class OrderRepository extends SnapshotBaseRepository<Order, OrderState, OrderEvent>
- * {
- *     public static readonly statusIndex = SnapshotIndex.forPath<OrderState>("status");
- *     public static readonly totalIndex = SnapshotIndex.forPath<OrderState>("total", JsonValueType.numeric);
- *     public static readonly skuIndex = SnapshotIndex.forPath<OrderState>("tenantCode").andPath("sku").asUnique();
+ * // the escape hatch: a key outside the state shape, which SnapshotQuerySet cannot name
+ * const legacyIndex = SnapshotIndex.forRawPath<OrderState>("$legacyCode");
  *
- *     public static readonly snapshotIndexes: ReadonlyArray<SnapshotIndex<OrderState>> =
- *         [OrderRepository.statusIndex, OrderRepository.totalIndex, OrderRepository.skuIndex];
+ * await tableCreator.createSnapshotTableForAggregate(Order, {
+ *     indexes: [...OrderRepository.indexes.indexes, legacyIndex],
+ *     arrayIndexes: OrderRepository.indexes.arrayIndexes
+ * });
  *
- *     // resolved at module load, so a path this index does not cover throws at startup rather than
- *     // on the first call to an untested query method
- *     private static readonly _statusExpression = OrderRepository.statusIndex.expressionForPath("status");
- *
- *     public getByStatus(status: string): Promise<Array<Order>>
- *     {
- *         return this.query(
- *             `select data from ${this.table} where ${OrderRepository._statusExpression} = ?;`, status);
- *     }
- * }
- *
- * // in the migration
- * await tableCreator.createSnapshotTableForAggregate(Order, OrderRepository.snapshotIndexes);
+ * // and the predicate for it, built from the same declaration
+ * const expression = legacyIndex.expressionForRawPath("$legacyCode");
  * ```
  *
  * @class SnapshotIndex
@@ -230,7 +227,7 @@ export class SnapshotIndex {
      *
      * @param {string} path - The key to add.
      * @param {JsonValueType} [type] - Optional type to cast this path's extracted text to.
-     * @returns {this} This index, for chaining.
+     * @returns {this} A new index covering this one's paths and that one - the receiver is unchanged.
      * @throws {ArgumentNullException} If path is null or undefined.
      * @throws {ArgumentException} If path is not a string, is empty or whitespace, is not one or more '.' delimited bare JSON keys, is already indexed by this index, or type is not a JsonValueType.
      */
@@ -241,10 +238,11 @@ export class SnapshotIndex {
         // InvalidOperationException when the arg name is "this" - which would make this the one
         // guard in the API raising a different branch of the exception hierarchy
         given(trimmedPath, "path").ensure(t => !this._expressionsByPath.has(t), `path '${trimmedPath}' is already indexed by this index`);
+        const next = this._clone();
         // built eagerly, so a malformed path or type throws at the declaration site; and built once,
         // so the expression the index is created from is the same one handed back for predicates
-        this._expressionsByPath.set(trimmedPath, SnapshotIndex._createExpression(trimmedPath, type));
-        return this;
+        next._expressionsByPath.set(trimmedPath, SnapshotIndex._createExpression(trimmedPath, type));
+        return next;
     }
     /**
      * The expression that extracts `path`, for building a query predicate.
@@ -257,8 +255,9 @@ export class SnapshotIndex {
      * the state but belonging to a different index throws, so read the expression into a `static`
      * field where that surfaces at module load. And matching the expression is necessary, not
      * sufficient: btree serves only a leading prefix of an index's columns, so the second path of a
-     * composite is not independently searchable, and on an org-scoped table nothing is until the
-     * predicate also constrains `organization_id`.
+     * composite is not independently searchable. On an org-scoped table nothing is searchable until
+     * the predicate also constrains `organization_id` - which `OrgSnapshotBaseRepository.query` does
+     * for you, ahead of whatever predicate you pass it.
      *
      * @param {SnapshotPath<T>} path - A path this index covers, checked against the state shape.
      * @returns {string} The parenthesized extraction expression, e.g. `(data->>'status')`.
@@ -312,11 +311,12 @@ export class SnapshotIndex {
      * `if not exists` and nothing here drops anything, so the constraint stays enforced until the
      * index is dropped by hand.
      *
-     * @returns {this} This index, for chaining.
+     * @returns {this} A new index, unique - the receiver is unchanged.
      */
     asUnique() {
-        this._isUnique = true;
-        return this;
+        const next = this._clone();
+        next._isUnique = true;
+        return next;
     }
     /**
      * Overrides the derived name suffix, giving `idx_<table>_<name>` (plus `_uq` when unique).
@@ -325,7 +325,7 @@ export class SnapshotIndex {
      * characters, which a composite over a long table name will.
      *
      * @param {string} name - The suffix to use.
-     * @returns {this} This index, for chaining.
+     * @returns {this} A new index under that name - the receiver is unchanged.
      * @throws {ArgumentNullException} If name is null or undefined.
      * @throws {ArgumentException} If name is not a string, is empty or whitespace, is not a valid identifier fragment, or is already set.
      */
@@ -335,8 +335,29 @@ export class SnapshotIndex {
             // named for the argument rather than `this`, so this throws ArgumentException like the
             // rest of the API instead of InvalidOperationException
             .ensure(() => this._name == null, "name is already set");
-        this._name = name.trim();
-        return this;
+        const next = this._clone();
+        next._name = name.trim();
+        return next;
+    }
+    /**
+     * Copy-on-write, so each builder call hands back a new index and the receiver stays as it was.
+     *
+     * This matches `SnapshotQuerySet`, which has always cloned. The two used to disagree: `andPath`,
+     * `asUnique` and `withName` returned `this` and mutated in place, so `const b = a.asUnique()` left
+     * `a` unique as well - and carrying one builder's mental model over to the other silently changed
+     * what got created. `SnapshotTableInfo` even documented the consequence, that a builder mutated
+     * after a create call still answered for a path no index covered. It cannot now.
+     *
+     * The `this` return type is kept rather than widened to `SnapshotIndex<T>`: the constructor is
+     * private, so there is no subclass for the two to differ on, and keeping it means no signature
+     * here changed shape.
+     */
+    _clone() {
+        const next = new SnapshotIndex();
+        this._expressionsByPath.forEach((v, k) => next._expressionsByPath.set(k, v));
+        next._isUnique = this._isUnique;
+        next._name = this._name;
+        return next;
     }
 }
 //# sourceMappingURL=snapshot-index.js.map

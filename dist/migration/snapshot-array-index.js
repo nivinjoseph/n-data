@@ -25,6 +25,12 @@ import { given } from "@nivinjoseph/n-defensive";
  * index is written; and the same instance hands the expression back inside a predicate, so the
  * written index and the query cannot diverge.
  *
+ * **A repository normally declares these through `SnapshotQuerySet.withArrayPath`**, whose
+ * `contains` / `containsAll` / `containsAny` delegate straight to the containment built here - so the
+ * predicates are the same, and the paths get checked against what the repository actually indexed.
+ * Reach for this class directly for an array key a typed path cannot name, through
+ * {@link forRawPath}.
+ *
  * @example
  * ```typescript
  * interface Member { userId: string; role: string; isDeactivated: boolean; }
@@ -32,28 +38,24 @@ import { given } from "@nivinjoseph/n-defensive";
  *
  * export class TeamRepository extends SnapshotBaseRepository<Team, TeamState, TeamEvent>
  * {
- *     public static readonly membersIndex = SnapshotArrayIndex.forPath<TeamState>("members");
+ *     public static readonly indexes = SnapshotQuerySet.for<TeamState>().withArrayPath("members");
  *
- *     public static readonly snapshotArrayIndexes: ReadonlyArray<SnapshotArrayIndex<TeamState>> =
- *         [TeamRepository.membersIndex];
+ *     protected override get querySet(): typeof TeamRepository.indexes { return TeamRepository.indexes; }
  *
- *     // resolved at module load, so a path this index does not cover throws at startup rather than
- *     // on the first call to an untested query method
- *     private static readonly _members = TeamRepository.membersIndex.containmentForPath("members");
+ *     public constructor(eventStreamRepository: TeamEventStreamRepository)
+ *     {
+ *         super(eventStreamRepository);
+ *     }
  *
  *     public getActiveTeamsForUser(userId: string): Promise<Array<Team>>
  *     {
  *         // ONE containment document: both fields must hold on the SAME member element
- *         const predicate = TeamRepository._members.contains({ userId, isDeactivated: false });
- *
- *         return this.query(`select data from ${this.table} where ${predicate.sql};`, ...predicate.params);
+ *         return this.query(this.querySet.contains("members", { userId, isDeactivated: false }));
  *     }
  * }
  *
  * // in the migration
- * await tableCreator.createSnapshotTableForAggregate(Team, {
- *     arrayIndexes: TeamRepository.snapshotArrayIndexes
- * });
+ * await tableCreator.createSnapshotTableForAggregate(Team, TeamRepository.indexes);
  * ```
  *
  * @class SnapshotArrayIndex
@@ -224,7 +226,7 @@ export class SnapshotArrayIndex {
      * characters.
      *
      * @param {string} name - The suffix to use.
-     * @returns {this} This index, for chaining.
+     * @returns {this} A new index under that name - the receiver is unchanged.
      * @throws {ArgumentNullException} If name is null or undefined.
      * @throws {ArgumentException} If name is not a string, is empty or whitespace, is not a valid identifier fragment, or is already set.
      */
@@ -234,8 +236,12 @@ export class SnapshotArrayIndex {
             // named for the argument rather than `this`, so this throws ArgumentException like the
             // rest of the API instead of InvalidOperationException
             .ensure(() => this._name == null, "name is already set");
-        this._name = name.trim();
-        return this;
+        // copy-on-write, matching `SnapshotIndex` and `SnapshotQuerySet`. The `this` return type is
+        // kept rather than widened: the constructor is private, so there is no subclass for the two
+        // to differ on, and keeping it means this signature did not change shape
+        const next = new SnapshotArrayIndex(this._path);
+        next._name = name.trim();
+        return next;
     }
     /**
      * The containment predicate builders for `path`, for building a query predicate.
@@ -301,8 +307,10 @@ export class SnapshotArrayIndex {
             },
             containsAny(matches) {
                 SnapshotArrayIndex._validateMatches(matches, "matches");
-                // the outer parens are not cosmetic: `where organization_id = ? and A or B` binds
-                // `or` at the top and returns other organizations' rows
+                // the outer parens are not cosmetic: spliced beside another term, `A or B` bare would
+                // bind `or` at the top and match rows neither term was meant to reach. The repository's
+                // query builder parenthesizes the whole predicate for the same reason; this keeps the
+                // fragment safe to compose before it gets there.
                 return {
                     sql: `(${matches.map(() => term).join(" or ")})`,
                     params: matches.map(t => toDocument([t]))

@@ -1,4 +1,5 @@
 import { PreviousDepth } from "./snapshot-index.js";
+import type { SnapshotPredicate } from "./snapshot-query-set.js";
 /**
  * The scalars jsonb carries, and so the only values this API can match.
  *
@@ -78,8 +79,12 @@ export type SnapshotArrayPath<T> = Exclude<SnapshotContainerArrayPath<T>, "organ
  * This is what lets {@link SnapshotArrayIndex.containmentForPath} type its match argument against the
  * *element* shape rather than against `any`, with no explicit type argument at the call site: the
  * path is inferred from the string literal, and the element type follows from it.
+ *
+ * Exported from the module so `SnapshotQuerySet` can type its containment methods the same way, but
+ * deliberately absent from the barrel: it is how those signatures are built, not a type a consumer
+ * names.
  */
-type SnapshotArrayElement<T, TPath extends string> = TPath extends `${infer THead}.${infer TRest}` ? THead extends keyof T ? SnapshotArrayElement<NonNullable<T[THead]>, TRest> : never : TPath extends keyof T ? NonNullable<T[TPath]> extends ReadonlyArray<infer TElement> ? NonNullable<TElement> : never : never;
+export type SnapshotArrayElement<T, TPath extends string> = TPath extends `${infer THead}.${infer TRest}` ? THead extends keyof T ? SnapshotArrayElement<NonNullable<T[THead]>, TRest> : never : TPath extends keyof T ? NonNullable<T[TPath]> extends ReadonlyArray<infer TElement> ? NonNullable<TElement> : never : never;
 /**
  * A partial of `TElement` carrying **at least one** key.
  *
@@ -104,14 +109,17 @@ export type SnapshotElementMatch<TElement> = [
 /**
  * A predicate fragment and the values that bind to its `?` placeholders, in order.
  *
- * The two are produced by one call and never separately, because for a variadic predicate the
+ * A {@link SnapshotPredicate} whose parameters are known to be jsonb documents - which is the whole
+ * of the difference, and why this is a subtype rather than an alias. Being narrower, it goes
+ * anywhere a `SnapshotPredicate` goes: straight to a repository's `query`, or into
+ * `SnapshotQuerySet.and`/`or` alongside the scalar predicates, with no adaptation and nothing to
+ * splice by hand.
+ *
+ * The two halves are produced by one call and never separately, because for a variadic predicate the
  * placeholder count is not fixed - {@link SnapshotArrayContainment.containsAny} over three matches
- * emits three. Splice `sql` into the where clause and spread `params` into the call in the **same
- * order the fragment appears**: `where organization_id = ? and ${p.sql}` takes
- * `[orgId, ...p.params]`, and the reverse order takes `[...p.params, orgId]`. Positional binding is
- * unforgiving.
+ * emits three, and pairing them up afterwards is not something a caller should be doing.
  */
-export interface SnapshotArrayPredicate {
+export interface SnapshotArrayPredicate extends SnapshotPredicate {
     /**
      * A fully parenthesized boolean fragment, e.g. `((data->'members') @> cast(? as jsonb))`.
      */
@@ -119,6 +127,9 @@ export interface SnapshotArrayPredicate {
     /**
      * The jsonb documents to bind, already serialized, positionally matching {@link sql}'s
      * placeholders.
+     *
+     * Narrower than `SnapshotPredicate.params`, which is `ReadonlyArray<any>`: every value here has
+     * already been through `JSON.stringify`. That narrowing is why the two types stayed separate.
      */
     readonly params: ReadonlyArray<string>;
 }
@@ -206,6 +217,12 @@ export interface SnapshotArrayContainment<TElement> {
  * index is written; and the same instance hands the expression back inside a predicate, so the
  * written index and the query cannot diverge.
  *
+ * **A repository normally declares these through `SnapshotQuerySet.withArrayPath`**, whose
+ * `contains` / `containsAll` / `containsAny` delegate straight to the containment built here - so the
+ * predicates are the same, and the paths get checked against what the repository actually indexed.
+ * Reach for this class directly for an array key a typed path cannot name, through
+ * {@link forRawPath}.
+ *
  * @example
  * ```typescript
  * interface Member { userId: string; role: string; isDeactivated: boolean; }
@@ -213,28 +230,24 @@ export interface SnapshotArrayContainment<TElement> {
  *
  * export class TeamRepository extends SnapshotBaseRepository<Team, TeamState, TeamEvent>
  * {
- *     public static readonly membersIndex = SnapshotArrayIndex.forPath<TeamState>("members");
+ *     public static readonly indexes = SnapshotQuerySet.for<TeamState>().withArrayPath("members");
  *
- *     public static readonly snapshotArrayIndexes: ReadonlyArray<SnapshotArrayIndex<TeamState>> =
- *         [TeamRepository.membersIndex];
+ *     protected override get querySet(): typeof TeamRepository.indexes { return TeamRepository.indexes; }
  *
- *     // resolved at module load, so a path this index does not cover throws at startup rather than
- *     // on the first call to an untested query method
- *     private static readonly _members = TeamRepository.membersIndex.containmentForPath("members");
+ *     public constructor(eventStreamRepository: TeamEventStreamRepository)
+ *     {
+ *         super(eventStreamRepository);
+ *     }
  *
  *     public getActiveTeamsForUser(userId: string): Promise<Array<Team>>
  *     {
  *         // ONE containment document: both fields must hold on the SAME member element
- *         const predicate = TeamRepository._members.contains({ userId, isDeactivated: false });
- *
- *         return this.query(`select data from ${this.table} where ${predicate.sql};`, ...predicate.params);
+ *         return this.query(this.querySet.contains("members", { userId, isDeactivated: false }));
  *     }
  * }
  *
  * // in the migration
- * await tableCreator.createSnapshotTableForAggregate(Team, {
- *     arrayIndexes: TeamRepository.snapshotArrayIndexes
- * });
+ * await tableCreator.createSnapshotTableForAggregate(Team, TeamRepository.indexes);
  * ```
  *
  * @class SnapshotArrayIndex
@@ -370,7 +383,7 @@ export declare class SnapshotArrayIndex<T> {
      * characters.
      *
      * @param {string} name - The suffix to use.
-     * @returns {this} This index, for chaining.
+     * @returns {this} A new index under that name - the receiver is unchanged.
      * @throws {ArgumentNullException} If name is null or undefined.
      * @throws {ArgumentException} If name is not a string, is empty or whitespace, is not a valid identifier fragment, or is already set.
      */

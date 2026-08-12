@@ -1,7 +1,6 @@
 import { DomainContext } from "@nivinjoseph/n-domain";
 import { Logger } from "@nivinjoseph/n-log";
 import { Db } from "../db/db.js";
-import { QueryResult } from "../db/query-result.js";
 import { UnitOfWork } from "../unit-of-work/unit-of-work.js";
 /**
  * Non-generic base for all aggregate repository implementations.
@@ -35,18 +34,5 @@ export declare abstract class BaseRepository {
      * @param {string} table - The backing table name for this repository.
      */
     protected constructor(domainContext: DomainContext, db: Db, unitOfWork: UnitOfWork, logger: Logger, table: string);
-    /**
-     * Executes a raw SQL query and returns the unprocessed {@link QueryResult}.
-     *
-     * Unlike the aggregate-aware `query` methods on the concrete subclasses, this performs no
-     * deserialization — it is intended for projections, reporting queries, and other reads
-     * whose shape does not map onto the repository's aggregate type.
-     *
-     * @template TRow - The expected shape of each returned row.
-     * @param {string} sql - The SQL query to execute.
-     * @param {...ReadonlyArray<any>} params - Parameters bound to the query.
-     * @returns {Promise<QueryResult<TRow>>} The raw query result.
-     */
-    protected queryRaw<TRow>(sql: string, ...params: ReadonlyArray<any>): Promise<QueryResult<TRow>>;
 }
 //# sourceMappingURL=base-repository.d.ts.map

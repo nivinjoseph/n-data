@@ -42,23 +42,5 @@ export class BaseRepository {
         given(table, "table").ensureHasValue().ensureIsString();
         this._table = table.trim();
     }
-    /**
-     * Executes a raw SQL query and returns the unprocessed {@link QueryResult}.
-     *
-     * Unlike the aggregate-aware `query` methods on the concrete subclasses, this performs no
-     * deserialization — it is intended for projections, reporting queries, and other reads
-     * whose shape does not map onto the repository's aggregate type.
-     *
-     * @template TRow - The expected shape of each returned row.
-     * @param {string} sql - The SQL query to execute.
-     * @param {...ReadonlyArray<any>} params - Parameters bound to the query.
-     * @returns {Promise<QueryResult<TRow>>} The raw query result.
-     */
-    queryRaw(sql, ...params) {
-        given(sql, "sql").ensureHasValue().ensureIsString();
-        sql = sql.trim();
-        given(params, "params").ensureHasValue().ensureIsArray();
-        return this._db.executeQuery(sql, ...params);
-    }
 }
 //# sourceMappingURL=base-repository.js.map
