@@ -374,8 +374,14 @@ export class SnapshotQuerySet<TState, TIndexed extends SnapshotCasts = NoDeclare
     /**
      * Declares a btree index over one leaf scalar inside `data`, and makes that path queryable.
      *
+     * **Pass the path as an inline literal.** A `string`-typed variable widens `TP` to the whole
+     * path union, so `TIndexed` gains *every* state path with no cast - after which `eq`/`orderBy`
+     * accept any state path and the cast checks silently vanish, while the runtime set still holds
+     * only the one path. A computed key belongs to `SnapshotIndex.forRawPath`, where owning that is
+     * explicit.
+     *
      * @param {TP} path - The key to index, dot delimited to reach a nested one. Checked against the state shape.
-     * @param {object} [options] - `type` to cast the extracted text; `unique` to enforce a natural key; `name` to override the derived index name.
+     * @param {object} [options] - `type` to cast the extracted text, checked against the leaf ({@link SnapshotCastFor}: numeric types for a number, text/uuid for a string, boolean for a boolean - a mismatch is a compile error rather than an insert-time failure); `unique` to enforce a natural key; `name` to override the derived index name.
      * @returns {SnapshotQuerySet} A set that also knows this path - the receiver is left unchanged.
      * @throws {ArgumentException} If the path is already declared by this set, malformed, or the type is not a JsonValueType.
      */
@@ -399,7 +405,13 @@ export class SnapshotQuerySet<TState, TIndexed extends SnapshotCasts = NoDeclare
      * property of the plan, not of the types, so it is not expressible here - read `info.createdIndexes`
      * from the create call for the column order.
      *
-     * @param {TSpecs} paths - The keys to index, in index order; each a path or a `{ path, type }` pair.
+     * **Pass the specs as an inline tuple literal.** A variable typed
+     * `ReadonlyArray<SnapshotPathSpec<TState>>` widens `TSpecs[number]` to the whole union, so
+     * `TIndexed` gains *every* state path with no cast - after which `eq`/`orderBy` accept any state
+     * path and the cast checks silently vanish, while the runtime set still holds only the declared
+     * paths.
+     *
+     * @param {TSpecs} paths - The keys to index, in index order; each a path or a `{ path, type }` pair whose `type` is checked against that path's leaf ({@link SnapshotCastFor}), so a mismatched cast is a compile error.
      * @param {object} [options] - `unique` to enforce the tuple as a natural key; `name` to override the derived index name.
      * @returns {SnapshotQuerySet} A set that also knows these paths.
      * @throws {ArgumentException} If paths is empty, any path is already declared by this set, or any path is malformed.

@@ -27,8 +27,8 @@ import { SnapshotShapeGuard } from "./snapshot-shape-guard.js";
  * {@link queryAcrossOrganizations} is the deliberate exception, named for its consequence, for a read
  * that is genuinely meant to span tenants.
  *
- * As with the plain variant, what is queryable is declared with a `SnapshotQuerySet` handed to
- * `super` and exposed by overriding {@link querySet} - one object that both the migration creates the
+ * As with the plain variant, what is queryable is declared with a `SnapshotQuerySet` exposed by
+ * overriding {@link querySet} - one object that both the migration creates the
  * table from and the predicates are built by, so a queried index is necessarily a created one, and so
  * every path and value is checked against that declaration at compile time.
  *
@@ -245,7 +245,14 @@ export abstract class OrgSnapshotBaseRepository<T extends OrgAggregateRoot<TStat
      * was queued on that same instance, **this commits that too**, because a unit of work commits as
      * a whole. Use {@link saveWithin} when several writes have to land together.
      *
+     * The first save each process makes per query set also verifies the declared index paths against
+     * the real snapshot document (`SnapshotQuerySet.verifyDocument`): a fatal shape issue - a
+     * `@serialize("customKey")` rename, raw-path drift, a Map/Set where an array was declared -
+     * throws before anything is queued, and ambiguous findings log one warning. One `WeakSet` lookup
+     * per save after that.
+     *
      * @param {T} value - The aggregate to save. A no-op when it is neither new nor changed.
+     * @throws {ApplicationException} If a declared index path has a fatal shape issue against the document being saved.
      */
     public save(value: T): Promise<void>
     {
@@ -256,8 +263,12 @@ export abstract class OrgSnapshotBaseRepository<T extends OrgAggregateRoot<TStat
      * Saves the snapshot and the underlying event stream into a transaction the caller owns, and
      * **does not commit**.
      *
+     * Shape-verified exactly as {@link save} is - a fatal issue throws before anything is queued on
+     * the caller's transaction.
+     *
      * @param {T} value - The aggregate to save. A no-op when it is neither new nor changed.
      * @param {UnitOfWork} unitOfWork - The caller's transaction. Required; committing it is theirs to do.
+     * @throws {ApplicationException} If a declared index path has a fatal shape issue against the document being saved.
      */
     public saveWithin(value: T, unitOfWork: UnitOfWork): Promise<void>
     {

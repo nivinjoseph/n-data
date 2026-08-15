@@ -24,8 +24,10 @@ import { StudioRepository } from "./studio-repository.js";
  * because an uncast extraction compares as text and `'9' > '100'`.
  *
  * The `querySet` override is what carries that narrow type to the call sites: the base declares the
- * property at a widened type, since it cannot know which paths a subclass chose. It returns the
- * `indexes` static unchanged - one object, named on each side for the job that side does with it.
+ * property at the declaration-only `DeclaredSnapshotQuerySet`, since it cannot know which paths a
+ * subclass chose - so copying the base's type by mistake yields an object with no query methods at
+ * all, rather than one that silently accepts any path. The override returns the `indexes` static
+ * unchanged - one object, named on each side for the job that side does with it.
  *
  * @class SnapshotStudioRepository
  */

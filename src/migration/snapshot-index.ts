@@ -212,11 +212,15 @@ type SnapshotLeafPath<T, TDepth extends number = 5> = [TDepth] extends [never] ?
  * those are copied by `JSON.parse(JSON.stringify(...))` and their TypeScript names are their stored
  * keys.
  *
- * What is still not checked: an explicit `@serialize("customKey")` rename. `Schema`'s keys are the
- * getter *names* - a decorator cannot change a type - so a renamed field is still offered under its
- * TypeScript name while the data holds the custom key; that path compiles, indexes an always-null
- * expression, and enforces nothing under {@link SnapshotIndex.asUnique}. It is the one remaining
- * silent case. Also not addressable: the `$typename` every serialized `Serializable` carries - it is
+ * What the *type system* still cannot check: an explicit `@serialize("customKey")` rename. `Schema`'s
+ * keys are the getter *names* - a decorator cannot change a type - so a renamed field is still
+ * offered under its TypeScript name while the data holds the custom key. It is no longer silent,
+ * though: the snapshot repositories verify every declared path against the first document each
+ * process saves (`SnapshotQuerySet.verifyDocument`), and a rename throws there, before anything is
+ * written. What remains genuinely uncaught: a rename inside an optional member a process never
+ * stores (close it with the `verifyDocument` assertion in a test), and a rename whose custom key
+ * coincidentally equals another real key. Also not addressable: the `$typename` every serialized
+ * `Serializable` carries - it is
  * real in storage, but the segment regex rejects `$`, so neither the typed nor the raw path door
  * reaches it; index it by hand in a migration and query through `raw` if a polymorphic-type
  * predicate has to be fast.
@@ -337,7 +341,7 @@ export class SnapshotIndex<T>
      * Starts an index over the given key within `data`, dot delimited to reach a nested key.
      *
      * @param {SnapshotPath<T>} path - The key to index, checked against the state shape.
-     * @param {JsonValueType} [type] - Optional type to cast the extracted text to. Supply it whenever the value is not a string, since an uncast comparison orders lexicographically and '9' > '100'. A cast also changes what counts as equal for {@link asUnique} - as text `1` and `1.0` differ, as numeric they do not.
+     * @param {JsonValueType} [type] - Optional type to cast the extracted text to. Supply it whenever the value is not a string, since an uncast comparison orders lexicographically and '9' > '100'. A cast also changes what counts as equal for {@link asUnique} - as text `1` and `1.0` differ, as numeric they do not. Unlike `SnapshotQuerySet.withPath`, the cast is NOT checked against the leaf type here: the state is supplied explicitly, and with no partial type-argument inference the path collapses to the whole union, which would make the leaf check reject every cast - so prefer declaring casts through the set, where the mismatch is a compile error.
      * @returns {SnapshotIndex<T>} A new index over that path.
      * @throws {ArgumentNullException} If path is null or undefined.
      * @throws {ArgumentException} If path is not a string, is empty or whitespace, is not one or more '.' delimited bare JSON keys, or type is not a JsonValueType.

@@ -181,8 +181,9 @@ export class OrderRepository extends SnapshotBaseRepository<Order, OrderState, O
         .withComposite(["tenantCode", "sku"], { unique: true })          // a composite one
         .withArrayPath("tags");
 
-    // required by the base, which declares it abstract at a widened type — forgetting it is a compile
-    // error, and the `typeof` is what carries the narrow type to the call sites
+    // required by the base, which declares it abstract at the declaration-only DeclaredSnapshotQuerySet
+    // type — forgetting it is a compile error, and the `typeof` is what carries the narrow, queryable
+    // type to the call sites
     protected override get querySet(): typeof OrderRepository.indexes { return OrderRepository.indexes; }
 
     public constructor(eventStreamRepository: OrderEventStreamRepository)
