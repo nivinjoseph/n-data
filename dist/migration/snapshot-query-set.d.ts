@@ -1,4 +1,4 @@
-import { JsonValueType, SnapshotIndex, SnapshotPath } from "./snapshot-index.js";
+import { IsAnyOrUnknown, JsonValueType, SerializedShapeOf, SnapshotIndex, SnapshotPath } from "./snapshot-index.js";
 import { SnapshotArrayElement, SnapshotArrayIndex, SnapshotArrayPath, SnapshotElementMatch } from "./snapshot-array-index.js";
 /**
  * A boolean fragment and the values that bind to its `?` placeholders, in order.
@@ -39,10 +39,10 @@ type SnapshotCasts = Record<string, JsonValueType | undefined>;
  * The two forms coexist because a composite whose members need different types has to be
  * expressible - `["series", { path: "invoiceNumber", type: JsonValueType.integer }]`.
  */
-export type SnapshotPathSpec<TState> = SnapshotPath<TState> | {
-    readonly path: SnapshotPath<TState>;
-    readonly type?: JsonValueType;
-};
+export type SnapshotPathSpec<TState, TP extends SnapshotPath<TState> = SnapshotPath<TState>> = TP extends string ? TP | {
+    readonly path: TP;
+    readonly type?: SnapshotCastFor<TState, TP>;
+} : never;
 /**
  * Folds a tuple of {@link SnapshotPathSpec}s into the path-to-cast record, so a cast declared on a
  * composite member is remembered just as one declared through `withPath` is.
@@ -64,9 +64,12 @@ type NoDeclaredPaths = Record<never, never>;
  * Resolves a dotted path within `T` to the type of the leaf it names.
  *
  * The scalar counterpart of `SnapshotArrayElement`, and the same mechanism: the path arrives as a
- * string literal, so the value type follows from it with nothing written at the call site.
+ * string literal, so the value type follows from it with nothing written at the call site. The walk
+ * descends through the same {@link SerializedShapeOf} substitution the path union was built with, so
+ * a leaf reached through a nested `Serializable` resolves to its type in the *stored* record - the
+ * two must not diverge, or a path the union offers would resolve to `never` here.
  */
-export type SnapshotValueAt<T, TPath extends string> = TPath extends `${infer THead}.${infer TRest}` ? THead extends keyof T ? SnapshotValueAt<NonNullable<T[THead]>, TRest> : never : TPath extends keyof T ? NonNullable<T[TPath]> : never;
+export type SnapshotValueAt<T, TPath extends string> = TPath extends `${infer THead}.${infer TRest}` ? THead extends keyof T ? SnapshotValueAt<SerializedShapeOf<NonNullable<T[THead]>>, TRest> : never : TPath extends keyof T ? NonNullable<T[TPath]> : never;
 /**
  * What a comparison against `TP` accepts: the leaf's own type, unless the leaf is a number that was
  * indexed without a numeric cast.
@@ -87,6 +90,80 @@ export type SnapshotComparable<TState, TP extends string, TCast> = [
 export type SnapshotCastRequired<TP extends string> = {
     readonly [K in `path '${TP}' is a number indexed as text; declare a numeric JsonValueType for it to compare it as a number`]: never;
 };
+/**
+ * The casts legal for the leaf `TP` names: numeric types for a number, text or uuid for a string,
+ * boolean for a boolean. Anything else - a numeric cast on a string leaf, say - would compile and
+ * then make the index expression itself throw on every insert, since Postgres casts the extracted
+ * text eagerly. `text` on a string is allowed although redundant (Postgres elides it).
+ *
+ * A leaf whose kind the type cannot pin - a union of scalar kinds - offers no cast at all; declare
+ * it without one, or through the raw door where the caller owns the choice. Deliberately NOT applied to
+ * `SnapshotIndex.forPath(path, type)`: there the state is supplied explicitly, and with no partial
+ * type-argument inference the path parameter collapses to the whole union, which would make this
+ * type reject every cast.
+ */
+export type SnapshotCastFor<TState, TP extends string> = [
+    SnapshotValueAt<TState, TP>
+] extends [number] ? SnapshotNumericType : [SnapshotValueAt<TState, TP>] extends [string] ? JsonValueType.text | JsonValueType.uuid : [SnapshotValueAt<TState, TP>] extends [boolean] ? JsonValueType.boolean : never;
+/**
+ * The indexed paths {@link SnapshotQuerySet.orderBy} may take: every declared path except a number
+ * indexed without a numeric cast - which as text orders lexicographically, making '9' > '100'. The
+ * same hazard {@link SnapshotComparable} closes for comparisons, restated for the one clause that
+ * has no value argument to hang the error on. Strings order correctly as text, and booleans order
+ * as 'false' < 'true', which matches boolean order.
+ */
+type SnapshotOrderablePath<TState, TIndexed extends SnapshotCasts> = {
+    [K in keyof TIndexed & string]: [
+        SnapshotValueAt<TState, K>
+    ] extends [number] ? ([TIndexed[K]] extends [SnapshotNumericType] ? K : never) : K;
+}[keyof TIndexed & string];
+/**
+ * One problem {@link SnapshotQuerySet.verifyDocument} found with a declared path, against one real
+ * snapshot document.
+ *
+ * `severity` is the split the save-time guard acts on. A `fatal` issue is a true positive by
+ * construction - `serialize()` emits a key for **every** decorated getter, null-valued ones
+ * included, so a declared segment absent from an object carrying `$typename` is definitively a
+ * `@serialize("customKey")` rename (or raw-path drift), never an omitted optional. An `advisory`
+ * issue is ambiguous in a single document - an absent key under a *plain* parent may simply be an
+ * optional the aggregate did not set - so it warrants a warning, not a blocked save.
+ */
+export interface SnapshotShapeIssue {
+    /**
+     * The declared path the issue is about.
+     */
+    readonly path: string;
+    /**
+     * The dotted prefix at which the walk stopped.
+     */
+    readonly failedAtSegment: string;
+    readonly kind: "unresolvable-key" | "non-object-intermediate" | "non-array-leaf" | "absent-key" | "empty-object-leaf";
+    readonly severity: "fatal" | "advisory";
+    /**
+     * Names the problem and the fix, so a log line or an exception is actionable on its own.
+     */
+    readonly message: string;
+}
+/**
+ * What a snapshot base class can say about a subclass's query set without knowing its paths: the
+ * declarations, and nothing queryable.
+ *
+ * Deliberately method-free - no `eq`, no `orderBy`, no `contains`. The abstract `querySet` getter on
+ * the snapshot base classes is typed with THIS, so an override that copies the base's declared type
+ * (the IDE quick-fix output) cannot build a single predicate: the mistake announces itself at the
+ * first query instead of silently discarding path and cast checking, which is what the old widened
+ * `SnapshotQuerySet<TState, any, any>` did - and writing THAT type is itself a compile error now,
+ * through {@link SnapshotQuerySet._pathCheckingIntact}. The documented override -
+ * `typeof MyRepository.indexes` - satisfies this structurally and keeps every check.
+ */
+export interface DeclaredSnapshotQuerySet<TState> {
+    readonly indexes: ReadonlyArray<SnapshotIndex<TState>>;
+    readonly arrayIndexes: ReadonlyArray<SnapshotArrayIndex<TState>>;
+    readonly paths: ReadonlyArray<string>;
+    readonly arrayPaths: ReadonlyArray<string>;
+    readonly _pathCheckingIntact: true;
+    verifyDocument(document: object): ReadonlyArray<SnapshotShapeIssue>;
+}
 /**
  * The declared indexes of one snapshot table, and the typed predicates over them.
  *
@@ -124,8 +201,9 @@ export type SnapshotCastRequired<TP extends string> = {
  *         .withComposite(["series", { path: "revision", type: JsonValueType.integer }], { unique: true })
  *         .withArrayPath("tags");
  *
- *     // the base declares this abstract at a widened type, because it does not know the paths; the
- *     // `typeof` here is what gives the call sites the narrow one
+ *     // the base declares this abstract at the declaration-only DeclaredSnapshotQuerySet type,
+ *     // because it does not know the paths; the `typeof` here is what gives the call sites the
+ *     // narrow, queryable one
  *     protected override get querySet(): typeof OrderRepository.indexes { return OrderRepository.indexes; }
  *
  *     public constructor(eventStreamRepository: OrderEventStreamRepository)
@@ -185,6 +263,15 @@ export declare class SnapshotQuerySet<TState, TIndexed extends SnapshotCasts = N
      */
     private readonly _containmentsByPath;
     /**
+     * Phantom - `declare` emits nothing, the property never exists at runtime. Its type is `true`
+     * for every set built through {@link for}, and becomes an error-message string when `TIndexed`
+     * is `any` - which happens exactly when someone writes `SnapshotQuerySet<TState, any, any>` as
+     * an annotation. That annotation used to compile and silently discard every path and cast check
+     * (the querySet override trap); now the message is the compile error. Same idiom as
+     * {@link SnapshotCastRequired}: the type IS the diagnostic.
+     */
+    readonly _pathCheckingIntact: IsAnyOrUnknown<TIndexed> extends true ? "this set is typed <TState, any, any>, which discards path and cast checking - type the override as `typeof MyRepository.indexes`" : true;
+    /**
      * The btree index declarations, in declaration order.
      *
      * Named to match `SnapshotTableOptions.indexes`, which is what lets this whole object be handed
@@ -221,12 +308,18 @@ export declare class SnapshotQuerySet<TState, TIndexed extends SnapshotCasts = N
     /**
      * Declares a btree index over one leaf scalar inside `data`, and makes that path queryable.
      *
+     * **Pass the path as an inline literal.** A `string`-typed variable widens `TP` to the whole
+     * path union, so `TIndexed` gains *every* state path with no cast - after which `eq`/`orderBy`
+     * accept any state path and the cast checks silently vanish, while the runtime set still holds
+     * only the one path. A computed key belongs to `SnapshotIndex.forRawPath`, where owning that is
+     * explicit.
+     *
      * @param {TP} path - The key to index, dot delimited to reach a nested one. Checked against the state shape.
-     * @param {object} [options] - `type` to cast the extracted text; `unique` to enforce a natural key; `name` to override the derived index name.
+     * @param {object} [options] - `type` to cast the extracted text, checked against the leaf ({@link SnapshotCastFor}: numeric types for a number, text/uuid for a string, boolean for a boolean - a mismatch is a compile error rather than an insert-time failure); `unique` to enforce a natural key; `name` to override the derived index name.
      * @returns {SnapshotQuerySet} A set that also knows this path - the receiver is left unchanged.
      * @throws {ArgumentException} If the path is already declared by this set, malformed, or the type is not a JsonValueType.
      */
-    withPath<TP extends SnapshotPath<TState>, TCast extends JsonValueType | undefined = undefined>(path: TP, options?: {
+    withPath<TP extends SnapshotPath<TState>, TCast extends SnapshotCastFor<TState, TP> | undefined = undefined>(path: TP, options?: {
         readonly type?: TCast;
         readonly unique?: boolean;
         readonly name?: string;
@@ -240,7 +333,13 @@ export declare class SnapshotQuerySet<TState, TIndexed extends SnapshotCasts = N
      * property of the plan, not of the types, so it is not expressible here - read `info.createdIndexes`
      * from the create call for the column order.
      *
-     * @param {TSpecs} paths - The keys to index, in index order; each a path or a `{ path, type }` pair.
+     * **Pass the specs as an inline tuple literal.** A variable typed
+     * `ReadonlyArray<SnapshotPathSpec<TState>>` widens `TSpecs[number]` to the whole union, so
+     * `TIndexed` gains *every* state path with no cast - after which `eq`/`orderBy` accept any state
+     * path and the cast checks silently vanish, while the runtime set still holds only the declared
+     * paths.
+     *
+     * @param {TSpecs} paths - The keys to index, in index order; each a path or a `{ path, type }` pair whose `type` is checked against that path's leaf ({@link SnapshotCastFor}), so a mismatched cast is a compile error.
      * @param {object} [options] - `unique` to enforce the tuple as a natural key; `name` to override the derived index name.
      * @returns {SnapshotQuerySet} A set that also knows these paths.
      * @throws {ArgumentException} If paths is empty, any path is already declared by this set, or any path is malformed.
@@ -371,10 +470,42 @@ export declare class SnapshotQuerySet<TState, TIndexed extends SnapshotCasts = N
      * an `order by` only when the expression matches the indexed one textually. Note that a GIN array
      * index cannot serve ordering at all, which is why an array path is not offered here.
      *
-     * @param {TP} path - A scalar path this set indexes.
+     * A number indexed without a numeric cast is not orderable: as text it sorts '9' > '100', the
+     * same hazard the comparisons reject - so it is a compile error here too, fixed by declaring the
+     * cast on the path.
+     *
+     * @param {TP} path - A scalar path this set indexes, orderable as its leaf type.
      * @param {"asc" | "desc"} [direction] - Defaults to `asc`, as Postgres does.
      */
-    orderBy<TP extends keyof TIndexed & string>(path: TP, direction?: "asc" | "desc"): SnapshotOrderBy;
+    orderBy<TP extends SnapshotOrderablePath<TState, TIndexed>>(path: TP, direction?: "asc" | "desc"): SnapshotOrderBy;
+    /**
+     * Checks every declared path - scalar and array, typed and raw - against one real snapshot
+     * document, and reports what does not line up. Pure: no logging, no throwing, no state.
+     *
+     * This is the runtime companion to the compile-time path checking, for the one mismatch the
+     * types can never see: a getter decorated `@serialize("customKey")` stores under the custom key
+     * while the type offers the getter *name*, so the declared path compiles, the index extracts
+     * null from every row, `asUnique` enforces nothing, and every query silently matches nothing.
+     * That case is detectable here with certainty, because `serialize()` emits a key for every
+     * decorated getter - null-valued ones included - so a declared segment absent from an object
+     * carrying `$typename` cannot be an omitted optional (see {@link SnapshotShapeIssue}).
+     *
+     * The snapshot repositories run this once per process against the first document they save, and
+     * act on the severity split: `fatal` throws, `advisory` logs once. Call it yourself in a test -
+     * `assert.deepStrictEqual(MyRepository.indexes.verifyDocument(aggregate.snapshot()), [])` - to
+     * catch the one case the save-time check can meet late: a rename inside an optional object that
+     * happens to be null in every document a given process stores.
+     *
+     * What a clean result does *not* prove: a rename whose custom key coincidentally equals another
+     * real key (the path resolves, to the wrong value), and rows written before the declaration
+     * changed. It checks shape, not data.
+     *
+     * @param {object} document - A snapshot document, i.e. what `AggregateRoot.snapshot()` returns.
+     * @returns {ReadonlyArray<SnapshotShapeIssue>} Every issue found; empty when all paths resolve.
+     * @throws {ArgumentNullException} If document is null or undefined.
+     * @throws {ArgumentException} If document is not an object.
+     */
+    verifyDocument(document: object): ReadonlyArray<SnapshotShapeIssue>;
     /**
      * Copy-on-write, so each `with...` call hands back a new set and the receiver stays usable. That
      * keeps the fluent chain from depending on evaluation order, and makes a set safe to share as a
@@ -382,6 +513,16 @@ export declare class SnapshotQuerySet<TState, TIndexed extends SnapshotCasts = N
      */
     private _clone;
     private _withComposite;
+    /**
+     * Walks one declared path through `document`, appending to `issues` where it stops resolving.
+     *
+     * The severity rules, stated once: a value of the *wrong kind* along the way is always fatal (a
+     * scalar or array where an object must be, a non-array at an array leaf - no optional produces
+     * those); an *absent* key is fatal only under a `$typename` parent, where `serialize()` is known
+     * to have emitted every decorated key; and null anywhere is clean, because that is exactly what
+     * an optional stores and extraction turns into SQL NULL.
+     */
+    private _verifyPath;
     private _comparison;
     private _expressionFor;
     private _containmentFor;

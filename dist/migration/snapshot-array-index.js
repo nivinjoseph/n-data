@@ -132,10 +132,10 @@ export class SnapshotArrayIndex {
     }
     /**
      * Like {@link forPath} but takes any string, for an array outside what the state shape offers -
-     * an array of `Serializable`, an array whose elements nest, or a computed key. Prefer
-     * {@link forPath} so typos are caught at compile time, and note that the caller then owns knowing
-     * the elements' *stored* shape, which for a Serializable is what `serialize()` emits rather than
-     * the TypeScript names.
+     * an array of *untyped* `Serializable`, an array whose stored elements nest, an element with
+     * `@serialize("customKey")` renames, or a computed key. Prefer {@link forPath} so typos are
+     * caught at compile time, and note that the caller then owns knowing the elements' *stored*
+     * shape, which for a Serializable is what `serialize()` emits rather than the TypeScript names.
      *
      * @param {string} path - The array to index.
      * @returns {SnapshotArrayIndex<T>} A new index over that path.
@@ -276,6 +276,10 @@ export class SnapshotArrayIndex {
      *
      * `TElement` defaults to `any`, so matches are unchecked - which is the raw door's contract: the
      * caller owns knowing the elements' stored shape. Supply it explicitly to get the checking back.
+     *
+     * A raw match document may also name `$typename` - only path segments go through the segment
+     * regex, never match keys - which is the escape hatch for filtering a polymorphic element by its
+     * stored type, something the typed door deliberately does not offer.
      *
      * @param {string} path - The path this index covers.
      * @returns {SnapshotArrayContainment<TElement>} The predicate builders.

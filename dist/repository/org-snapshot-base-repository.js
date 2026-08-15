@@ -6,6 +6,7 @@ import { AggregateNotFoundException } from "./aggregate-not-found-exception.js";
 import { OrgEventStreamBaseRepository } from "./org-event-stream-base-repository.js";
 import { RepositoryQueryBuilder } from "./repository-query.js";
 import { executeRawQuery } from "./raw-query.js";
+import { SnapshotShapeGuard } from "./snapshot-shape-guard.js";
 /**
  * The organization-scoped counterpart to `SnapshotBaseRepository`.
  *
@@ -21,8 +22,8 @@ import { executeRawQuery } from "./raw-query.js";
  * {@link queryAcrossOrganizations} is the deliberate exception, named for its consequence, for a read
  * that is genuinely meant to span tenants.
  *
- * As with the plain variant, what is queryable is declared with a `SnapshotQuerySet` handed to
- * `super` and exposed by overriding {@link querySet} - one object that both the migration creates the
+ * As with the plain variant, what is queryable is declared with a `SnapshotQuerySet` exposed by
+ * overriding {@link querySet} - one object that both the migration creates the
  * table from and the predicates are built by, so a queried index is necessarily a created one, and so
  * every path and value is checked against that declaration at compile time.
  *
@@ -186,7 +187,14 @@ export class OrgSnapshotBaseRepository extends BaseRepository {
      * was queued on that same instance, **this commits that too**, because a unit of work commits as
      * a whole. Use {@link saveWithin} when several writes have to land together.
      *
+     * The first save each process makes per query set also verifies the declared index paths against
+     * the real snapshot document (`SnapshotQuerySet.verifyDocument`): a fatal shape issue - a
+     * `@serialize("customKey")` rename, raw-path drift, a Map/Set where an array was declared -
+     * throws before anything is queued, and ambiguous findings log one warning. One `WeakSet` lookup
+     * per save after that.
+     *
      * @param {T} value - The aggregate to save. A no-op when it is neither new nor changed.
+     * @throws {ApplicationException} If a declared index path has a fatal shape issue against the document being saved.
      */
     save(value) {
         return this._save(value, this.unitOfWork, true);
@@ -195,8 +203,12 @@ export class OrgSnapshotBaseRepository extends BaseRepository {
      * Saves the snapshot and the underlying event stream into a transaction the caller owns, and
      * **does not commit**.
      *
+     * Shape-verified exactly as {@link save} is - a fatal issue throws before anything is queued on
+     * the caller's transaction.
+     *
      * @param {T} value - The aggregate to save. A no-op when it is neither new nor changed.
      * @param {UnitOfWork} unitOfWork - The caller's transaction. Required; committing it is theirs to do.
+     * @throws {ApplicationException} If a declared index path has a fatal shape issue against the document being saved.
      */
     saveWithin(value, unitOfWork) {
         given(unitOfWork, "unitOfWork").ensureHasValue().ensureIsObject();
@@ -326,6 +338,11 @@ export class OrgSnapshotBaseRepository extends BaseRepository {
         if (!value.isNew && !value.hasChanges)
             return;
         try {
+            // shape-checked against the declared paths before anything is queued on the unit of
+            // work, so a fatal issue (a @serialize rename, raw-path drift) rejects the save whole -
+            // once per process per query set, one WeakSet lookup per save after that
+            const snapshot = value.snapshot();
+            await SnapshotShapeGuard.verify(this.table, this.querySet, snapshot, this.logger);
             // always the non-committing door: this repository decides whether the transaction gets
             // committed, and the event stream write has to land or not land with the snapshot write
             await this._eventStreamRepository.saveWithin(value, unitOfWork);
@@ -341,7 +358,7 @@ export class OrgSnapshotBaseRepository extends BaseRepository {
                             values(?, ?, ?)
                             on conflict (id) do update
                             set data = excluded.data;`;
-            await this.db.executeCommandWithinUnitOfWork(unitOfWork, sql, value.id, this.domainContext.organizationId, value.snapshot());
+            await this.db.executeCommandWithinUnitOfWork(unitOfWork, sql, value.id, this.domainContext.organizationId, snapshot);
             if (owned)
                 await unitOfWork.commit();
         }

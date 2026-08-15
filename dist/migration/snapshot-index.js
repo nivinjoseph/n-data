@@ -144,7 +144,7 @@ export class SnapshotIndex {
      * Starts an index over the given key within `data`, dot delimited to reach a nested key.
      *
      * @param {SnapshotPath<T>} path - The key to index, checked against the state shape.
-     * @param {JsonValueType} [type] - Optional type to cast the extracted text to. Supply it whenever the value is not a string, since an uncast comparison orders lexicographically and '9' > '100'. A cast also changes what counts as equal for {@link asUnique} - as text `1` and `1.0` differ, as numeric they do not.
+     * @param {JsonValueType} [type] - Optional type to cast the extracted text to. Supply it whenever the value is not a string, since an uncast comparison orders lexicographically and '9' > '100'. A cast also changes what counts as equal for {@link asUnique} - as text `1` and `1.0` differ, as numeric they do not. Unlike `SnapshotQuerySet.withPath`, the cast is NOT checked against the leaf type here: the state is supplied explicitly, and with no partial type-argument inference the path collapses to the whole union, which would make the leaf check reject every cast - so prefer declaring casts through the set, where the mismatch is a compile error.
      * @returns {SnapshotIndex<T>} A new index over that path.
      * @throws {ArgumentNullException} If path is null or undefined.
      * @throws {ArgumentException} If path is not a string, is empty or whitespace, is not one or more '.' delimited bare JSON keys, or type is not a JsonValueType.

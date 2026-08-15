@@ -6,6 +6,7 @@ import { DataHelper } from "./data-helper.js";
 import { AggregateNotFoundException } from "./aggregate-not-found-exception.js";
 import { RepositoryQueryBuilder } from "./repository-query.js";
 import { executeRawQuery } from "./raw-query.js";
+import { SnapshotShapeGuard } from "./snapshot-shape-guard.js";
 /**
  * Reads aggregates from the snapshot table - the materialized current state - and writes
  * both the snapshot and the underlying event stream on save.
@@ -21,8 +22,8 @@ import { executeRawQuery } from "./raw-query.js";
  * through the `RepositoryQuery` object form. {@link queryStatement} is the escape hatch for a read
  * that shape cannot express.
  *
- * **Declare what is queryable with a `SnapshotQuerySet`, handed to `super` and exposed by overriding
- * {@link querySet}.** That one object is both what the migration creates the table's indexes from and
+ * **Declare what is queryable with a `SnapshotQuerySet`, exposed by overriding {@link querySet}.**
+ * That one object is both what the migration creates the table's indexes from and
  * what the predicates are built by, so an index that is queried is necessarily one that was created.
  * `DbTableCreator` builds a btree expression index per path; nothing is added to the table, since the
  * index is built directly over the extraction expression.
@@ -70,8 +71,9 @@ import { executeRawQuery } from "./raw-query.js";
  *         .withPath("orderNumber", { unique: true })
  *         .withArrayPath("tags");
  *
- *     // required by the base, which declares it abstract at a widened type; the `typeof` is what
- *     // carries the narrow one to the call sites
+ *     // required by the base, which declares it abstract at the declaration-only
+ *     // DeclaredSnapshotQuerySet type; the `typeof` is what carries the narrow, queryable one
+ *     // to the call sites
  *     protected override get querySet(): typeof OrderRepository.indexes { return OrderRepository.indexes; }
  *
  *     public constructor(eventStreamRepository: OrderEventStreamRepository)
@@ -165,7 +167,14 @@ export class SnapshotBaseRepository extends BaseRepository {
      * was queued on that same instance, **this commits that too**, because a unit of work commits as
      * a whole. Use {@link saveWithin} when several writes have to land together.
      *
+     * The first save each process makes per query set also verifies the declared index paths against
+     * the real snapshot document (`SnapshotQuerySet.verifyDocument`): a fatal shape issue - a
+     * `@serialize("customKey")` rename, raw-path drift, a Map/Set where an array was declared -
+     * throws before anything is queued, and ambiguous findings log one warning. One `WeakSet` lookup
+     * per save after that.
+     *
      * @param {T} value - The aggregate to save. A no-op when it is neither new nor changed.
+     * @throws {ApplicationException} If a declared index path has a fatal shape issue against the document being saved.
      */
     save(value) {
         return this._save(value, this.unitOfWork, true);
@@ -174,8 +183,12 @@ export class SnapshotBaseRepository extends BaseRepository {
      * Saves the snapshot and the underlying event stream into a transaction the caller owns, and
      * **does not commit**.
      *
+     * Shape-verified exactly as {@link save} is - a fatal issue throws before anything is queued on
+     * the caller's transaction.
+     *
      * @param {T} value - The aggregate to save. A no-op when it is neither new nor changed.
      * @param {UnitOfWork} unitOfWork - The caller's transaction. Required; committing it is theirs to do.
+     * @throws {ApplicationException} If a declared index path has a fatal shape issue against the document being saved.
      */
     saveWithin(value, unitOfWork) {
         given(unitOfWork, "unitOfWork").ensureHasValue().ensureIsObject();
@@ -283,6 +296,11 @@ export class SnapshotBaseRepository extends BaseRepository {
         if (!value.isNew && !value.hasChanges)
             return;
         try {
+            // shape-checked against the declared paths before anything is queued on the unit of
+            // work, so a fatal issue (a @serialize rename, raw-path drift) rejects the save whole -
+            // once per process per query set, one WeakSet lookup per save after that
+            const snapshot = value.snapshot();
+            await SnapshotShapeGuard.verify(this.table, this.querySet, snapshot, this.logger);
             // always the non-committing door: this repository decides whether the transaction gets
             // committed, and the event stream write has to land or not land with the snapshot write
             await this._eventStreamRepository.saveWithin(value, unitOfWork);
@@ -298,7 +316,7 @@ export class SnapshotBaseRepository extends BaseRepository {
                             values(?, ?)
                             on conflict (id) do update
                             set data = excluded.data;`;
-            await this.db.executeCommandWithinUnitOfWork(unitOfWork, sql, value.id, value.snapshot());
+            await this.db.executeCommandWithinUnitOfWork(unitOfWork, sql, value.id, snapshot);
             if (owned)
                 await unitOfWork.commit();
         }
