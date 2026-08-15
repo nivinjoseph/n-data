@@ -12,7 +12,9 @@ import { serialize } from "@nivinjoseph/n-util";
  *
  * The `@serialize` getters are also what make the nested paths indexable: only decorated getters reach
  * `data`, so `plan.tier` and `plan.seatLimit` exist as jsonb keys precisely because they are declared
- * here. An undecorated getter would be absent from storage while still looking like a valid path.
+ * here. An undecorated getter is absent from storage - and, because the path types follow the typed
+ * `serialize()` shape, it is not offered as a path either: `withPath("plan.isUnlimited")` is a compile
+ * error rather than an always-null index.
  *
  * @class StudioPlan
  */

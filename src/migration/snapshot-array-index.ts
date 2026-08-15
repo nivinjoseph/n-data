@@ -1,5 +1,5 @@
 import { given } from "@nivinjoseph/n-defensive";
-import { PreviousDepth } from "./snapshot-index.js";
+import { PreviousDepth, SerializedShapeOf } from "./snapshot-index.js";
 // type-only, and it has to stay that way: `snapshot-query-set` imports `SnapshotArrayIndex` as a
 // value, so a value import back would close a runtime cycle. `import type` is erased, so there is
 // no cycle to close - the two modules only meet in the type system
@@ -25,13 +25,18 @@ type NonScalarKeys<TElement> = {
  * Whether every one of an element type's own members is a JSON scalar - that is, whether it is a
  * flat record.
  *
- * Anything else is `false`, and the case that matters most is a `Serializable` element: it carries a
- * `serialize()` method, which is a non-scalar member, so it is excluded. That exclusion is the whole
- * point. `_serializeForSnapshot` routes a Serializable through `serialize()`, which emits
- * `field.key ?? field.name` over `@serialize` decorated getters *only* - so an undecorated property
- * is absent from the stored element, a renamed one lands under a different key, and a `$typename`
- * appears that nobody wrote. A containment document built from the TypeScript names would then match
- * nothing, silently, on a fast-looking plan.
+ * The caller passes the element through {@link SerializedShapeOf} first, so what is judged here is
+ * the element's *stored* shape: for a `Serializable` element with a typed `serialize()` (n-domain
+ * >= 4.0.1 `DomainObject`), that is the serialized record - which, when flat, is legally
+ * containment-indexable, because `_serializeForSnapshot` stores exactly those keys. The `$typename`
+ * every serialized element also carries never blocks a match, since `@>` under `jsonb_path_ops` is
+ * subset matching.
+ *
+ * The emptiness rule (`keyof TElement` must not be `never`) is a widening guard, not tidiness: an
+ * *untyped* `serialize()` comes out of {@link SerializedShapeOf} as a keyless shape (fail-closed),
+ * and a keyless element passing this check would make such arrays silently legal - while also being
+ * useless, since {@link SnapshotElementFilter} over no keys is `never` and the runtime rejects an
+ * empty match record anyway.
  *
  * A plain object literal is safe, because a nested plain object is copied into the snapshot through
  * `JSON.parse(JSON.stringify(...))`, so its TypeScript names *are* its stored keys.
@@ -39,7 +44,10 @@ type NonScalarKeys<TElement> = {
  * explicitly owns knowing the element's stored shape.
  */
 type IsScalarRecord<TElement> =
-    [TElement] extends [object] ? ([NonScalarKeys<TElement>] extends [never] ? true : false) : false;
+    [TElement] extends [object]
+        ? [keyof TElement] extends [never] ? false
+        : [NonScalarKeys<TElement>] extends [never] ? true : false
+        : false;
 
 /**
  * The raw array-path union, before {@link SnapshotArrayPath} removes what must never be indexed.
@@ -62,10 +70,10 @@ type SnapshotContainerArrayPath<T, TDepth extends number = 5> = [TDepth] extends
             // would yield K - so an array of "strings or customers" would be offered as a scalar
             // array. Bracketed, the union is tested as a whole and fails closed.
             ? ([NonNullable<TElement>] extends [JsonScalar] ? K
-                : IsScalarRecord<NonNullable<TElement>> extends true ? K
+                : IsScalarRecord<SerializedShapeOf<NonNullable<TElement>>> extends true ? K
                     : never)
             : NonNullable<T[K]> extends object
-                ? `${K}.${SnapshotContainerArrayPath<NonNullable<T[K]>, PreviousDepth[TDepth]>}`
+                ? `${K}.${SnapshotContainerArrayPath<SerializedShapeOf<NonNullable<T[K]>>, PreviousDepth[TDepth]>}`
                 : never
 }[keyof T & string];
 
@@ -78,13 +86,22 @@ type SnapshotContainerArrayPath<T, TDepth extends number = 5> = [TDepth] extends
  * `SnapshotIndex.forPath("members")` and `SnapshotArrayIndex.forPath("status")` both compile errors,
  * and that makes a key belong to exactly one kind of index.
  *
+ * Like `SnapshotLeafPath`, the walk follows the **stored** shape: an element or a nested member with
+ * a typed `serialize()` is judged by - and recursed into - its serialized record
+ * ({@link SerializedShapeOf}). So an array of `DomainObject`s whose serialized shape is a flat
+ * scalar record *is* offered, and a containment document built from those keys matches what is
+ * actually stored - the `$typename` each stored element also carries never blocks `@>`, which is
+ * subset matching. The residual hazard is the same as for scalar paths: an explicit
+ * `@serialize("customKey")` rename is invisible to the type, so a match document built from the
+ * TypeScript name would silently match nothing.
+ *
  * Not offered, all of which fail closed to {@link SnapshotArrayIndex.forRawPath}:
  *
- * - **Arrays of `Serializable`.** See {@link IsScalarRecord} - the stored keys are not the TypeScript
- *   names, so a containment document built in JavaScript would match nothing.
- * - **Arrays whose elements nest.** An element carrying an object- or array-valued member is not a
- *   flat record, and containment against it would be a far larger semantic surface than "does some
- *   element look like this".
+ * - **Arrays of *untyped* `Serializable`.** A bare `serialize()` gives the compiler nothing to check
+ *   a containment document against, so such arrays offer no path (see {@link IsScalarRecord}).
+ * - **Arrays whose elements nest.** An element whose *stored* shape carries an object- or
+ *   array-valued member is not a flat record, and containment against it would be a far larger
+ *   semantic surface than "does some element look like this".
  * - **Arrays of arrays.** The element of the outer array is itself an array, so containment would
  *   test for a whole inner array as one element - legal, but almost never what is meant.
  * - **Mixed arrays containing a non-scalar.** This is the case the non-distributive brackets above
@@ -100,7 +117,10 @@ type SnapshotContainerArrayPath<T, TDepth extends number = 5> = [TDepth] extends
 export type SnapshotArrayPath<T> = Exclude<SnapshotContainerArrayPath<T>, "organizationId">;
 
 /**
- * Resolves a dotted array path within `T` to the type of that array's elements.
+ * Resolves a dotted array path within `T` to the **stored** type of that array's elements - the
+ * serialized shape for an element with a typed `serialize()` ({@link SerializedShapeOf}), the
+ * element itself otherwise. Resolving to the class instead would offer `serialize` and derived
+ * getters as match keys, every one of which would silently match nothing.
  *
  * This is what lets {@link SnapshotArrayIndex.containmentForPath} type its match argument against the
  * *element* shape rather than against `any`, with no explicit type argument at the call site: the
@@ -112,9 +132,9 @@ export type SnapshotArrayPath<T> = Exclude<SnapshotContainerArrayPath<T>, "organ
  */
 export type SnapshotArrayElement<T, TPath extends string> =
     TPath extends `${infer THead}.${infer TRest}`
-        ? THead extends keyof T ? SnapshotArrayElement<NonNullable<T[THead]>, TRest> : never
+        ? THead extends keyof T ? SnapshotArrayElement<SerializedShapeOf<NonNullable<T[THead]>>, TRest> : never
         : TPath extends keyof T
-            ? NonNullable<T[TPath]> extends ReadonlyArray<infer TElement> ? NonNullable<TElement> : never
+            ? NonNullable<T[TPath]> extends ReadonlyArray<infer TElement> ? SerializedShapeOf<NonNullable<TElement>> : never
             : never;
 
 /**
@@ -384,10 +404,10 @@ export class SnapshotArrayIndex<T>
 
     /**
      * Like {@link forPath} but takes any string, for an array outside what the state shape offers -
-     * an array of `Serializable`, an array whose elements nest, or a computed key. Prefer
-     * {@link forPath} so typos are caught at compile time, and note that the caller then owns knowing
-     * the elements' *stored* shape, which for a Serializable is what `serialize()` emits rather than
-     * the TypeScript names.
+     * an array of *untyped* `Serializable`, an array whose stored elements nest, an element with
+     * `@serialize("customKey")` renames, or a computed key. Prefer {@link forPath} so typos are
+     * caught at compile time, and note that the caller then owns knowing the elements' *stored*
+     * shape, which for a Serializable is what `serialize()` emits rather than the TypeScript names.
      *
      * @param {string} path - The array to index.
      * @returns {SnapshotArrayIndex<T>} A new index over that path.
@@ -554,6 +574,10 @@ export class SnapshotArrayIndex<T>
      *
      * `TElement` defaults to `any`, so matches are unchecked - which is the raw door's contract: the
      * caller owns knowing the elements' stored shape. Supply it explicitly to get the checking back.
+     *
+     * A raw match document may also name `$typename` - only path segments go through the segment
+     * regex, never match keys - which is the escape hatch for filtering a polymorphic element by its
+     * stored type, something the typed door deliberately does not offer.
      *
      * @param {string} path - The path this index covers.
      * @returns {SnapshotArrayContainment<TElement>} The predicate builders.

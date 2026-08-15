@@ -27,6 +27,15 @@ interface Line
     isVoid: boolean;
 }
 
+// a stand-in for an n-domain DomainObject: a typed serialize() is the stored shape paths follow
+interface PlanVo
+{
+    readonly tier: string;
+    readonly seatLimit: number;
+    readonly isUnlimited: boolean;  // derived - not serialized, so not declarable as a path
+    serialize(): { tier: string; seatLimit: number; };
+}
+
 interface TicketState extends OrgAggregateState
 {
     status: string;
@@ -37,6 +46,7 @@ interface TicketState extends OrgAggregateState
     revision: number;               // gets its cast from inside the composite
     unindexed: string;              // never declared, so it must not be queryable
     party: Party;
+    plan: PlanVo;                   // a serializable member: paths and values follow its serialized shape
     labels: Array<string>;
     lines: Array<Line>;
 }
@@ -139,6 +149,31 @@ await describe("SnapshotQuerySet tests", async () =>
             // a cast was declared for these two, so they are allowed - and these do run
             assert.ok(indexes.gt("total", 5).sql.contains("::numeric"));
             assert.ok(indexes.gte("revision", 2).sql.contains("::integer"));
+        });
+
+        // values resolve through the SERIALIZED shape of a nested serializable member, and the cast
+        // rule still applies to a numeric leaf reached through one
+        await test("values and casts follow the serialized shape of a serializable member", async () =>
+        {
+            const planIndexes = SnapshotQuerySet.for<TicketState>()
+                .withPath("plan.tier")
+                .withPath("plan.seatLimit");
+
+            planIndexes.eq("plan.tier", "studio");
+
+            const rejected = (): void =>
+            {
+                // @ts-expect-error - the value type comes from the serialized shape: tier is a string
+                planIndexes.eq("plan.tier", 42);
+
+                // @ts-expect-error - a number reached through a serialized shape still demands a cast
+                planIndexes.gt("plan.seatLimit", 3);
+
+                // @ts-expect-error - a derived getter is not a stored key, so it is not declarable
+                SnapshotQuerySet.for<TicketState>().withPath("plan.isUnlimited");
+            };
+
+            assert.strictEqual(typeof rejected, "function");
         });
 
         await test("scalar and array paths cannot be swapped", async () =>

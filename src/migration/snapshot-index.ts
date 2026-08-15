@@ -64,6 +64,39 @@ export enum JsonValueType
 export type PreviousDepth = [never, 0, 1, 2, 3, 4, 5];
 
 /**
+ * The shape a nested value actually stores: the return type of a *typed* `serialize()` where one
+ * exists, or the value itself where none does.
+ *
+ * `_serializeForSnapshot` routes any `Serializable` through `serialize()`, so for such a value the
+ * stored keys are the serialized shape's keys, not the class's property names. n-domain >= 4.0.1
+ * types that shape - `DomainObject<TThis, TDataKeys>` returns `Schema<TThis, TDataKeys>` - which is
+ * what makes this substitution possible.
+ *
+ * Guarded, and every guard fails CLOSED - to `Record<never, never>`, an object with no keys, whose
+ * path union is `never` - because a substitution that produced an index signature would widen the
+ * subtree's path union to `string` and disable checking entirely (the documented index-signature
+ * gap):
+ * - a `serialize()` whose return type carries a string index signature - which includes the bare
+ *   `Serializable` default of `Record<string, any>`, and `any` - offers no nested paths at all;
+ * - a `serialize()` typed to return an array offers none either, since an array's numeric keys are
+ *   not dot-addressable jsonb keys.
+ *
+ * The outer check is deliberately non-distributive (tuple brackets): a union member is not
+ * substituted, preserving the documented behavior that a union-typed object member loses its
+ * nested paths. And the check is structural on purpose - a test fixture with a typed `serialize()`
+ * behaves like a real DomainObject without depending on n-domain classes.
+ *
+ * Exported so `SnapshotArrayPath` and `SnapshotValueAt` apply the same substitution - the three
+ * walk the same state shape. Deliberately absent from the barrel, like {@link PreviousDepth}.
+ */
+export type SerializedShapeOf<V> =
+    [V] extends [{ serialize(): infer TData extends object; }]
+        ? [TData] extends [ReadonlyArray<any>] ? Record<never, never>
+        : string extends keyof TData ? Record<never, never>
+        : TData
+        : V;
+
+/**
  * The raw leaf-path union, before {@link SnapshotPath} removes what must never be indexed.
  *
  * Not exported: every *typed* signature takes {@link SnapshotPath}, so the rules live in one place
@@ -79,7 +112,7 @@ type SnapshotLeafPath<T, TDepth extends number = 5> = [TDepth] extends [never] ?
     // eslint-disable-next-line @typescript-eslint/no-unsafe-function-type
     NonNullable<T[K]> extends Function ? never
     : NonNullable<T[K]> extends ReadonlyArray<any> ? never
-    : NonNullable<T[K]> extends object ? `${K}.${SnapshotLeafPath<NonNullable<T[K]>, PreviousDepth[TDepth]>}`
+    : NonNullable<T[K]> extends object ? `${K}.${SnapshotLeafPath<SerializedShapeOf<NonNullable<T[K]>>, PreviousDepth[TDepth]>}`
     : K
 }[keyof T & string];
 
@@ -114,15 +147,27 @@ type SnapshotLeafPath<T, TDepth extends number = 5> = [TDepth] extends [never] ?
  * exhausting the budget makes a deeper leaf unreachable rather than falling back to the container -
  * it fails closed, and `forRawPath` is the way through.
  *
- * **The key names are only guaranteed at the top level.** `serializeStateIntoSnapshot` copies the
- * state with `Object.assign`, so `T`'s own keys are `data`'s keys. One level down it is not so:
+ * **Nested paths follow the serialized shape, not the class shape.** `serializeStateIntoSnapshot`
+ * copies the state with `Object.assign`, so `T`'s own keys are `data`'s keys. One level down,
  * `_serializeForSnapshot` routes any `Serializable` value through `serialize()`, which emits
- * `field.key ?? field.name` over `@serialize` decorated getters *only*. So for a nested
- * `Serializable`, an undecorated property is absent from `data` altogether and a renamed one lands
- * under a different key - while this type still offers the TypeScript name. Such a path compiles,
- * indexes an always-null expression, and enforces nothing under
- * {@link SnapshotIndex.asUnique}. Nested plain objects are safe, since those are copied by
- * `JSON.parse(JSON.stringify(...))`.
+ * `field.key ?? field.name` over `@serialize` decorated getters *only* - so this type recurses into
+ * the *return type of `serialize()`* rather than the class ({@link SerializedShapeOf}). For a
+ * nested value with a typed `serialize()` (n-domain >= 4.0.1 `DomainObject`/`DomainEntity`), a path
+ * segment therefore compiles only if a getter of that name is serialized - an undecorated getter is
+ * a compile error rather than an always-null index. A bare/untyped `Serializable` member gives the
+ * compiler nothing to check against and offers **no** nested paths at all (fail-closed;
+ * {@link SnapshotIndex.forRawPath} is the door). Nested plain objects are safe as before, since
+ * those are copied by `JSON.parse(JSON.stringify(...))` and their TypeScript names are their stored
+ * keys.
+ *
+ * What is still not checked: an explicit `@serialize("customKey")` rename. `Schema`'s keys are the
+ * getter *names* - a decorator cannot change a type - so a renamed field is still offered under its
+ * TypeScript name while the data holds the custom key; that path compiles, indexes an always-null
+ * expression, and enforces nothing under {@link SnapshotIndex.asUnique}. It is the one remaining
+ * silent case. Also not addressable: the `$typename` every serialized `Serializable` carries - it is
+ * real in storage, but the segment regex rejects `$`, so neither the typed nor the raw path door
+ * reaches it; index it by hand in a migration and query through `raw` if a polymorphic-type
+ * predicate has to be fast.
  *
  * Known gaps, all of which fail towards offering a path that does not exist: `Map`- and `Set`-valued
  * keys are recursed into although they serialize to `{}`; a union-typed object member loses its

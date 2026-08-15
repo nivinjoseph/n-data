@@ -1,6 +1,6 @@
 import { given } from "@nivinjoseph/n-defensive";
 import { validateBooleanFragment } from "../repository/sql-fragment.js";
-import { JsonValueType, SnapshotIndex, SnapshotPath } from "./snapshot-index.js";
+import { JsonValueType, SerializedShapeOf, SnapshotIndex, SnapshotPath } from "./snapshot-index.js";
 import { SnapshotArrayContainment, SnapshotArrayElement, SnapshotArrayIndex, SnapshotArrayPath, SnapshotElementMatch } from "./snapshot-array-index.js";
 
 /**
@@ -74,11 +74,14 @@ type NoDeclaredPaths = Record<never, never>;
  * Resolves a dotted path within `T` to the type of the leaf it names.
  *
  * The scalar counterpart of `SnapshotArrayElement`, and the same mechanism: the path arrives as a
- * string literal, so the value type follows from it with nothing written at the call site.
+ * string literal, so the value type follows from it with nothing written at the call site. The walk
+ * descends through the same {@link SerializedShapeOf} substitution the path union was built with, so
+ * a leaf reached through a nested `Serializable` resolves to its type in the *stored* record - the
+ * two must not diverge, or a path the union offers would resolve to `never` here.
  */
 export type SnapshotValueAt<T, TPath extends string> =
     TPath extends `${infer THead}.${infer TRest}`
-        ? THead extends keyof T ? SnapshotValueAt<NonNullable<T[THead]>, TRest> : never
+        ? THead extends keyof T ? SnapshotValueAt<SerializedShapeOf<NonNullable<T[THead]>>, TRest> : never
         : TPath extends keyof T ? NonNullable<T[TPath]> : never;
 
 /**
