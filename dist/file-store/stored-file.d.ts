@@ -1,6 +1,5 @@
-import { DomainEntity } from "@nivinjoseph/n-domain";
-import { Schema } from "@nivinjoseph/n-util";
-export declare class StoredFile extends DomainEntity<StoredFileSchema> {
+import { DomainEntity, DomainObjectData } from "@nivinjoseph/n-domain";
+export declare class StoredFile extends DomainEntity<StoredFile, "name" | "ext" | "size" | "mime" | "hash" | "signature" | "publicUrl" | "privateUrl"> {
     private readonly _name;
     private readonly _ext;
     private readonly _size;
@@ -22,5 +21,5 @@ export declare class StoredFile extends DomainEntity<StoredFileSchema> {
     updatePublicUrl(url: string): StoredFile;
     updatePrivateUrl(url: string): StoredFile;
 }
-export type StoredFileSchema = Schema<StoredFile, "id" | "name" | "ext" | "size" | "mime" | "hash" | "signature" | "publicUrl" | "privateUrl">;
+export type StoredFileSchema = DomainObjectData<StoredFile>;
 //# sourceMappingURL=stored-file.d.ts.map

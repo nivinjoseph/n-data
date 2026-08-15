@@ -1,5 +1,5 @@
 import { given } from "@nivinjoseph/n-defensive";
-import { DomainObject } from "@nivinjoseph/n-domain";
+import { DomainObject, DomainObjectData } from "@nivinjoseph/n-domain";
 import { serialize } from "@nivinjoseph/n-util";
 
 /**
@@ -17,7 +17,7 @@ import { serialize } from "@nivinjoseph/n-util";
  * @class StudioPlan
  */
 @serialize
-export class StudioPlan extends DomainObject
+export class StudioPlan extends DomainObject<StudioPlan, "tier" | "seatLimit">
 {
     private readonly _tier: string;
     private readonly _seatLimit: number;
@@ -36,7 +36,7 @@ export class StudioPlan extends DomainObject
      */
     public get isUnlimited(): boolean { return this._seatLimit === 0; }
 
-    public constructor(data: Pick<StudioPlan, "tier" | "seatLimit">)
+    public constructor(data: DomainObjectData<StudioPlan>)
     {
         super(data);
 

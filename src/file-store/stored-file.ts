@@ -1,11 +1,12 @@
 import { given } from "@nivinjoseph/n-defensive";
-import { DomainEntity } from "@nivinjoseph/n-domain";
-import { Schema, serialize } from "@nivinjoseph/n-util";
+import { DomainEntity, DomainObjectData } from "@nivinjoseph/n-domain";
+import { serialize } from "@nivinjoseph/n-util";
 import { createHash } from "node:crypto";
 
 
 @serialize
-export class StoredFile extends DomainEntity<StoredFileSchema>
+export class StoredFile extends DomainEntity<StoredFile,
+    "name" | "ext" | "size" | "mime" | "hash" | "signature" | "publicUrl" | "privateUrl">
 {
     private readonly _name: string;
     private readonly _ext: string;
@@ -118,5 +119,4 @@ export class StoredFile extends DomainEntity<StoredFileSchema>
 }
 
 
-export type StoredFileSchema = Schema<StoredFile,
-    "id" | "name" | "ext" | "size" | "mime" | "hash" | "signature" | "publicUrl" | "privateUrl">;
+export type StoredFileSchema = DomainObjectData<StoredFile>;
