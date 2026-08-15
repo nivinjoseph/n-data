@@ -23,7 +23,7 @@ export { DbMigrationScriptRunner } from "./migration/db-migration-script-runner.
 export { DbTableCreator, SnapshotTableInfo, SnapshotTableIndexInfo, SnapshotTableOptions } from "./migration/db-table-creator.js";
 export { SnapshotIndex, SnapshotPath, JsonValueType } from "./migration/snapshot-index.js";
 export { SnapshotArrayIndex, SnapshotArrayPath, SnapshotArrayContainment, SnapshotArrayPredicate, SnapshotElementMatch, JsonScalar } from "./migration/snapshot-array-index.js";
-export { SnapshotQuerySet, SnapshotPredicate, SnapshotOrderBy, SnapshotPathSpec, SnapshotNumericType } from "./migration/snapshot-query-set.js";
+export { SnapshotQuerySet, DeclaredSnapshotQuerySet, SnapshotPredicate, SnapshotOrderBy, SnapshotPathSpec, SnapshotNumericType, SnapshotCastFor, SnapshotShapeIssue } from "./migration/snapshot-query-set.js";
 
 export { CacheService } from "./caching/cache-service.js";
 export { InMemoryCacheService } from "./caching/in-memory-cache-service.js";

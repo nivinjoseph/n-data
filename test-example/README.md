@@ -69,7 +69,7 @@ name — exactly one underscore, integer suffix greater than zero — so `ExDbMi
 | --- | --- | --- |
 | `studio.test.ts` | no | Studio's behavior and invariants, through the factory and an in-memory repository |
 | `creator.test.ts` | no | the same for Creator, including that a natural key is per-tenant |
-| `serialization.test.ts` | no | every `@serialize`d class round-trips, through events *and* through a snapshot |
+| `serialization.test.ts` | no | every `@serialize`d class round-trips, through events *and* through a snapshot — and every declared index path resolves in a real snapshot (`verifyDocument`) |
 | `example.test.ts` | **yes** | migrations, the DDL and indexes, the organization filter, the unique constraints, and the unit of work |
 
 The split matters. `serialization.test.ts` is the one that catches the most damaging class of mistake: a
@@ -97,4 +97,8 @@ inline, so the suite pays that once instead of once per pool. A process that mig
 migration creates the table's indexes from that same object, and every predicate in the repository is built by
 it. That is what makes an index that is queried necessarily one that was created — and what makes
 `this.querySet.eq("slug", …)` reject a path the repository never declared, or a value of the wrong type for the
-leaf it names.
+leaf it names. The one mismatch the types cannot see — a `@serialize("customKey")` rename, which stores under
+the custom key while the type offers the getter name — is covered twice at runtime: the repositories verify the
+declared paths against the first document each process saves, and `serialization.test.ts` asserts
+`SnapshotStudioRepository.indexes.verifyDocument(studio.snapshot())` is empty, which also catches a rename
+hiding inside an optional member production might not store for a while.

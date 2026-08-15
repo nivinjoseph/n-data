@@ -35,12 +35,70 @@ interface Member
     isDeactivated: boolean;
 }
 
-// carries a method, so it is not a flat record - which is how an array of Serializable is kept out
+// an UNTYPED serialize(): its return type is keyless, so the stored element shape is unknowable -
+// which is how an array of bare Serializable is kept out (nothing checkable, so nothing offered)
 interface Serialish
 {
     id: string;
     serialize(): object;
 }
+
+// stand-ins for n-domain DomainObjects: a typed serialize() (n-domain >= 4.0.1) is what the path
+// types recurse into, and the substitution is structural, so these exercise it without depending on
+// n-domain classes
+
+// the serialized shape drops the derived getter and the method noise
+interface Plan
+{
+    readonly tier: string;
+    readonly seatLimit: number;
+    readonly isUnlimited: boolean;          // derived getter - NOT serialized, must not be a path
+    serialize(): { tier: string; seatLimit: number; };
+    equals(value: object | null): boolean;  // method noise the serialized shape strips
+}
+
+// a DomainObject nested in a DomainObject: the serialized shape's member is the CLASS type, so the
+// substitution has to apply again one level down
+interface Billing
+{
+    readonly plan: Plan;
+    readonly currency: string;
+    readonly summary: string;               // NOT serialized
+    serialize(): { plan: Plan; currency: string; };
+}
+
+// extends bare Serializable: serialize() returns Record<string, any>, which must offer NO nested
+// paths - substituting the index signature would widen the subtree's paths to `${string}` instead
+interface BareSerialish
+{
+    readonly foo: string;
+    serialize(): Record<string, any>;
+}
+
+// an array element with a FLAT typed serialized shape: legally containment-indexable, since the
+// stored element carries exactly those keys (plus a $typename that @> subset matching ignores)
+interface PlanChange
+{
+    readonly tier: string;
+    readonly changedAt: number;
+    readonly isRecent: boolean;             // derived - not serialized, must not be a match key
+    serialize(): { tier: string; changedAt: number; };
+}
+
+// an element whose SERIALIZED shape nests a DomainObject: not a flat record, so still excluded
+interface AuditEntry
+{
+    serialize(): { actor: Plan; note: string; };
+}
+
+// a plain-object union: the common keys are offered, which is sound - for plain objects the
+// TypeScript names ARE the stored keys, whichever variant a row holds
+interface CardInfo { kind: string; last4: string; }
+interface BankInfo { kind: string; accountNo: string; }
+
+// pairs with Plan in a union where only ONE member serializes: the serializable member's
+// class-shape keys are not its stored keys, so such a union must offer nothing
+interface PlainSummary { tier: string; label: string; }
 
 interface OrderState extends AggregateState
 {
@@ -60,7 +118,24 @@ interface OrderState extends AggregateState
     tainted: Array<string | Customer>;      // a union carrying an object: must not be offered
     matrix: Array<Array<string>>;           // an array of arrays: must not be offered
     nested: Array<{ a: string; b: Address; }>;  // an element that nests: must not be offered
-    serials: Array<Serialish>;              // an element carrying a method: must not be offered
+    serials: Array<Serialish>;              // an element with an untyped serialize(): must not be offered
+    plan: Plan;                             // typed serialize(): paths follow the serialized shape
+    billing: Billing;                       // a serializable inside a serializable: substituted at every level
+    bare: BareSerialish;                    // untyped serialize(): offers no nested paths at all
+    planHistory: Array<PlanChange>;         // element with a flat serialized shape: an array path
+    audits: Array<AuditEntry>;              // element whose serialized shape nests: must not be offered
+    blob: any;                              // unverifiable: must offer nothing, not a `string`-widened subtree
+    mystery: unknown;                       // just as unverifiable as any
+    anyItems: Array<any>;                   // an unverifiable element: not an array path
+    sessions: Map<string, string>;          // serializes to {}: every path into it is a phantom
+    labelsSet: Set<string>;                 // likewise
+    roMap: ReadonlyMap<string, number>;     // the readonly interfaces are the guard, so they are pinned too
+    mapItems: Array<Map<string, string>>;   // a Map element serializes to {}: containment would never match
+    meta: Record<string, string>;           // an index signature absorbs literal keys: subtree offers nothing
+    ref: string | Customer;                 // a mixed scalar/object union: rows may hold the object
+    payment: CardInfo | BankInfo;           // plain union: common keys are offered
+    poly: Plan | PlainSummary;              // only one member serializes: offers nothing
+    planOrChange: Plan | PlanChange;        // ALL members serialize: common SERIALIZED keys are offered
     optionalTags?: Array<string>;
     // eslint-disable-next-line @typescript-eslint/no-unsafe-function-type
     validator: Function;                    // must not be offered, nor fabricate a subtree
@@ -86,8 +161,8 @@ interface TeamState extends AggregateState
     members: Array<Member>;
 }
 
-// an index signature widens the path union to `string`, which disables the check entirely. Pinned
-// so the Exclude in SnapshotPath cannot silently change that behaviour.
+// an index signature absorbs the literal keys ('keyof' cannot recover them), so such a state offers
+// NO paths at all - pinned fail-closed, where it used to widen to `string` and disable the check.
 interface LooseState extends AggregateState
 {
     [key: string]: any;
@@ -244,6 +319,21 @@ await describe("DbTableCreator tests", async () =>
             assert.strictEqual(db.commands[1], "create index if not exists idx_order_snaps_customer_city on order_snaps((data#>>'{\"customer\",\"city\"}'));");
             assert.deepStrictEqual(info.createdIndexes.map(t => t.paths), [["customer.city"]]);
             assert.strictEqual(cityIndex.expressionForPath("customer.city"), "(data#>>'{\"customer\",\"city\"}')");
+        });
+
+        // the serialized-shape substitution is purely compile-time: a path through a serializable
+        // member emits exactly the DDL any nested path does
+        await test("a path through a serialized shape emits the same DDL as any nested path", async () =>
+        {
+            const { creator, db } = createCreator();
+
+            await creator.createSnapshotTableForAggregate(orderType, {
+                indexes: [SnapshotIndex.forPath<OrderState>("plan.tier")],
+                arrayIndexes: [SnapshotArrayIndex.forPath<OrderState>("planHistory")]
+            });
+
+            assert.strictEqual(db.commands[1], "create index if not exists idx_order_snaps_plan_tier on order_snaps((data#>>'{\"plan\",\"tier\"}'));");
+            assert.strictEqual(db.commands[2], "create index if not exists idx_order_snaps_planhistory_gin on order_snaps using gin((data->'planHistory') jsonb_path_ops);");
         });
 
         await test("org snapshot table with no indexes emits an (organization_id) index", async () =>
@@ -809,6 +899,41 @@ await describe("DbTableCreator tests", async () =>
             assert.ok(true);
         });
 
+        // nested paths follow the SERIALIZED shape: for a member with a typed serialize(), what is
+        // offered is what _serializeForSnapshot actually stores - the return type of serialize()
+        await test("paths through a serializable member follow its serialized shape", () =>
+        {
+            SnapshotIndex.forPath<OrderState>("plan.tier");
+            SnapshotIndex.forPath<OrderState>("plan.seatLimit");
+            SnapshotIndex.forPath<OrderState>("billing.currency");
+            SnapshotIndex.forPath<OrderState>("billing.plan.tier");          // substituted twice
+
+            // @ts-expect-error - a derived getter is absent from the stored record (the gap this closes)
+            SnapshotIndex.forPath<OrderState>("plan.isUnlimited");
+            // @ts-expect-error - methods are not stored keys
+            SnapshotIndex.forPath<OrderState>("plan.equals");
+            // $typename is stored but not addressable - and both halves are pinned at once here: the
+            // type does not offer it, and the segment regex throws on '$' even through the raw door
+            // @ts-expect-error - not offered by the path type
+            assert.throws(() => SnapshotIndex.forPath<OrderState>("plan.$typename"));
+            // @ts-expect-error - not serialized on the nested serializable either
+            SnapshotIndex.forPath<OrderState>("billing.plan.isUnlimited");
+            // @ts-expect-error - not serialized
+            SnapshotIndex.forPath<OrderState>("billing.summary");
+
+            // the widening guard: an UNTYPED serialize() must not substitute its index signature,
+            // which would widen this subtree's paths to `${string}` and compile any suffix
+            // @ts-expect-error - a bare Serializable offers no nested paths, even for real properties
+            SnapshotIndex.forPath<OrderState>("bare.foo");
+            // @ts-expect-error - and no fabricated ones either
+            SnapshotIndex.forPath<OrderState>("bare.anything");
+
+            // forRawPath remains the deliberate way through for what the stored shape cannot offer
+            SnapshotIndex.forRawPath<OrderState>("bare.foo");
+
+            assert.ok(true);
+        });
+
         await test("a builder bound to the wrong state is rejected by the create method", async () =>
         {
             const { creator } = createCreator();
@@ -869,10 +994,58 @@ await describe("DbTableCreator tests", async () =>
                 SnapshotIndex.forRawPath<PlainStateWithOrgId>("organizationId").expressions[0],
                 "(data->>'organizationId')");
 
-            // Exclude<string, "organizationId"> is still string, so a state whose paths widen to
-            // `string` is unaffected - the widening hole swallows this rule along with all the others
+            // an index signature no longer widens the union to `string` - it fails closed, so the
+            // exclusion question does not even arise: no path on such a state compiles at all
+            // @ts-expect-error - fail-closed, not string-widened
             SnapshotIndex.forPath<LooseState>("anythingGoes");
+            // @ts-expect-error - including the one this test is about
             SnapshotIndex.forPath<LooseState>("organizationId");
+
+            assert.ok(true);
+        });
+
+        // everything the compiler cannot verify fails CLOSED - no paths, not unchecked ones
+        await test("unverifiable shapes offer no paths", () =>
+        {
+            // @ts-expect-error - an any-typed member is unverifiable, and must not be offered as a leaf
+            SnapshotIndex.forPath<OrderState>("blob");
+            // @ts-expect-error - nor fabricate a subtree
+            SnapshotIndex.forPath<OrderState>("blob.anything");
+            // @ts-expect-error - unknown is just as unverifiable
+            SnapshotIndex.forPath<OrderState>("mystery");
+            // @ts-expect-error - a Map serializes to {}, so its members are phantoms
+            SnapshotIndex.forPath<OrderState>("sessions.size");
+            // @ts-expect-error - nor is the Map itself a leaf
+            SnapshotIndex.forPath<OrderState>("sessions");
+            // @ts-expect-error - Set likewise
+            SnapshotIndex.forPath<OrderState>("labelsSet.size");
+            // @ts-expect-error - the readonly interfaces are what the guard names, so they are caught too
+            SnapshotIndex.forPath<OrderState>("roMap.size");
+            // @ts-expect-error - an index signature absorbs the literal keys, so the subtree offers nothing
+            SnapshotIndex.forPath<OrderState>("meta.anything");
+            // @ts-expect-error - nor is the record itself a leaf
+            SnapshotIndex.forPath<OrderState>("meta");
+
+            // forRawPath remains the deliberate way through for all of them
+            SnapshotIndex.forRawPath<OrderState>("meta.anything");
+
+            assert.ok(true);
+        });
+
+        // union-typed members: what the WHOLE union can prove is offered, nothing more
+        await test("union members offer their common checkable paths only", () =>
+        {
+            SnapshotIndex.forPath<OrderState>("payment.kind");               // common key of a plain union
+            SnapshotIndex.forPath<OrderState>("planOrChange.tier");          // common SERIALIZED key
+
+            // @ts-expect-error - a key only one variant carries is not offered
+            SnapshotIndex.forPath<OrderState>("payment.last4");
+            // @ts-expect-error - a mixed scalar/object union is not a leaf: rows may hold the object
+            SnapshotIndex.forPath<OrderState>("ref");
+            // @ts-expect-error - only one member serializes: class-shape keys are not stored keys
+            SnapshotIndex.forPath<OrderState>("poly.tier");
+            // @ts-expect-error - and a derived getter certainly is not
+            SnapshotIndex.forPath<OrderState>("poly.isUnlimited");
 
             assert.ok(true);
         });
@@ -928,12 +1101,45 @@ await describe("DbTableCreator tests", async () =>
             SnapshotArrayIndex.forPath<OrderState>("matrix");
             // @ts-expect-error - an element carrying a nested member is not a flat record
             SnapshotArrayIndex.forPath<OrderState>("nested");
-            // @ts-expect-error - an element carrying a method is not a flat record, which is how an
-            // array of Serializable is kept out: its stored keys are not its TypeScript names
+            // @ts-expect-error - an UNTYPED serialize() yields a keyless stored shape, which is how
+            // an array of bare Serializable is kept out: nothing checkable, so nothing offered
             SnapshotArrayIndex.forPath<OrderState>("serials");
+            // @ts-expect-error - an any element is unverifiable, so Array<any> is not offered either
+            SnapshotArrayIndex.forPath<OrderState>("anyItems");
+            // @ts-expect-error - a Map element serializes to {}, so containment would never match
+            SnapshotArrayIndex.forPath<OrderState>("mapItems");
+            // @ts-expect-error - an index-signature state offers no array paths, mirroring the leaf walk
+            SnapshotArrayIndex.forPath<LooseState>("anything");
 
             // forRawPath remains the deliberate way through for every one of those
             SnapshotArrayIndex.forRawPath<OrderState>("serials");
+
+            assert.ok(true);
+        });
+
+        // the element judgment is also over the STORED shape: a typed serialize() makes an array of
+        // serializable elements indexable when its serialized record is flat, and keeps it out when it nests
+        await test("arrays of serializable elements are judged by their serialized shape", () =>
+        {
+            SnapshotArrayIndex.forPath<OrderState>("planHistory");           // flat serialized shape
+
+            // @ts-expect-error - the serialized shape nests a serializable: not a flat record
+            SnapshotArrayIndex.forPath<OrderState>("audits");
+
+            const history = SnapshotArrayIndex.forPath<OrderState>("planHistory").containmentForPath("planHistory");
+
+            // match documents are typed against the SERIALIZED element shape - which is also what is
+            // stored, so these would actually match (the stored $typename never blocks @>, which is
+            // subset matching)
+            history.contains({ tier: "free" });
+            history.contains({ tier: "free", changedAt: 1 });
+
+            // @ts-expect-error - a derived getter is not a stored key
+            history.contains({ isRecent: true });
+            // @ts-expect-error - methods are not match keys
+            history.contains({ serialize: "x" });
+            // @ts-expect-error - $typename is not offered through the typed door; the raw door takes it
+            history.contains({ $typename: "PlanChange" });
 
             assert.ok(true);
         });

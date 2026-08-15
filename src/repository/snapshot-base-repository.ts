@@ -9,7 +9,8 @@ import { AggregateNotFoundException } from "./aggregate-not-found-exception.js";
 import { RepositoryQuery, RepositoryQueryBuilder } from "./repository-query.js";
 import { QueryResult } from "../db/query-result.js";
 import { executeRawQuery } from "./raw-query.js";
-import { SnapshotPredicate, SnapshotQuerySet } from "../migration/snapshot-query-set.js";
+import type { DeclaredSnapshotQuerySet, SnapshotPredicate } from "../migration/snapshot-query-set.js";
+import { SnapshotShapeGuard } from "./snapshot-shape-guard.js";
 
 /**
  * Reads aggregates from the snapshot table - the materialized current state - and writes
@@ -26,8 +27,8 @@ import { SnapshotPredicate, SnapshotQuerySet } from "../migration/snapshot-query
  * through the `RepositoryQuery` object form. {@link queryStatement} is the escape hatch for a read
  * that shape cannot express.
  *
- * **Declare what is queryable with a `SnapshotQuerySet`, handed to `super` and exposed by overriding
- * {@link querySet}.** That one object is both what the migration creates the table's indexes from and
+ * **Declare what is queryable with a `SnapshotQuerySet`, exposed by overriding {@link querySet}.**
+ * That one object is both what the migration creates the table's indexes from and
  * what the predicates are built by, so an index that is queried is necessarily one that was created.
  * `DbTableCreator` builds a btree expression index per path; nothing is added to the table, since the
  * index is built directly over the extraction expression.
@@ -75,8 +76,9 @@ import { SnapshotPredicate, SnapshotQuerySet } from "../migration/snapshot-query
  *         .withPath("orderNumber", { unique: true })
  *         .withArrayPath("tags");
  *
- *     // required by the base, which declares it abstract at a widened type; the `typeof` is what
- *     // carries the narrow one to the call sites
+ *     // required by the base, which declares it abstract at the declaration-only
+ *     // DeclaredSnapshotQuerySet type; the `typeof` is what carries the narrow, queryable one
+ *     // to the call sites
  *     protected override get querySet(): typeof OrderRepository.indexes { return OrderRepository.indexes; }
  *
  *     public constructor(eventStreamRepository: OrderEventStreamRepository)
@@ -120,8 +122,9 @@ export abstract class SnapshotBaseRepository<T extends AggregateRoot<TState, TDo
     /**
      * The indexes this repository declares, and the typed predicates over them.
      *
-     * **Abstract on purpose.** The declared return type is widened - the base cannot know which paths a
-     * subclass chooses - so implement it by returning the `SnapshotQuerySet` static, typed with `typeof`:
+     * **Abstract on purpose.** The declared return type is `DeclaredSnapshotQuerySet` - the
+     * declarations only, with not one query method on it - because the base cannot know which paths a
+     * subclass chooses. Implement it by returning the `SnapshotQuerySet` static, typed with `typeof`:
      *
      * ```typescript
      * public static readonly indexes = SnapshotQuerySet.for<OrderState>().withPath("status");
@@ -133,17 +136,18 @@ export abstract class SnapshotBaseRepository<T extends AggregateRoot<TState, TDo
      * name of the job each side does with it: the migration reads the static to create the table's
      * *indexes*, and this getter is what the *queries* below are built from.
      *
-     * The `typeof` is what carries the narrow type to the call sites, and it is the whole point: at the
-     * widened type `eq` accepts *any* string as a path, and a numeric path with no declared cast, so an
-     * implementation returning `SnapshotQuerySet<TState, any, any>` silently gives up path and cast
-     * checking while keeping value checking. Requiring the member is what stops that happening by
-     * omission; typing it with `typeof` is what makes it worth having.
+     * The `typeof` is what carries the narrow type to the call sites, and the trap it guards against is
+     * closed twice over: an override that copies THIS declared type gets an object that cannot build a
+     * single predicate (no `eq`, no `contains` - the mistake announces itself at the first query), and
+     * the old widened spelling `SnapshotQuerySet<TState, any, any>` - which used to compile and silently
+     * give up path and cast checking - is now itself a compile error whose message names the fix.
      *
-     * Nothing in this class reads it, and nothing should read it from a constructor. A subclass may back
-     * it with an instance field rather than a static, and a subclass field initializer runs *after*
-     * `super()` - so a constructor-time read would see `undefined`.
+     * `_save` reads this getter, to verify the declared paths against the first snapshot it stores.
+     * Nothing should read it from a constructor: a subclass may back it with an instance field rather
+     * than a static, and a subclass field initializer runs *after* `super()` - so a constructor-time
+     * read would see `undefined`.
      */
-    protected abstract get querySet(): SnapshotQuerySet<TState, any, any>;
+    protected abstract get querySet(): DeclaredSnapshotQuerySet<TState>;
 
     public get eventStreamRepository(): EventStreamBaseRepository<T, TState, TDomainEvent> { return this._eventStreamRepository; }
 
@@ -218,7 +222,14 @@ export abstract class SnapshotBaseRepository<T extends AggregateRoot<TState, TDo
      * was queued on that same instance, **this commits that too**, because a unit of work commits as
      * a whole. Use {@link saveWithin} when several writes have to land together.
      *
+     * The first save each process makes per query set also verifies the declared index paths against
+     * the real snapshot document (`SnapshotQuerySet.verifyDocument`): a fatal shape issue - a
+     * `@serialize("customKey")` rename, raw-path drift, a Map/Set where an array was declared -
+     * throws before anything is queued, and ambiguous findings log one warning. One `WeakSet` lookup
+     * per save after that.
+     *
      * @param {T} value - The aggregate to save. A no-op when it is neither new nor changed.
+     * @throws {ApplicationException} If a declared index path has a fatal shape issue against the document being saved.
      */
     public save(value: T): Promise<void>
     {
@@ -229,8 +240,12 @@ export abstract class SnapshotBaseRepository<T extends AggregateRoot<TState, TDo
      * Saves the snapshot and the underlying event stream into a transaction the caller owns, and
      * **does not commit**.
      *
+     * Shape-verified exactly as {@link save} is - a fatal issue throws before anything is queued on
+     * the caller's transaction.
+     *
      * @param {T} value - The aggregate to save. A no-op when it is neither new nor changed.
      * @param {UnitOfWork} unitOfWork - The caller's transaction. Required; committing it is theirs to do.
+     * @throws {ApplicationException} If a declared index path has a fatal shape issue against the document being saved.
      */
     public saveWithin(value: T, unitOfWork: UnitOfWork): Promise<void>
     {
@@ -359,6 +374,12 @@ export abstract class SnapshotBaseRepository<T extends AggregateRoot<TState, TDo
 
         try
         {
+            // shape-checked against the declared paths before anything is queued on the unit of
+            // work, so a fatal issue (a @serialize rename, raw-path drift) rejects the save whole -
+            // once per process per query set, one WeakSet lookup per save after that
+            const snapshot = value.snapshot() as object;
+            await SnapshotShapeGuard.verify(this.table, this.querySet, snapshot, this.logger);
+
             // always the non-committing door: this repository decides whether the transaction gets
             // committed, and the event stream write has to land or not land with the snapshot write
             await this._eventStreamRepository.saveWithin(value, unitOfWork);
@@ -376,7 +397,7 @@ export abstract class SnapshotBaseRepository<T extends AggregateRoot<TState, TDo
                             on conflict (id) do update
                             set data = excluded.data;`;
 
-            await this.db.executeCommandWithinUnitOfWork(unitOfWork, sql, value.id, value.snapshot());
+            await this.db.executeCommandWithinUnitOfWork(unitOfWork, sql, value.id, snapshot);
 
             if (owned)
                 await unitOfWork.commit();

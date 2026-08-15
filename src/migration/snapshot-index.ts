@@ -64,24 +64,108 @@ export enum JsonValueType
 export type PreviousDepth = [never, 0, 1, 2, 3, 4, 5];
 
 /**
+ * The scalars jsonb carries, and so the only leaf values a path can usefully name.
+ *
+ * jsonb also has null, which is deliberately absent: `undefined` stringifies to `null` too, so
+ * accepting one would make a forgotten lookup indistinguishable from a deliberate null match.
+ *
+ * Lives here rather than in `snapshot-array-index` (which re-exports it, so the import surface is
+ * unchanged) because both path walks consume it: the array walk to admit scalar elements, and
+ * `SnapshotLeafPath` to *reject* a leaf that is not one - a member typed `string | Customer` must
+ * not be offered as a leaf, since rows may hold the object.
+ */
+export type JsonScalar = string | number | boolean;
+
+/**
+ * True exactly for `any` and `unknown` - the two types every structural check passes vacuously.
+ *
+ * (`unknown extends T` holds only for those two; the `0 extends 1 & T` idiom catches only `any`.)
+ * A member so typed gives the compiler nothing to verify a path against, so both walks map it to
+ * `never` - fail-closed, like every other unverifiable shape, with `forRawPath` as the door.
+ * Exported for the array walk; deliberately absent from the barrel, like {@link PreviousDepth}.
+ */
+export type IsAnyOrUnknown<T> = unknown extends T ? true : false;
+
+/**
+ * Containers `JSON.stringify` renders as `{}`: any path into one indexes an always-null expression,
+ * and as an array-index leaf one would never satisfy a containment query.
+ *
+ * The readonly interfaces also catch their mutable counterparts (a `Map` is structurally a
+ * `ReadonlyMap`); `WeakMap`/`WeakSet` are named for completeness even though their all-method
+ * surfaces contribute no paths on their own. Exported for the array walk; absent from the barrel.
+ */
+export type SnapshotOpaqueContainer =
+    ReadonlyMap<any, any> | ReadonlySet<any> | WeakMap<any, any> | WeakSet<any>;
+
+/**
+ * The shape a nested value actually stores: the return type of a *typed* `serialize()` where one
+ * exists, or the value itself where none does.
+ *
+ * `_serializeForSnapshot` routes any `Serializable` through `serialize()`, so for such a value the
+ * stored keys are the serialized shape's keys, not the class's property names. n-domain >= 4.0.1
+ * types that shape - `DomainObject<TThis, TDataKeys>` returns `Schema<TThis, TDataKeys>` - which is
+ * what makes this substitution possible.
+ *
+ * Guarded, and every guard fails CLOSED - to `Record<never, never>`, an object with no keys, whose
+ * path union is `never` - because a substitution that produced an index signature would widen the
+ * subtree's path union to `string` and disable checking entirely (the documented index-signature
+ * gap):
+ * - a `serialize()` whose return type carries a string index signature - which includes the bare
+ *   `Serializable` default of `Record<string, any>`, and `any` - offers no nested paths at all;
+ * - a `serialize()` typed to return an array offers none either, since an array's numeric keys are
+ *   not dot-addressable jsonb keys.
+ *
+ * Unions resolve by what the whole union can prove. The outer check is non-distributive (tuple
+ * brackets), so it succeeds only when **every** member has a typed `serialize()` - `TData` is then
+ * the union of their returns, and the walk over it offers the keys common to all of them, which is
+ * sound. A union where only *some* members serialize fails closed (the middle branch below): the
+ * class-shape keys of the serializable members are not their stored keys, so nothing checkable is
+ * on offer. A union of plain objects passes through untouched - `keyof` over it already yields the
+ * common keys, and for plain objects the TypeScript names *are* the stored keys.
+ *
+ * The check is structural on purpose - a test fixture with a typed `serialize()` behaves like a
+ * real DomainObject without depending on n-domain classes.
+ *
+ * Exported so `SnapshotArrayPath` and `SnapshotValueAt` apply the same substitution - the three
+ * walk the same state shape. Deliberately absent from the barrel, like {@link PreviousDepth}.
+ */
+export type SerializedShapeOf<V> =
+    [V] extends [{ serialize(): infer TData extends object; }]
+        ? [TData] extends [ReadonlyArray<any>] ? Record<never, never>
+        : string extends keyof TData ? Record<never, never>
+        : TData
+        // distributive on purpose: true lands in the union exactly when SOME member serializes
+        : true extends (V extends { serialize(): object; } ? true : false)
+            ? Record<never, never>
+            : V;
+
+/**
  * The raw leaf-path union, before {@link SnapshotPath} removes what must never be indexed.
  *
  * Not exported: every *typed* signature takes {@link SnapshotPath}, so the rules live in one place
  * and adding one lands on the whole API at once. The `Raw` overloads deliberately take `string`,
  * which is what makes them the escape hatch.
  */
-type SnapshotLeafPath<T, TDepth extends number = 5> = [TDepth] extends [never] ? never : {
-    // a key that cannot hold a JSON leaf maps to never, which drops out of the union when indexed -
-    // filtering here rather than with an `as` clause keeps the key set intact, so indexing stays legal.
-    // `Function` is named explicitly because it does NOT match the call signature below, so without
-    // it a Function-typed key falls to the object branch and fabricates a subtree of its methods.
-    [K in keyof T & string]:
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-function-type
-    NonNullable<T[K]> extends Function ? never
-    : NonNullable<T[K]> extends ReadonlyArray<any> ? never
-    : NonNullable<T[K]> extends object ? `${K}.${SnapshotLeafPath<NonNullable<T[K]>, PreviousDepth[TDepth]>}`
-    : K
-}[keyof T & string];
+type SnapshotLeafPath<T, TDepth extends number = 5> = [TDepth] extends [never] ? never
+    // an index signature absorbs the literal keys (`keyof` cannot recover them), so a level carrying
+    // one offers NO paths rather than `string`-widened unchecked ones - fail-closed, forRawPath through
+    : string extends keyof T ? never
+    : {
+        // a key that cannot hold a JSON leaf maps to never, which drops out of the union when indexed -
+        // filtering here rather than with an `as` clause keeps the key set intact, so indexing stays legal.
+        // `Function` is named explicitly because it does NOT match the call signature below, so without
+        // it a Function-typed key falls to the object branch and fabricates a subtree of its methods.
+        // The any/unknown guard comes first because `any` matches every later check.
+        [K in keyof T & string]:
+        IsAnyOrUnknown<T[K]> extends true ? never
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-function-type
+        : NonNullable<T[K]> extends Function ? never
+        : NonNullable<T[K]> extends SnapshotOpaqueContainer ? never
+        : NonNullable<T[K]> extends ReadonlyArray<any> ? never
+        : NonNullable<T[K]> extends object ? `${K}.${SnapshotLeafPath<SerializedShapeOf<NonNullable<T[K]>>, PreviousDepth[TDepth]>}`
+        // bracketed so a mixed union (`string | Customer`) fails as a whole instead of being offered
+        : [NonNullable<T[K]>] extends [JsonScalar] ? K : never
+    }[keyof T & string];
 
 /**
  * A dot-delimited path to a **leaf scalar** inside `T`, for indexing a snapshot's `data` column and
@@ -106,28 +190,49 @@ type SnapshotLeafPath<T, TDepth extends number = 5> = [TDepth] extends [never] ?
  * once, with no dependency from this module onto the org base class. The cost is a plain
  * `AggregateState` that legitimately keeps a top-level `organizationId` inside `data` - off-pattern,
  * since n-domain offers `OrgAggregateRoot` for that - which reaches it through
- * {@link SnapshotIndex.forRawPath}, as containers do. It also does not reach a state whose paths
- * widen to `string` (see below), since `Exclude<string, "organizationId">` is still `string`.
+ * {@link SnapshotIndex.forRawPath}, as containers do. (The exclusion used to be unreachable on a
+ * state whose paths widened to `string` through an index signature; such a state now offers no
+ * paths at all - see below - so the question no longer arises.)
  *
  * Depth is bounded so a self-referential state type cannot hang the compiler: paths of up to six
  * segments are offered, and a seventh is not. Because a container contributes only its nested paths,
  * exhausting the budget makes a deeper leaf unreachable rather than falling back to the container -
  * it fails closed, and `forRawPath` is the way through.
  *
- * **The key names are only guaranteed at the top level.** `serializeStateIntoSnapshot` copies the
- * state with `Object.assign`, so `T`'s own keys are `data`'s keys. One level down it is not so:
+ * **Nested paths follow the serialized shape, not the class shape.** `serializeStateIntoSnapshot`
+ * copies the state with `Object.assign`, so `T`'s own keys are `data`'s keys. One level down,
  * `_serializeForSnapshot` routes any `Serializable` value through `serialize()`, which emits
- * `field.key ?? field.name` over `@serialize` decorated getters *only*. So for a nested
- * `Serializable`, an undecorated property is absent from `data` altogether and a renamed one lands
- * under a different key - while this type still offers the TypeScript name. Such a path compiles,
- * indexes an always-null expression, and enforces nothing under
- * {@link SnapshotIndex.asUnique}. Nested plain objects are safe, since those are copied by
- * `JSON.parse(JSON.stringify(...))`.
+ * `field.key ?? field.name` over `@serialize` decorated getters *only* - so this type recurses into
+ * the *return type of `serialize()`* rather than the class ({@link SerializedShapeOf}). For a
+ * nested value with a typed `serialize()` (n-domain >= 4.0.1 `DomainObject`/`DomainEntity`), a path
+ * segment therefore compiles only if a getter of that name is serialized - an undecorated getter is
+ * a compile error rather than an always-null index. A bare/untyped `Serializable` member gives the
+ * compiler nothing to check against and offers **no** nested paths at all (fail-closed;
+ * {@link SnapshotIndex.forRawPath} is the door). Nested plain objects are safe as before, since
+ * those are copied by `JSON.parse(JSON.stringify(...))` and their TypeScript names are their stored
+ * keys.
  *
- * Known gaps, all of which fail towards offering a path that does not exist: `Map`- and `Set`-valued
- * keys are recursed into although they serialize to `{}`; a union-typed object member loses its
- * nested paths entirely; and an index signature or an `any`-typed member widens the result to
- * `string`, disabling the check.
+ * What the *type system* still cannot check: an explicit `@serialize("customKey")` rename. `Schema`'s
+ * keys are the getter *names* - a decorator cannot change a type - so a renamed field is still
+ * offered under its TypeScript name while the data holds the custom key. It is no longer silent,
+ * though: the snapshot repositories verify every declared path against the first document each
+ * process saves (`SnapshotQuerySet.verifyDocument`), and a rename throws there, before anything is
+ * written. What remains genuinely uncaught: a rename inside an optional member a process never
+ * stores (close it with the `verifyDocument` assertion in a test), and a rename whose custom key
+ * coincidentally equals another real key. Also not addressable: the `$typename` every serialized
+ * `Serializable` carries - it is
+ * real in storage, but the segment regex rejects `$`, so neither the typed nor the raw path door
+ * reaches it; index it by hand in a migration and query through `raw` if a polymorphic-type
+ * predicate has to be fast.
+ *
+ * Everything unverifiable fails **closed** - no paths rather than unchecked ones, with `forRawPath`
+ * as the door: a level carrying a string index signature ('keyof' cannot recover its literal keys);
+ * an `any`- or `unknown`-typed member; a `Map`/`Set`/`WeakMap`/`WeakSet` member (serializes to
+ * `{}`); a mixed union like `string | Customer` (rows may hold the object); and a union where only
+ * some members serialize (class-shape keys are not stored keys). Unions where *every* member is
+ * checkable stay useful: common keys are offered, which is sound in both the all-plain and the
+ * all-serializable case. The remaining known gap besides the rename above: a template-literal index
+ * signature (`` [k: `x${string}`] ``) still partially widens its level.
  */
 export type SnapshotPath<T> = Exclude<SnapshotLeafPath<T>, "organizationId">;
 
@@ -236,7 +341,7 @@ export class SnapshotIndex<T>
      * Starts an index over the given key within `data`, dot delimited to reach a nested key.
      *
      * @param {SnapshotPath<T>} path - The key to index, checked against the state shape.
-     * @param {JsonValueType} [type] - Optional type to cast the extracted text to. Supply it whenever the value is not a string, since an uncast comparison orders lexicographically and '9' > '100'. A cast also changes what counts as equal for {@link asUnique} - as text `1` and `1.0` differ, as numeric they do not.
+     * @param {JsonValueType} [type] - Optional type to cast the extracted text to. Supply it whenever the value is not a string, since an uncast comparison orders lexicographically and '9' > '100'. A cast also changes what counts as equal for {@link asUnique} - as text `1` and `1.0` differ, as numeric they do not. Unlike `SnapshotQuerySet.withPath`, the cast is NOT checked against the leaf type here: the state is supplied explicitly, and with no partial type-argument inference the path collapses to the whole union, which would make the leaf check reject every cast - so prefer declaring casts through the set, where the mismatch is a compile error.
      * @returns {SnapshotIndex<T>} A new index over that path.
      * @throws {ArgumentNullException} If path is null or undefined.
      * @throws {ArgumentException} If path is not a string, is empty or whitespace, is not one or more '.' delimited bare JSON keys, or type is not a JsonValueType.

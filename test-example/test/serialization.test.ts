@@ -6,6 +6,7 @@ import { Creator } from "../creator/creator.js";
 import { CreatorStateFactory } from "../creator/creator-state.js";
 import { DefaultCreatorFactory } from "../creator/factories/default-creator-factory.js";
 import { DefaultStudioFactory } from "../studio/factories/default-studio-factory.js";
+import { SnapshotStudioRepository } from "../studio/repositories/snapshot-studio-repository.js";
 import { Studio } from "../studio/studio.js";
 import { StudioStateFactory } from "../studio/studio-state.js";
 import { StudioPlan } from "../studio/value-objects/studio-plan.js";
@@ -115,6 +116,17 @@ await describe("Serialization", async () =>
 
         // reconstructed from state, so there are no events to replay and nothing pending
         assert.strictEqual(restored.hasChanges, false);
+    });
+
+    // the test-time half of the shape guard the repositories run on first save: every path the
+    // repository declares resolves inside a real snapshot document. This is what catches a
+    // '@serialize("customKey")' rename hiding inside an OPTIONAL member that production might not
+    // store for a while - the compile-time check cannot see renames at all.
+    await test("every declared index path resolves in a real snapshot", async () =>
+    {
+        const studio = await createStudio();
+
+        assert.deepStrictEqual(SnapshotStudioRepository.indexes.verifyDocument(studio.snapshot() as object), []);
     });
 
     await test("replay and snapshot agree", async () =>
