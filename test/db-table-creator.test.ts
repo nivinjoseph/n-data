@@ -91,6 +91,15 @@ interface AuditEntry
     serialize(): { actor: Plan; note: string; };
 }
 
+// a plain-object union: the common keys are offered, which is sound - for plain objects the
+// TypeScript names ARE the stored keys, whichever variant a row holds
+interface CardInfo { kind: string; last4: string; }
+interface BankInfo { kind: string; accountNo: string; }
+
+// pairs with Plan in a union where only ONE member serializes: the serializable member's
+// class-shape keys are not its stored keys, so such a union must offer nothing
+interface PlainSummary { tier: string; label: string; }
+
 interface OrderState extends AggregateState
 {
     status: string;
@@ -115,6 +124,18 @@ interface OrderState extends AggregateState
     bare: BareSerialish;                    // untyped serialize(): offers no nested paths at all
     planHistory: Array<PlanChange>;         // element with a flat serialized shape: an array path
     audits: Array<AuditEntry>;              // element whose serialized shape nests: must not be offered
+    blob: any;                              // unverifiable: must offer nothing, not a `string`-widened subtree
+    mystery: unknown;                       // just as unverifiable as any
+    anyItems: Array<any>;                   // an unverifiable element: not an array path
+    sessions: Map<string, string>;          // serializes to {}: every path into it is a phantom
+    labelsSet: Set<string>;                 // likewise
+    roMap: ReadonlyMap<string, number>;     // the readonly interfaces are the guard, so they are pinned too
+    mapItems: Array<Map<string, string>>;   // a Map element serializes to {}: containment would never match
+    meta: Record<string, string>;           // an index signature absorbs literal keys: subtree offers nothing
+    ref: string | Customer;                 // a mixed scalar/object union: rows may hold the object
+    payment: CardInfo | BankInfo;           // plain union: common keys are offered
+    poly: Plan | PlainSummary;              // only one member serializes: offers nothing
+    planOrChange: Plan | PlanChange;        // ALL members serialize: common SERIALIZED keys are offered
     optionalTags?: Array<string>;
     // eslint-disable-next-line @typescript-eslint/no-unsafe-function-type
     validator: Function;                    // must not be offered, nor fabricate a subtree
@@ -140,8 +161,8 @@ interface TeamState extends AggregateState
     members: Array<Member>;
 }
 
-// an index signature widens the path union to `string`, which disables the check entirely. Pinned
-// so the Exclude in SnapshotPath cannot silently change that behaviour.
+// an index signature absorbs the literal keys ('keyof' cannot recover them), so such a state offers
+// NO paths at all - pinned fail-closed, where it used to widen to `string` and disable the check.
 interface LooseState extends AggregateState
 {
     [key: string]: any;
@@ -973,10 +994,58 @@ await describe("DbTableCreator tests", async () =>
                 SnapshotIndex.forRawPath<PlainStateWithOrgId>("organizationId").expressions[0],
                 "(data->>'organizationId')");
 
-            // Exclude<string, "organizationId"> is still string, so a state whose paths widen to
-            // `string` is unaffected - the widening hole swallows this rule along with all the others
+            // an index signature no longer widens the union to `string` - it fails closed, so the
+            // exclusion question does not even arise: no path on such a state compiles at all
+            // @ts-expect-error - fail-closed, not string-widened
             SnapshotIndex.forPath<LooseState>("anythingGoes");
+            // @ts-expect-error - including the one this test is about
             SnapshotIndex.forPath<LooseState>("organizationId");
+
+            assert.ok(true);
+        });
+
+        // everything the compiler cannot verify fails CLOSED - no paths, not unchecked ones
+        await test("unverifiable shapes offer no paths", () =>
+        {
+            // @ts-expect-error - an any-typed member is unverifiable, and must not be offered as a leaf
+            SnapshotIndex.forPath<OrderState>("blob");
+            // @ts-expect-error - nor fabricate a subtree
+            SnapshotIndex.forPath<OrderState>("blob.anything");
+            // @ts-expect-error - unknown is just as unverifiable
+            SnapshotIndex.forPath<OrderState>("mystery");
+            // @ts-expect-error - a Map serializes to {}, so its members are phantoms
+            SnapshotIndex.forPath<OrderState>("sessions.size");
+            // @ts-expect-error - nor is the Map itself a leaf
+            SnapshotIndex.forPath<OrderState>("sessions");
+            // @ts-expect-error - Set likewise
+            SnapshotIndex.forPath<OrderState>("labelsSet.size");
+            // @ts-expect-error - the readonly interfaces are what the guard names, so they are caught too
+            SnapshotIndex.forPath<OrderState>("roMap.size");
+            // @ts-expect-error - an index signature absorbs the literal keys, so the subtree offers nothing
+            SnapshotIndex.forPath<OrderState>("meta.anything");
+            // @ts-expect-error - nor is the record itself a leaf
+            SnapshotIndex.forPath<OrderState>("meta");
+
+            // forRawPath remains the deliberate way through for all of them
+            SnapshotIndex.forRawPath<OrderState>("meta.anything");
+
+            assert.ok(true);
+        });
+
+        // union-typed members: what the WHOLE union can prove is offered, nothing more
+        await test("union members offer their common checkable paths only", () =>
+        {
+            SnapshotIndex.forPath<OrderState>("payment.kind");               // common key of a plain union
+            SnapshotIndex.forPath<OrderState>("planOrChange.tier");          // common SERIALIZED key
+
+            // @ts-expect-error - a key only one variant carries is not offered
+            SnapshotIndex.forPath<OrderState>("payment.last4");
+            // @ts-expect-error - a mixed scalar/object union is not a leaf: rows may hold the object
+            SnapshotIndex.forPath<OrderState>("ref");
+            // @ts-expect-error - only one member serializes: class-shape keys are not stored keys
+            SnapshotIndex.forPath<OrderState>("poly.tier");
+            // @ts-expect-error - and a derived getter certainly is not
+            SnapshotIndex.forPath<OrderState>("poly.isUnlimited");
 
             assert.ok(true);
         });
@@ -1035,6 +1104,12 @@ await describe("DbTableCreator tests", async () =>
             // @ts-expect-error - an UNTYPED serialize() yields a keyless stored shape, which is how
             // an array of bare Serializable is kept out: nothing checkable, so nothing offered
             SnapshotArrayIndex.forPath<OrderState>("serials");
+            // @ts-expect-error - an any element is unverifiable, so Array<any> is not offered either
+            SnapshotArrayIndex.forPath<OrderState>("anyItems");
+            // @ts-expect-error - a Map element serializes to {}, so containment would never match
+            SnapshotArrayIndex.forPath<OrderState>("mapItems");
+            // @ts-expect-error - an index-signature state offers no array paths, mirroring the leaf walk
+            SnapshotArrayIndex.forPath<LooseState>("anything");
 
             // forRawPath remains the deliberate way through for every one of those
             SnapshotArrayIndex.forRawPath<OrderState>("serials");

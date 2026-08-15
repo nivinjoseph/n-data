@@ -1,18 +1,13 @@
 import { given } from "@nivinjoseph/n-defensive";
-import { PreviousDepth, SerializedShapeOf } from "./snapshot-index.js";
+import { IsAnyOrUnknown, JsonScalar, PreviousDepth, SerializedShapeOf, SnapshotOpaqueContainer } from "./snapshot-index.js";
 // type-only, and it has to stay that way: `snapshot-query-set` imports `SnapshotArrayIndex` as a
 // value, so a value import back would close a runtime cycle. `import type` is erased, so there is
 // no cycle to close - the two modules only meet in the type system
 import type { SnapshotPredicate } from "./snapshot-query-set.js";
 
-/**
- * The scalars jsonb carries, and so the only values this API can match.
- *
- * jsonb also has null, which is deliberately absent: `undefined` stringifies to `null` too, so
- * accepting one would make a forgotten lookup indistinguishable from a deliberate null-element
- * match. A null inside an indexed array is a modelling problem, not a query.
- */
-export type JsonScalar = string | number | boolean;
+// JsonScalar moved to snapshot-index.ts (the leaf walk needs it too); re-exported here so this
+// module's import surface is unchanged
+export type { JsonScalar } from "./snapshot-index.js";
 
 /**
  * The keys of an element type whose value is not a JSON scalar.
@@ -56,26 +51,37 @@ type IsScalarRecord<TElement> =
  * {@link SnapshotArrayPath}, so the rules live in one place, and the `Raw` overloads deliberately
  * take `string`, which is what makes them the escape hatch.
  */
-type SnapshotContainerArrayPath<T, TDepth extends number = 5> = [TDepth] extends [never] ? never : {
-    // `Function` is named explicitly for the same reason as in `SnapshotLeafPath`: it does not match
-    // the call signature below, so without it a Function-typed key falls to the object branch and
-    // fabricates a subtree of its methods.
-    [K in keyof T & string]:
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-function-type
-    NonNullable<T[K]> extends Function ? never
+type SnapshotContainerArrayPath<T, TDepth extends number = 5> = [TDepth] extends [never] ? never
+    // an index signature absorbs the literal keys, so a level carrying one offers NO paths rather
+    // than `string`-widened unchecked ones - the same head guard as `SnapshotLeafPath`
+    : string extends keyof T ? never
+    : {
+        // `Function` is named explicitly for the same reason as in `SnapshotLeafPath`: it does not match
+        // the call signature below, so without it a Function-typed key falls to the object branch and
+        // fabricates a subtree of its methods. The any/unknown guard comes first because `any` matches
+        // every later check - including the array branch, where it would infer an `any` element.
+        [K in keyof T & string]:
+        IsAnyOrUnknown<T[K]> extends true ? never
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-function-type
+        : NonNullable<T[K]> extends Function ? never
+        : NonNullable<T[K]> extends SnapshotOpaqueContainer ? never
         // the array branch MUST precede the object branch, because a ReadonlyArray is an object.
         : NonNullable<T[K]> extends ReadonlyArray<infer TElement>
-            // the tuple brackets make this check NON-distributive, and that is load-bearing. Naked,
-            // `string | Customer extends JsonScalar` would distribute and the `string` arm alone
-            // would yield K - so an array of "strings or customers" would be offered as a scalar
-            // array. Bracketed, the union is tested as a whole and fails closed.
-            ? ([NonNullable<TElement>] extends [JsonScalar] ? K
+            // an `any`/`unknown` element is unverifiable, and a Map/Set element serializes to `{}` -
+            // both fail closed before the shape checks
+            ? (IsAnyOrUnknown<TElement> extends true ? never
+                : [NonNullable<TElement>] extends [SnapshotOpaqueContainer] ? never
+                // the tuple brackets make this check NON-distributive, and that is load-bearing. Naked,
+                // `string | Customer extends JsonScalar` would distribute and the `string` arm alone
+                // would yield K - so an array of "strings or customers" would be offered as a scalar
+                // array. Bracketed, the union is tested as a whole and fails closed.
+                : [NonNullable<TElement>] extends [JsonScalar] ? K
                 : IsScalarRecord<SerializedShapeOf<NonNullable<TElement>>> extends true ? K
-                    : never)
+                : never)
             : NonNullable<T[K]> extends object
                 ? `${K}.${SnapshotContainerArrayPath<SerializedShapeOf<NonNullable<T[K]>>, PreviousDepth[TDepth]>}`
                 : never
-}[keyof T & string];
+    }[keyof T & string];
 
 /**
  * A dot-delimited path to an **array of JSON scalars, or of flat scalar records**, inside `T`, for
@@ -109,9 +115,9 @@ type SnapshotContainerArrayPath<T, TDepth extends number = 5> = [TDepth] extends
  *
  * `organizationId` is excluded for the same reason it is excluded from `SnapshotPath`: on an
  * org-scoped snapshot table it is a real column, and the copy inside `data` is not what any index
- * covers. The same known gaps apply verbatim - `Map`- and `Set`-valued keys are recursed into
- * although they serialize to `{}`, a union-typed object member loses its nested paths, and an index
- * signature or an `any`-typed member widens the result to `string`, disabling the check. Depth is
+ * covers. The same fail-closed rules apply verbatim - a level with a string index signature, an
+ * `any`/`unknown` member or element, and `Map`/`Set` members or elements all offer no paths, and a
+ * union where only some members serialize offers none either (see `SerializedShapeOf`). Depth is
  * bounded at six segments, past which `forRawPath` is the way through.
  */
 export type SnapshotArrayPath<T> = Exclude<SnapshotContainerArrayPath<T>, "organizationId">;

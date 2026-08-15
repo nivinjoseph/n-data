@@ -35,21 +35,35 @@ are worth reading before guessing.
 
 Anything routed through `SnapshotQuerySet` / `SnapshotIndex` / `SnapshotArrayIndex` and the snapshot
 repositories is checked at compile time: a path that was never declared, a value of the wrong type,
-a numeric comparison on a path declared without a cast, and an array operator on a scalar path are
-all compile errors. Several errors are phrased as instructions — the *property name* in the error
-text tells you the fix. **Trust the compiler here instead of guessing**, and read the error rather
-than working around it.
+a numeric comparison or an `orderBy` on a path declared without a cast, a cast that does not fit the
+leaf type, and an array operator on a scalar path are all compile errors. Paths follow the *stored*
+shape — a nested serializable is walked through its typed `serialize()` return — and everything the
+compiler cannot verify fails closed to no paths at all (index signatures, `any`/`unknown`, Map/Set,
+partially-serializable unions), with `forRawPath` as the deliberate door. Several errors are phrased
+as instructions — the *property name* in the error text tells you the fix. **Trust the compiler here
+instead of guessing**, and read the error rather than working around it.
 
 One declaration serves as both the migration's index spec and the query-time predicate factory, so
 a queried index is necessarily a created one. Do not hand-write the extraction expressions.
+
+The first save each process makes also verifies the declared paths against the real snapshot
+document (`SnapshotQuerySet.verifyDocument`, run by the repositories through an internal guard): a
+`@serialize("customKey")` rename — the one mismatch the types cannot see, since a decorator cannot
+change a type — throws there rather than silently indexing null. A rename inside an *optional*
+object can still slip past a process that never stores it; the total fix would be n-domain rejecting
+renames on `DomainObject` getters, and until then assert
+`MyRepository.indexes.verifyDocument(aggregate.snapshot())` is empty in a test.
 
 ## Traps
 
 Ordered roughly by how expensive they are to get wrong.
 
-- **`querySet` override type.** Type it `typeof MyRepository.indexes`. The base declares
-  `SnapshotQuerySet<TState, any, any>`, so repeating that widened type in the override compiles and
-  silently discards all path and cast checking. See `src/repository/snapshot-base-repository.ts:137`.
+- **`querySet` override type.** Type it `typeof MyRepository.indexes`. The historical trap — the base
+  declared `SnapshotQuerySet<TState, any, any>`, and repeating that widened type in the override
+  compiled while silently discarding all path and cast checking — is now closed twice over: the base
+  declares the method-free `DeclaredSnapshotQuerySet<TState>` (copying it means the override cannot
+  build a single predicate), and the widened spelling is itself a compile error whose message names
+  the fix. See the getter TSDoc in `src/repository/snapshot-base-repository.ts`.
 - **A scope is a write boundary.** A scoped repository holds one transient `UnitOfWork`, and `save()`
   commits it. A committed unit of work is dead, so a second `save()` in the same scope throws
   `rolling back completed UnitOfWork`, which names neither cause nor fix. One scope per operation;

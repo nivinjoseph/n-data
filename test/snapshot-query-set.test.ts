@@ -3,7 +3,7 @@ import { ArgumentException, ArgumentNullException, Exception } from "@nivinjosep
 import { Logger } from "@nivinjoseph/n-log";
 import assert from "node:assert";
 import test, { after, before, describe } from "node:test";
-import { Db, DbConnectionConfig, DbConnectionFactory, DbTableCreator, JsonValueType, KnexPgDb, KnexPgDbConnectionFactory, OrgEventStreamBaseRepository, OrgSnapshotBaseRepository, SnapshotArrayIndex, SnapshotIndex, SnapshotQuerySet } from "../src/index.js";
+import { Db, DbConnectionConfig, DbConnectionFactory, DbTableCreator, DeclaredSnapshotQuerySet, JsonValueType, KnexPgDb, KnexPgDbConnectionFactory, OrgEventStreamBaseRepository, OrgSnapshotBaseRepository, SnapshotArrayIndex, SnapshotIndex, SnapshotQuerySet } from "../src/index.js";
 
 
 class SilentLogger implements Logger
@@ -151,6 +151,51 @@ await describe("SnapshotQuerySet tests", async () =>
             assert.ok(indexes.gte("revision", 2).sql.contains("::integer"));
         });
 
+        // the '9' > '100' hazard applies to ordering too, and ordering has no value argument to hang
+        // the error on - so the path union itself excludes a number indexed without a numeric cast
+        await test("a numeric path indexed without a cast is not orderable", async () =>
+        {
+            const rejected = (): void =>
+            {
+                // @ts-expect-error - openedAt is a number indexed as text: as text, '9' > '100'
+                indexes.orderBy("openedAt");
+            };
+
+            assert.strictEqual(typeof rejected, "function");
+
+            // a declared cast, or a leaf kind that orders correctly as text - these run
+            assert.ok(indexes.orderBy("total", "desc").sql.contains("::numeric"));
+            assert.ok(indexes.orderBy("status").sql.contains("data->>'status'"));
+            assert.ok(indexes.orderBy("isRush").sql.length > 0);
+        });
+
+        // a cast that does not fit the leaf used to compile and then throw on every insert, since
+        // Postgres casts the extracted text eagerly - now it does not compile
+        await test("a declared cast must fit the leaf type", async () =>
+        {
+            const rejected = (): void =>
+            {
+                // @ts-expect-error - a numeric cast on a string leaf
+                SnapshotQuerySet.for<TicketState>().withPath("status", { type: JsonValueType.numeric });
+
+                // @ts-expect-error - a uuid cast on a number leaf
+                SnapshotQuerySet.for<TicketState>().withPath("total", { type: JsonValueType.uuid });
+
+                // @ts-expect-error - a bigint cast on a boolean leaf
+                SnapshotQuerySet.for<TicketState>().withPath("isRush", { type: JsonValueType.bigint });
+
+                // @ts-expect-error - checked inside a composite too, tied to each member's own path
+                SnapshotQuerySet.for<TicketState>().withComposite([{ path: "series", type: JsonValueType.integer }]);
+            };
+
+            assert.strictEqual(typeof rejected, "function");
+
+            // fitting casts compile - and text on a string is legal though redundant (Postgres elides it)
+            SnapshotQuerySet.for<TicketState>().withPath("status", { type: JsonValueType.text });
+            SnapshotQuerySet.for<TicketState>().withPath("isRush", { type: JsonValueType.boolean });
+            SnapshotQuerySet.for<TicketState>().withPath("total", { type: JsonValueType.numeric });
+        });
+
         // values resolve through the SERIALIZED shape of a nested serializable member, and the cast
         // rule still applies to a numeric leaf reached through one
         await test("values and casts follow the serialized shape of a serializable member", async () =>
@@ -269,6 +314,58 @@ await describe("SnapshotQuerySet tests", async () =>
 
                 // referenced so the declaration is not elided before the compiler checks it
                 assert.strictEqual(typeof NoQuerySetRepository, "function");
+            };
+
+            assert.strictEqual(typeof rejected, "function");
+        });
+
+        // the override trap: copying the base's DECLARED type used to compile and silently discard
+        // path and cast checking. Now both spellings of the mistake announce themselves.
+        await test("a widened or declaration-typed override cannot query", async () =>
+        {
+            const rejected = (): void =>
+            {
+                class TrapEventStreamRepository extends OrgEventStreamBaseRepository<Ticket, TicketState, OrgDomainEvent<TicketState>>
+                {
+                    protected onSave(): Promise<void> { return Promise.resolve(); }
+                }
+
+                // spelling 1: the base's declared type. It compiles - it IS the declared type - but
+                // carries no query methods, so the first predicate is where the mistake surfaces.
+                class DeclarationTypedRepository extends OrgSnapshotBaseRepository<Ticket, TicketState, OrgDomainEvent<TicketState>>
+                {
+                    protected override get querySet(): DeclaredSnapshotQuerySet<TicketState> { return indexes; }
+
+                    public constructor(eventStreamRepository: TrapEventStreamRepository)
+                    {
+                        super(eventStreamRepository);
+                    }
+
+                    public rejectedQuery(): void
+                    {
+                        // @ts-expect-error - the declaration-only view cannot build a predicate: no eq
+                        this.querySet.eq("status", "open"); // eslint-disable-line @typescript-eslint/no-unsafe-call
+                    }
+                }
+
+                // spelling 2: the old widened type no longer satisfies the base. Under `any` the
+                // phantom brand resolves to its error-message type instead of `true`, so the
+                // override declaration itself is the compile error - and the message names the fix.
+                // (An assignment BETWEEN the two class instantiations would pass TypeScript's
+                // variance fast path; the structural check against the interface is what bites.)
+                class WidenedRepository extends OrgSnapshotBaseRepository<Ticket, TicketState, OrgDomainEvent<TicketState>>
+                {
+                    // @ts-expect-error - SnapshotQuerySet<TState, any, any> does not satisfy DeclaredSnapshotQuerySet
+                    protected override get querySet(): SnapshotQuerySet<TicketState, any, any> { return indexes; }
+
+                    public constructor(eventStreamRepository: TrapEventStreamRepository)
+                    {
+                        super(eventStreamRepository);
+                    }
+                }
+
+                assert.strictEqual(typeof DeclarationTypedRepository, "function");
+                assert.strictEqual(typeof WidenedRepository, "function");
             };
 
             assert.strictEqual(typeof rejected, "function");

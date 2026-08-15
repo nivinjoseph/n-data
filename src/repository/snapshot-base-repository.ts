@@ -9,7 +9,8 @@ import { AggregateNotFoundException } from "./aggregate-not-found-exception.js";
 import { RepositoryQuery, RepositoryQueryBuilder } from "./repository-query.js";
 import { QueryResult } from "../db/query-result.js";
 import { executeRawQuery } from "./raw-query.js";
-import { SnapshotPredicate, SnapshotQuerySet } from "../migration/snapshot-query-set.js";
+import type { DeclaredSnapshotQuerySet, SnapshotPredicate } from "../migration/snapshot-query-set.js";
+import { SnapshotShapeGuard } from "./snapshot-shape-guard.js";
 
 /**
  * Reads aggregates from the snapshot table - the materialized current state - and writes
@@ -133,17 +134,18 @@ export abstract class SnapshotBaseRepository<T extends AggregateRoot<TState, TDo
      * name of the job each side does with it: the migration reads the static to create the table's
      * *indexes*, and this getter is what the *queries* below are built from.
      *
-     * The `typeof` is what carries the narrow type to the call sites, and it is the whole point: at the
-     * widened type `eq` accepts *any* string as a path, and a numeric path with no declared cast, so an
-     * implementation returning `SnapshotQuerySet<TState, any, any>` silently gives up path and cast
-     * checking while keeping value checking. Requiring the member is what stops that happening by
-     * omission; typing it with `typeof` is what makes it worth having.
+     * The `typeof` is what carries the narrow type to the call sites, and the trap it guards against is
+     * closed twice over: an override that copies THIS declared type gets an object that cannot build a
+     * single predicate (no `eq`, no `contains` - the mistake announces itself at the first query), and
+     * the old widened spelling `SnapshotQuerySet<TState, any, any>` - which used to compile and silently
+     * give up path and cast checking - is now itself a compile error whose message names the fix.
      *
-     * Nothing in this class reads it, and nothing should read it from a constructor. A subclass may back
-     * it with an instance field rather than a static, and a subclass field initializer runs *after*
-     * `super()` - so a constructor-time read would see `undefined`.
+     * `_save` reads this getter, to verify the declared paths against the first snapshot it stores.
+     * Nothing should read it from a constructor: a subclass may back it with an instance field rather
+     * than a static, and a subclass field initializer runs *after* `super()` - so a constructor-time
+     * read would see `undefined`.
      */
-    protected abstract get querySet(): SnapshotQuerySet<TState, any, any>;
+    protected abstract get querySet(): DeclaredSnapshotQuerySet<TState>;
 
     public get eventStreamRepository(): EventStreamBaseRepository<T, TState, TDomainEvent> { return this._eventStreamRepository; }
 
@@ -359,6 +361,12 @@ export abstract class SnapshotBaseRepository<T extends AggregateRoot<TState, TDo
 
         try
         {
+            // shape-checked against the declared paths before anything is queued on the unit of
+            // work, so a fatal issue (a @serialize rename, raw-path drift) rejects the save whole -
+            // once per process per query set, one WeakSet lookup per save after that
+            const snapshot = value.snapshot() as object;
+            await SnapshotShapeGuard.verify(this.table, this.querySet, snapshot, this.logger);
+
             // always the non-committing door: this repository decides whether the transaction gets
             // committed, and the event stream write has to land or not land with the snapshot write
             await this._eventStreamRepository.saveWithin(value, unitOfWork);
@@ -376,7 +384,7 @@ export abstract class SnapshotBaseRepository<T extends AggregateRoot<TState, TDo
                             on conflict (id) do update
                             set data = excluded.data;`;
 
-            await this.db.executeCommandWithinUnitOfWork(unitOfWork, sql, value.id, value.snapshot());
+            await this.db.executeCommandWithinUnitOfWork(unitOfWork, sql, value.id, snapshot);
 
             if (owned)
                 await unitOfWork.commit();

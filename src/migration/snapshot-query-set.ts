@@ -1,6 +1,6 @@
 import { given } from "@nivinjoseph/n-defensive";
 import { validateBooleanFragment } from "../repository/sql-fragment.js";
-import { JsonValueType, SerializedShapeOf, SnapshotIndex, SnapshotPath } from "./snapshot-index.js";
+import { IsAnyOrUnknown, JsonValueType, SerializedShapeOf, SnapshotIndex, SnapshotPath } from "./snapshot-index.js";
 import { SnapshotArrayContainment, SnapshotArrayElement, SnapshotArrayIndex, SnapshotArrayPath, SnapshotElementMatch } from "./snapshot-array-index.js";
 
 /**
@@ -50,9 +50,12 @@ type SnapshotCasts = Record<string, JsonValueType | undefined>;
  * The two forms coexist because a composite whose members need different types has to be
  * expressible - `["series", { path: "invoiceNumber", type: JsonValueType.integer }]`.
  */
-export type SnapshotPathSpec<TState> =
-    | SnapshotPath<TState>
-    | { readonly path: SnapshotPath<TState>; readonly type?: JsonValueType; };
+export type SnapshotPathSpec<TState, TP extends SnapshotPath<TState> = SnapshotPath<TState>> =
+    // distributes over the path union, so each object form ties `type` to ITS path's leaf - a
+    // numeric cast on a string leaf is rejected in a composite exactly as it is in `withPath`
+    TP extends string
+        ? TP | { readonly path: TP; readonly type?: SnapshotCastFor<TState, TP>; }
+        : never;
 
 /**
  * Folds a tuple of {@link SnapshotPathSpec}s into the path-to-cast record, so a cast declared on a
@@ -108,6 +111,94 @@ export type SnapshotCastRequired<TP extends string> = {
 };
 
 /**
+ * The casts legal for the leaf `TP` names: numeric types for a number, text or uuid for a string,
+ * boolean for a boolean. Anything else - a numeric cast on a string leaf, say - would compile and
+ * then make the index expression itself throw on every insert, since Postgres casts the extracted
+ * text eagerly. `text` on a string is allowed although redundant (Postgres elides it).
+ *
+ * A leaf whose kind the type cannot pin - a union of scalar kinds - offers no cast at all; declare
+ * it without one, or through the raw door where the caller owns the choice. Deliberately NOT applied to
+ * `SnapshotIndex.forPath(path, type)`: there the state is supplied explicitly, and with no partial
+ * type-argument inference the path parameter collapses to the whole union, which would make this
+ * type reject every cast.
+ */
+export type SnapshotCastFor<TState, TP extends string> =
+    [SnapshotValueAt<TState, TP>] extends [number] ? SnapshotNumericType
+    : [SnapshotValueAt<TState, TP>] extends [string] ? JsonValueType.text | JsonValueType.uuid
+    : [SnapshotValueAt<TState, TP>] extends [boolean] ? JsonValueType.boolean
+    : never;
+
+/**
+ * The indexed paths {@link SnapshotQuerySet.orderBy} may take: every declared path except a number
+ * indexed without a numeric cast - which as text orders lexicographically, making '9' > '100'. The
+ * same hazard {@link SnapshotComparable} closes for comparisons, restated for the one clause that
+ * has no value argument to hang the error on. Strings order correctly as text, and booleans order
+ * as 'false' < 'true', which matches boolean order.
+ */
+type SnapshotOrderablePath<TState, TIndexed extends SnapshotCasts> = {
+    [K in keyof TIndexed & string]:
+    [SnapshotValueAt<TState, K>] extends [number]
+        ? ([TIndexed[K]] extends [SnapshotNumericType] ? K : never)
+        : K
+}[keyof TIndexed & string];
+
+/**
+ * One problem {@link SnapshotQuerySet.verifyDocument} found with a declared path, against one real
+ * snapshot document.
+ *
+ * `severity` is the split the save-time guard acts on. A `fatal` issue is a true positive by
+ * construction - `serialize()` emits a key for **every** decorated getter, null-valued ones
+ * included, so a declared segment absent from an object carrying `$typename` is definitively a
+ * `@serialize("customKey")` rename (or raw-path drift), never an omitted optional. An `advisory`
+ * issue is ambiguous in a single document - an absent key under a *plain* parent may simply be an
+ * optional the aggregate did not set - so it warrants a warning, not a blocked save.
+ */
+export interface SnapshotShapeIssue
+{
+    /**
+     * The declared path the issue is about.
+     */
+    readonly path: string;
+
+    /**
+     * The dotted prefix at which the walk stopped.
+     */
+    readonly failedAtSegment: string;
+
+    readonly kind: "unresolvable-key" | "non-object-intermediate" | "non-array-leaf" | "absent-key" | "empty-object-leaf";
+
+    readonly severity: "fatal" | "advisory";
+
+    /**
+     * Names the problem and the fix, so a log line or an exception is actionable on its own.
+     */
+    readonly message: string;
+}
+
+/**
+ * What a snapshot base class can say about a subclass's query set without knowing its paths: the
+ * declarations, and nothing queryable.
+ *
+ * Deliberately method-free - no `eq`, no `orderBy`, no `contains`. The abstract `querySet` getter on
+ * the snapshot base classes is typed with THIS, so an override that copies the base's declared type
+ * (the IDE quick-fix output) cannot build a single predicate: the mistake announces itself at the
+ * first query instead of silently discarding path and cast checking, which is what the old widened
+ * `SnapshotQuerySet<TState, any, any>` did - and writing THAT type is itself a compile error now,
+ * through {@link SnapshotQuerySet._pathCheckingIntact}. The documented override -
+ * `typeof MyRepository.indexes` - satisfies this structurally and keeps every check.
+ */
+export interface DeclaredSnapshotQuerySet<TState>
+{
+    readonly indexes: ReadonlyArray<SnapshotIndex<TState>>;
+    readonly arrayIndexes: ReadonlyArray<SnapshotArrayIndex<TState>>;
+    readonly paths: ReadonlyArray<string>;
+    readonly arrayPaths: ReadonlyArray<string>;
+    readonly _pathCheckingIntact: true;
+
+    verifyDocument(document: object): ReadonlyArray<SnapshotShapeIssue>;
+}
+
+/**
  * The declared indexes of one snapshot table, and the typed predicates over them.
  *
  * This is the single declaration of a table's queryable shape: the repository builds its predicates
@@ -144,8 +235,9 @@ export type SnapshotCastRequired<TP extends string> = {
  *         .withComposite(["series", { path: "revision", type: JsonValueType.integer }], { unique: true })
  *         .withArrayPath("tags");
  *
- *     // the base declares this abstract at a widened type, because it does not know the paths; the
- *     // `typeof` here is what gives the call sites the narrow one
+ *     // the base declares this abstract at the declaration-only DeclaredSnapshotQuerySet type,
+ *     // because it does not know the paths; the `typeof` here is what gives the call sites the
+ *     // narrow, queryable one
  *     protected override get querySet(): typeof OrderRepository.indexes { return OrderRepository.indexes; }
  *
  *     public constructor(eventStreamRepository: OrderEventStreamRepository)
@@ -207,6 +299,18 @@ export class SnapshotQuerySet<TState, TIndexed extends SnapshotCasts = NoDeclare
      * Path to the containment API for it, for every array path this set indexes.
      */
     private readonly _containmentsByPath = new Map<string, SnapshotArrayContainment<any>>();
+
+    /**
+     * Phantom - `declare` emits nothing, the property never exists at runtime. Its type is `true`
+     * for every set built through {@link for}, and becomes an error-message string when `TIndexed`
+     * is `any` - which happens exactly when someone writes `SnapshotQuerySet<TState, any, any>` as
+     * an annotation. That annotation used to compile and silently discard every path and cast check
+     * (the querySet override trap); now the message is the compile error. Same idiom as
+     * {@link SnapshotCastRequired}: the type IS the diagnostic.
+     */
+    declare public readonly _pathCheckingIntact: IsAnyOrUnknown<TIndexed> extends true
+        ? "this set is typed <TState, any, any>, which discards path and cast checking - type the override as `typeof MyRepository.indexes`"
+        : true;
 
     /**
      * The btree index declarations, in declaration order.
@@ -275,7 +379,7 @@ export class SnapshotQuerySet<TState, TIndexed extends SnapshotCasts = NoDeclare
      * @returns {SnapshotQuerySet} A set that also knows this path - the receiver is left unchanged.
      * @throws {ArgumentException} If the path is already declared by this set, malformed, or the type is not a JsonValueType.
      */
-    public withPath<TP extends SnapshotPath<TState>, TCast extends JsonValueType | undefined = undefined>(
+    public withPath<TP extends SnapshotPath<TState>, TCast extends SnapshotCastFor<TState, TP> | undefined = undefined>(
         path: TP, options?: { readonly type?: TCast; readonly unique?: boolean; readonly name?: string; }
     ): SnapshotQuerySet<TState, TIndexed & Record<TP, TCast>, TArrays>
     {
@@ -534,15 +638,62 @@ export class SnapshotQuerySet<TState, TIndexed extends SnapshotCasts = NoDeclare
      * an `order by` only when the expression matches the indexed one textually. Note that a GIN array
      * index cannot serve ordering at all, which is why an array path is not offered here.
      *
-     * @param {TP} path - A scalar path this set indexes.
+     * A number indexed without a numeric cast is not orderable: as text it sorts '9' > '100', the
+     * same hazard the comparisons reject - so it is a compile error here too, fixed by declaring the
+     * cast on the path.
+     *
+     * @param {TP} path - A scalar path this set indexes, orderable as its leaf type.
      * @param {"asc" | "desc"} [direction] - Defaults to `asc`, as Postgres does.
      */
-    public orderBy<TP extends keyof TIndexed & string>(path: TP, direction?: "asc" | "desc"): SnapshotOrderBy
+    public orderBy<TP extends SnapshotOrderablePath<TState, TIndexed>>(path: TP, direction?: "asc" | "desc"): SnapshotOrderBy
     {
         given(direction, "direction").ensureIsString()
             .ensure(t => t === "asc" || t === "desc", "direction must be 'asc' or 'desc'");
 
         return { sql: `${this._expressionFor(path)}${direction != null ? ` ${direction}` : ""}` };
+    }
+
+
+    /**
+     * Checks every declared path - scalar and array, typed and raw - against one real snapshot
+     * document, and reports what does not line up. Pure: no logging, no throwing, no state.
+     *
+     * This is the runtime companion to the compile-time path checking, for the one mismatch the
+     * types can never see: a getter decorated `@serialize("customKey")` stores under the custom key
+     * while the type offers the getter *name*, so the declared path compiles, the index extracts
+     * null from every row, `asUnique` enforces nothing, and every query silently matches nothing.
+     * That case is detectable here with certainty, because `serialize()` emits a key for every
+     * decorated getter - null-valued ones included - so a declared segment absent from an object
+     * carrying `$typename` cannot be an omitted optional (see {@link SnapshotShapeIssue}).
+     *
+     * The snapshot repositories run this once per process against the first document they save, and
+     * act on the severity split: `fatal` throws, `advisory` logs once. Call it yourself in a test -
+     * `assert.deepStrictEqual(MyRepository.indexes.verifyDocument(aggregate.snapshot()), [])` - to
+     * catch the one case the save-time check can meet late: a rename inside an optional object that
+     * happens to be null in every document a given process stores.
+     *
+     * What a clean result does *not* prove: a rename whose custom key coincidentally equals another
+     * real key (the path resolves, to the wrong value), and rows written before the declaration
+     * changed. It checks shape, not data.
+     *
+     * @param {object} document - A snapshot document, i.e. what `AggregateRoot.snapshot()` returns.
+     * @returns {ReadonlyArray<SnapshotShapeIssue>} Every issue found; empty when all paths resolve.
+     * @throws {ArgumentNullException} If document is null or undefined.
+     * @throws {ArgumentException} If document is not an object.
+     */
+    public verifyDocument(document: object): ReadonlyArray<SnapshotShapeIssue>
+    {
+        given(document, "document").ensureHasValue().ensureIsObject();
+
+        const issues = new Array<SnapshotShapeIssue>();
+
+        for (const path of this.paths)
+            this._verifyPath(document, path, false, issues);
+
+        for (const path of this.arrayPaths)
+            this._verifyPath(document, path, true, issues);
+
+        return issues;
     }
 
 
@@ -598,6 +749,97 @@ export class SnapshotQuerySet<TState, TIndexed extends SnapshotCasts = NoDeclare
             next._expressionsByPath.set(spec.path.trim(), index.expressionForRawPath(spec.path));
 
         return next;
+    }
+
+    /**
+     * Walks one declared path through `document`, appending to `issues` where it stops resolving.
+     *
+     * The severity rules, stated once: a value of the *wrong kind* along the way is always fatal (a
+     * scalar or array where an object must be, a non-array at an array leaf - no optional produces
+     * those); an *absent* key is fatal only under a `$typename` parent, where `serialize()` is known
+     * to have emitted every decorated key; and null anywhere is clean, because that is exactly what
+     * an optional stores and extraction turns into SQL NULL.
+     */
+    private _verifyPath(document: object, path: string, isArrayPath: boolean, issues: Array<SnapshotShapeIssue>): void
+    {
+        const segments = path.split(".");
+        let parent: Record<string, any> = document;
+
+        for (let i = 0; i < segments.length; i++)
+        {
+            const segment = segments[i];
+            const prefix = segments.slice(0, i + 1).join(".");
+            const parentName = i === 0 ? "the top level" : `'${segments.slice(0, i).join(".")}'`;
+
+            if (!(segment in parent))
+            {
+                if (typeof parent["$typename"] === "string")
+                {
+                    issues.push({
+                        path, failedAtSegment: prefix, kind: "unresolvable-key", severity: "fatal",
+                        message: `path '${path}' does not resolve: key '${segment}' is absent from the serialized object at ${parentName}, which stores [${Object.keys(parent).join(", ")}]. serialize() emits every decorated getter - null-valued ones included - so this is a '@serialize("customKey")' rename or a raw-path typo, and the index extracts null from every row. Remove the rename, or declare the stored key through the raw door.`
+                    });
+                }
+                else
+                {
+                    const emptyHint = Object.keys(parent).length === 0
+                        ? " The parent object is empty - a Map or Set serializes to {}."
+                        : "";
+                    issues.push({
+                        path, failedAtSegment: prefix, kind: "absent-key", severity: "advisory",
+                        message: `path '${path}': key '${segment}' is absent at ${parentName} in this document. Legitimate for an optional key; if it is never optional, check for a '@serialize' rename or a raw-path typo.${emptyHint}`
+                    });
+                }
+
+                return;
+            }
+
+            const value = parent[segment];
+
+            // null is what an optional stores, and extraction turns it into SQL NULL - clean, stop
+            if (value == null)
+                return;
+
+            const isLeaf = i === segments.length - 1;
+            if (!isLeaf)
+            {
+                if (typeof value !== "object" || Array.isArray(value))
+                {
+                    issues.push({
+                        path, failedAtSegment: prefix, kind: "non-object-intermediate", severity: "fatal",
+                        message: `path '${path}' does not resolve: segment '${prefix}' holds ${Array.isArray(value) ? "an array" : "a scalar"}, so nothing beneath it exists and the extraction is null for every row. The declaration does not match the stored shape.`
+                    });
+
+                    return;
+                }
+
+                parent = value;
+                continue;
+            }
+
+            if (isArrayPath)
+            {
+                if (!Array.isArray(value))
+                {
+                    issues.push({
+                        path, failedAtSegment: prefix, kind: "non-array-leaf", severity: "fatal",
+                        message: `array path '${path}' resolves to a non-array value, so no containment query would ever match. A Map or Set serializes to {} - store a plain array.`
+                    });
+                }
+
+                return;
+            }
+
+            if (typeof value === "object" && !Array.isArray(value) && Object.keys(value).length === 0)
+            {
+                issues.push({
+                    path, failedAtSegment: prefix, kind: "empty-object-leaf", severity: "advisory",
+                    message: `path '${path}' resolves to an empty object. A Map or Set serializes to {} - the indexed expression extracts null for every such row.`
+                });
+            }
+
+            return;
+        }
     }
 
     private _comparison(path: string, operator: string, value: any): SnapshotPredicate
