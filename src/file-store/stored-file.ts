@@ -43,7 +43,7 @@ export class StoredFile extends DomainEntity<StoredFile,
     public get privateUrl(): string | null { return this._privateUrl; } // gets used for signed upload and download
 
 
-    public constructor(data: StoredFileSchema)
+    public constructor(data: DomainObjectData<StoredFile>)
     {
         super(data);
 
@@ -117,6 +117,3 @@ export class StoredFile extends DomainEntity<StoredFile,
         });
     }
 }
-
-
-export type StoredFileSchema = DomainObjectData<StoredFile>;

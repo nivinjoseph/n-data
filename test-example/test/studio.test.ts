@@ -135,8 +135,9 @@ await describe("Studio", async () =>
             const repository = new InMemoryStudioRepository();
             const studio = await repository.get(await createStudio(repository));
 
-            // a different instance, equal by value - DomainObject compares its serialized form
-            studio.changePlan(new StudioPlan({ tier: "studio", seatLimit: 10 }));
+            // a different instance, equal by value - DomainObject compares its serialized form,
+            // arrays included, so `features` has to match too
+            studio.changePlan(new StudioPlan({ tier: "studio", seatLimit: 10, features: [] }));
 
             assert.strictEqual(studio.version, 1);
         });
@@ -151,7 +152,7 @@ await describe("Studio", async () =>
             studio.setCreatorCount(10);
             assert.strictEqual(studio.hasSeatAvailable(), false);
 
-            studio.changePlan(new StudioPlan({ tier: "enterprise", seatLimit: 0 }));
+            studio.changePlan(new StudioPlan({ tier: "enterprise", seatLimit: 0, features: [] }));
             assert.strictEqual(studio.hasSeatAvailable(), true);
         });
 
@@ -182,6 +183,9 @@ await describe("Studio", async () =>
 
         assert.strictEqual(
             fingerprint,
-            "2A2044D43C3C42254DA3AD71451ED5502E28BB3492BDE193ABAA41D3C0187A0BF08077FC130096D4183C2F6E1828360881F6FB3E35A36BC6B81E9D47636677F5");
+            // re-pinned when StudioPlan gained `features`: the default plan now serializes an empty
+            // array, so the frozen default state changed shape. No history to migrate - the example's
+            // tables are dropped and recreated per run.
+            "52CDEE3F36E0C76EE965122086019352FA0E197445DDD7954D9D72E9FAB6CBF94DBE0519131981BE0063CF7BFED6E752CCA1D21F977AEE65BFAB18E19FD2A428");
     });
 });

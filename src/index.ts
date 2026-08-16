@@ -34,7 +34,7 @@ export { DistributedLock, DistributedLockService } from "./distributed-lock/dist
 export { RedisDistributedLockService, DistributedLockConfig, UnableToAcquireDistributedLockException } from "./distributed-lock/redis-distributed-lock-service.js";
 
 export { FileStore } from "./file-store/file-store.js";
-export { StoredFile, StoredFileSchema } from "./file-store/stored-file.js";
+export { StoredFile } from "./file-store/stored-file.js";
 export { S3FileStoreConfig } from "./file-store/s3-file-store-config.js";
 export { S3FileStore } from "./file-store/s3-file-store.js";
 

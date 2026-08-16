@@ -31,13 +31,16 @@ interface Line
 // a real n-domain DomainObject: as of 4.0.2 the path types trust only these - the serialized shape
 // (DomainObjectSerialized) is the stored shape paths follow. Never instantiated by this suite.
 @serialize
-class PlanVo extends DomainObject<PlanVo, "tier" | "seatLimit">
+class PlanVo extends DomainObject<PlanVo, "tier" | "seatLimit" | "badges">
 {
     private readonly _tier: string;
     private readonly _seatLimit: number;
+    private readonly _badges: Array<string>;
 
     @serialize public get tier(): string { return this._tier; }
     @serialize public get seatLimit(): number { return this._seatLimit; }
+    // an array data key, writable only as of n-domain 4.0.3: declarable as a nested ARRAY path
+    @serialize public get badges(): Array<string> { return this._badges; }
     public get isUnlimited(): boolean { return this._seatLimit === 0; }     // derived - not serialized, so not declarable as a path
 
     public constructor(data: DomainObjectData<PlanVo>)
@@ -45,6 +48,7 @@ class PlanVo extends DomainObject<PlanVo, "tier" | "seatLimit">
         super(data);
         this._tier = data.tier;
         this._seatLimit = data.seatLimit;
+        this._badges = data.badges;
     }
 }
 
@@ -77,7 +81,11 @@ const indexes = SnapshotQuerySet.for<TicketState>()
     .withPath("party.city")
     .withComposite(["series", { path: "revision", type: JsonValueType.integer }], { unique: true })
     .withArrayPath("labels")
-    .withArrayPath("lines");
+    .withArrayPath("lines")
+    // an array reached THROUGH a serialized record rather than off the state directly: its
+    // expression is `#>` over a quoted path array, not `->`, and expression indexes match
+    // textually - so this is declared on the seeded set to pin the plan, not just the DDL
+    .withArrayPath("plan.badges");
 
 const ORG = "org1";
 
@@ -228,6 +236,34 @@ await describe("SnapshotQuerySet tests", async () =>
 
                 // @ts-expect-error - a derived getter is not a stored key, so it is not declarable
                 SnapshotQuerySet.for<TicketState>().withPath("plan.isUnlimited");
+            };
+
+            assert.strictEqual(typeof rejected, "function");
+        });
+
+        // an array data key on a DomainObject was unconstructible before n-domain 4.0.3, so this is
+        // the first shape where the array walk actually goes through SerializedShapeOf rather than
+        // over a plain interface's own property names. The scalar/array split holds across it.
+        await test("an array inside a serialized shape is an array path, not a scalar one", async () =>
+        {
+            const badgeIndexes = SnapshotQuerySet.for<TicketState>().withArrayPath("plan.badges");
+
+            badgeIndexes.contains("plan.badges", "beta");
+            badgeIndexes.containsAny("plan.badges", ["beta", "ga"]);
+
+            const rejected = (): void =>
+            {
+                // @ts-expect-error - the element resolves through the serialized shape to string
+                badgeIndexes.contains("plan.badges", 3);
+
+                // @ts-expect-error - a container reached through a serialized shape is not a scalar path
+                SnapshotQuerySet.for<TicketState>().withPath("plan.badges");
+
+                // @ts-expect-error - and a scalar inside one is not an array path
+                SnapshotQuerySet.for<TicketState>().withArrayPath("plan.tier");
+
+                // @ts-expect-error - an array path is not orderable, nested or not
+                badgeIndexes.orderBy("plan.badges", "asc");
             };
 
             assert.strictEqual(typeof rejected, "function");
@@ -680,7 +716,7 @@ await describe("SnapshotQuerySet tests", async () =>
             assert.deepStrictEqual(indexes.indexes.map(t => t.paths.join("+")),
                 ["status", "total", "openedAt", "isRush", "party.city", "series+revision"]);
 
-            assert.deepStrictEqual(indexes.arrayIndexes.map(t => t.path), ["labels", "lines"]);
+            assert.deepStrictEqual(indexes.arrayIndexes.map(t => t.path), ["labels", "lines", "plan.badges"]);
 
             assert.deepStrictEqual(indexes.indexes.map(t => t.isUnique),
                 [false, false, false, false, false, true]);
@@ -831,7 +867,15 @@ await describe("SnapshotQuerySet tests", async () =>
                             'status', 'st' || (g % 499),
                             'total', g,
                             'labels', json_build_array('l' || (g % 97)),
-                            'lines', json_build_array(json_build_object('sku', 'sku' || (g % 89), 'isVoid', false))
+                            'lines', json_build_array(json_build_object('sku', 'sku' || (g % 89), 'isVoid', false)),
+                            -- the nested serialized record, $typename and all, so plan.badges is
+                            -- reached the way a real DomainObject member is. 83 is prime, like the
+                            -- moduli above, so badge and organization stay coprime
+                            'plan', json_build_object(
+                                'tier', 'free',
+                                'seatLimit', 3,
+                                'badges', json_build_array('b' || (g % 83)),
+                                '$typename', 'Test.PlanVo')
                         )::jsonb
                  from generate_series(1, 5000) g;`);
             await db.executeCommand("analyze ticket_snaps;");
@@ -862,6 +906,7 @@ await describe("SnapshotQuerySet tests", async () =>
             assert.ok(names.contains("idx_ticket_snaps_series_revision_uq"), names.join(", "));
             assert.ok(names.contains("idx_ticket_snaps_labels_gin"), names.join(", "));
             assert.ok(names.contains("idx_ticket_snaps_lines_gin"), names.join(", "));
+            assert.ok(names.contains("idx_ticket_snaps_plan_badges_gin"), names.join(", "));
         });
 
         // the claim that makes one declaration worth having: the predicate cannot drift from the index
@@ -901,6 +946,25 @@ await describe("SnapshotQuerySet tests", async () =>
 
             assert.ok(result.rows.length > 0);
             assert.ok(result.rows.every(t => (<Array<Line>>t.data.lines).some(u => u.sku === "sku7")));
+        });
+
+        // the same claim one level down, where the extraction is `#>` over a quoted path array
+        // rather than `->`. Worth pinning separately: expression indexes match TEXTUALLY, so a
+        // near-miss on the nested form would sequential-scan silently rather than error - and this
+        // is the shape n-domain 4.0.3 made writable, so nothing covered it before.
+        await test("a nested containment predicate uses the GIN index the set declared", async () =>
+        {
+            const predicate = indexes.contains("plan.badges", "b7");
+            const plan = await planFor(`organization_id = ? and ${predicate.sql}`, ORG, ...predicate.params);
+
+            assert.ok(plan.contains("idx_ticket_snaps_plan_badges_gin"), plan);
+            assert.ok(!plan.contains("Seq Scan"), plan);
+
+            const result = await db.executeQuery<any>(
+                `select data from ticket_snaps where ${predicate.sql};`, ...predicate.params);
+
+            assert.ok(result.rows.length > 0);
+            assert.ok(result.rows.every(t => (<Array<string>>t.data.plan.badges).contains("b7")));
         });
 
         await test("a composed and/or predicate is valid SQL and binds in order", async () =>

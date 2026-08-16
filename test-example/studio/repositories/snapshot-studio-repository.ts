@@ -51,7 +51,11 @@ export class SnapshotStudioRepository
         .withPath("plan.seatLimit", { type: JsonValueType.integer })
         .withPath("creatorCount", { type: JsonValueType.integer })
         .withPath("isArchived")
-        .withArrayPath("tags");
+        .withArrayPath("tags")
+        // an array that lives INSIDE the plan value object's serialized record, not beside it: the
+        // path walk reaches it through DomainObjectSerialized, and the DDL is the same #> GIN index
+        // a top-level array gets. Writable only as of n-domain 4.0.3 - see StudioPlan.
+        .withArrayPath("plan.features");
 
     protected override get querySet(): typeof SnapshotStudioRepository.indexes
     {
@@ -99,6 +103,18 @@ export class SnapshotStudioRepository
         given(tag, "tag").ensureHasValue().ensureIsString();
 
         return this.query(this.querySet.contains("tags", tag));
+    }
+
+    /**
+     * Containment against an array nested inside a value object. Like `getCountByPlanTier`, this is
+     * declared on the concrete repository rather than on `StudioRepository` - it only means anything
+     * where there is a snapshot table to index, so the in-memory implementation owes nothing.
+     */
+    public getByPlanFeature(feature: string): Promise<Array<Studio>>
+    {
+        given(feature, "feature").ensureHasValue().ensureIsString();
+
+        return this.query(this.querySet.contains("plan.features", feature));
     }
 
     public getLargest(count: number): Promise<Array<Studio>>
