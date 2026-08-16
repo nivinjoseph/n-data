@@ -37,14 +37,24 @@ Anything routed through `SnapshotQuerySet` / `SnapshotIndex` / `SnapshotArrayInd
 repositories is checked at compile time: a path that was never declared, a value of the wrong type,
 a numeric comparison or an `orderBy` on a path declared without a cast, a cast that does not fit the
 leaf type, and an array operator on a scalar path are all compile errors. Paths follow the *stored*
-shape — a nested serializable is walked through its typed `serialize()` return — and everything the
-compiler cannot verify fails closed to no paths at all (index signatures, `any`/`unknown`, Map/Set,
-partially-serializable unions), with `forRawPath` as the deliberate door. Several errors are phrased
-as instructions — the *property name* in the error text tells you the fix. **Trust the compiler here
-instead of guessing**, and read the error rather than working around it.
+shape — a nested n-domain 4.0.2 `DomainObject` is walked through its serialized record
+(`DomainObjectSerialized`), and *only* real `DomainObject` members get that treatment: any other
+`serialize()`-bearer, even one with a structurally typed return, fails closed. So does everything
+else the compiler cannot verify — no paths at all rather than unchecked ones (index signatures,
+`any`/`unknown`, Map/Set, partially-serializable unions, and every `$`-prefixed key, `$typename`
+included) — with `forRawPath` as the deliberate door. Several errors are phrased as instructions —
+the *property name* in the error text tells you the fix. **Trust the compiler here instead of
+guessing**, and read the error rather than working around it.
 
 One declaration serves as both the migration's index spec and the query-time predicate factory, so
 a queried index is necessarily a created one. Do not hand-write the extraction expressions.
+
+The stored document has a type of its own: `SnapshotDocumentOf<TState>` (built from n-domain's
+`SerializedValue`, no top-level `$typename`), with `toSnapshotDocument(aggregate)` as the one
+sanctioned cast from `snapshot()`'s upstream `TState | object` union. `verifyDocument` takes it, and
+the repositories' save/read paths go through it — the read-side meeting point with
+`deserializeFromSnapshot` (typed upstream as taking the live state) is centralized in
+`snapshotDocumentToState`, internal to `src/migration/snapshot-document.ts`.
 
 The first save each process makes also verifies the declared paths against the real snapshot
 document (`SnapshotQuerySet.verifyDocument`, run by the repositories through an internal guard): a
@@ -52,7 +62,7 @@ document (`SnapshotQuerySet.verifyDocument`, run by the repositories through an 
 change a type — throws there rather than silently indexing null. A rename inside an *optional*
 object can still slip past a process that never stores it; the total fix would be n-domain rejecting
 renames on `DomainObject` getters, and until then assert
-`MyRepository.indexes.verifyDocument(aggregate.snapshot())` is empty in a test.
+`MyRepository.indexes.verifyDocument(toSnapshotDocument(aggregate))` is empty in a test.
 
 ## Traps
 

@@ -1,6 +1,7 @@
 import { ApplicationException } from "@nivinjoseph/n-exception";
 import { Logger } from "@nivinjoseph/n-log";
 import { DeclaredSnapshotQuerySet } from "../migration/snapshot-query-set.js";
+import type { SnapshotDocumentOf } from "../migration/snapshot-document.js";
 
 /**
  * The save-time half of `SnapshotQuerySet.verifyDocument`: runs the walk once per process per query
@@ -20,8 +21,9 @@ import { DeclaredSnapshotQuerySet } from "../migration/snapshot-query-set.js";
  * once-flag is what makes advisories log once rather than on every save.
  *
  * Internal on purpose - not in the barrel. The consumer-facing door is `verifyDocument` itself,
- * called in a test against `aggregate.snapshot()`, which also covers the one case this guard can
- * meet late: a rename inside an optional object that is null in every document a process saves.
+ * called in a test against `toSnapshotDocument(aggregate)`, which also covers the one case this
+ * guard can meet late: a rename inside an optional object that is null in every document a process
+ * saves.
  */
 export class SnapshotShapeGuard
 {
@@ -37,12 +39,13 @@ export class SnapshotShapeGuard
      * Verifies `document` against `querySet`'s declared paths, once per query set per process.
      *
      * @param {string} table - The snapshot table, named in the warning and the exception.
-     * @param {DeclaredSnapshotQuerySet<any>} querySet - The repository's declaration.
-     * @param {object} document - The snapshot document about to be written.
+     * @param {DeclaredSnapshotQuerySet<TState>} querySet - The repository's declaration.
+     * @param {SnapshotDocumentOf<TState>} document - The snapshot document about to be written.
      * @param {Logger} logger - Where advisories go, once.
      * @throws {ApplicationException} If any declared path has a fatal shape issue against this document.
      */
-    public static async verify(table: string, querySet: DeclaredSnapshotQuerySet<any>, document: object, logger: Logger): Promise<void>
+    public static async verify<TState>(table: string, querySet: DeclaredSnapshotQuerySet<TState>,
+        document: SnapshotDocumentOf<TState>, logger: Logger): Promise<void>
     {
         if (SnapshotShapeGuard._verified.has(querySet))
             return;

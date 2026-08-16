@@ -24,6 +24,7 @@ export { DbTableCreator, SnapshotTableInfo, SnapshotTableIndexInfo, SnapshotTabl
 export { SnapshotIndex, SnapshotPath, JsonValueType } from "./migration/snapshot-index.js";
 export { SnapshotArrayIndex, SnapshotArrayPath, SnapshotArrayContainment, SnapshotArrayPredicate, SnapshotElementMatch, JsonScalar } from "./migration/snapshot-array-index.js";
 export { SnapshotQuerySet, DeclaredSnapshotQuerySet, SnapshotPredicate, SnapshotOrderBy, SnapshotPathSpec, SnapshotNumericType, SnapshotCastFor, SnapshotShapeIssue } from "./migration/snapshot-query-set.js";
+export { SnapshotDocumentOf, toSnapshotDocument } from "./migration/snapshot-document.js";
 
 export { CacheService } from "./caching/cache-service.js";
 export { InMemoryCacheService } from "./caching/in-memory-cache-service.js";

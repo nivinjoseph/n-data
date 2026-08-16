@@ -2,6 +2,7 @@ import { given } from "@nivinjoseph/n-defensive";
 import { validateBooleanFragment } from "../repository/sql-fragment.js";
 import { IsAnyOrUnknown, JsonValueType, SerializedShapeOf, SnapshotIndex, SnapshotPath } from "./snapshot-index.js";
 import { SnapshotArrayContainment, SnapshotArrayElement, SnapshotArrayIndex, SnapshotArrayPath, SnapshotElementMatch } from "./snapshot-array-index.js";
+import type { SnapshotDocumentOf } from "./snapshot-document.js";
 
 /**
  * A boolean fragment and the values that bind to its `?` placeholders, in order.
@@ -195,7 +196,7 @@ export interface DeclaredSnapshotQuerySet<TState>
     readonly arrayPaths: ReadonlyArray<string>;
     readonly _pathCheckingIntact: true;
 
-    verifyDocument(document: object): ReadonlyArray<SnapshotShapeIssue>;
+    verifyDocument(document: SnapshotDocumentOf<TState>): ReadonlyArray<SnapshotShapeIssue>;
 }
 
 /**
@@ -218,7 +219,7 @@ export interface DeclaredSnapshotQuerySet<TState>
  * the rest of this possible.
  *
  * {@link SnapshotIndex} and {@link SnapshotArrayIndex} remain public underneath, for a computed or
- * `$`-prefixed key outside the state shape; this builds them, and hands them to the creator through
+ * dynamic key outside the state shape; this builds them, and hands them to the creator through
  * {@link indexes} and {@link arrayIndexes}.
  *
  * @example
@@ -452,7 +453,9 @@ export class SnapshotQuerySet<TState, TIndexed extends SnapshotCasts = NoDeclare
             index = index.withName(options.name);
 
         next._arrayIndexes.push(index);
-        next._containmentsByPath.set(path.trim(), index.containmentForRawPath(path));
+        // <any> is deliberate: the path and element shape were already checked by this method's own
+        // typed signature, and the stored containment is re-typed per call by the contains methods
+        next._containmentsByPath.set(path.trim(), index.containmentForRawPath<any>(path));
 
         return <SnapshotQuerySet<TState, TIndexed, TArrays | TP>><unknown>next;
     }
@@ -680,22 +683,24 @@ export class SnapshotQuerySet<TState, TIndexed extends SnapshotCasts = NoDeclare
      *
      * The snapshot repositories run this once per process against the first document they save, and
      * act on the severity split: `fatal` throws, `advisory` logs once. Call it yourself in a test -
-     * `assert.deepStrictEqual(MyRepository.indexes.verifyDocument(aggregate.snapshot()), [])` - to
-     * catch the one case the save-time check can meet late: a rename inside an optional object that
-     * happens to be null in every document a given process stores.
+     * `assert.deepStrictEqual(MyRepository.indexes.verifyDocument(toSnapshotDocument(aggregate)), [])`
+     * - to catch the one case the save-time check can meet late: a rename inside an optional object
+     * that happens to be null in every document a given process stores.
      *
      * What a clean result does *not* prove: a rename whose custom key coincidentally equals another
      * real key (the path resolves, to the wrong value), and rows written before the declaration
      * changed. It checks shape, not data.
      *
-     * @param {object} document - A snapshot document, i.e. what `AggregateRoot.snapshot()` returns.
+     * @param {SnapshotDocumentOf} document - A snapshot document - what `AggregateRoot.snapshot()` returns, as `toSnapshotDocument` types it.
      * @returns {ReadonlyArray<SnapshotShapeIssue>} Every issue found; empty when all paths resolve.
      * @throws {ArgumentNullException} If document is null or undefined.
      * @throws {ArgumentException} If document is not an object.
      */
-    public verifyDocument(document: object): ReadonlyArray<SnapshotShapeIssue>
+    public verifyDocument(document: SnapshotDocumentOf<TState>): ReadonlyArray<SnapshotShapeIssue>
     {
-        given(document, "document").ensureHasValue().ensureIsObject();
+        // viewed as `object` for the ensurer: with TState unresolved, the mapped type gives the
+        // defensive overloads nothing to discriminate on
+        given(document as object, "document").ensureHasValue().ensureIsObject();
 
         const issues = new Array<SnapshotShapeIssue>();
 

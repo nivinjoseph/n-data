@@ -11,6 +11,7 @@ import { QueryResult } from "../db/query-result.js";
 import { executeRawQuery } from "./raw-query.js";
 import type { DeclaredSnapshotQuerySet, SnapshotPredicate } from "../migration/snapshot-query-set.js";
 import { SnapshotShapeGuard } from "./snapshot-shape-guard.js";
+import { snapshotDocumentToState, toSnapshotDocument, type SnapshotDocumentOf } from "../migration/snapshot-document.js";
 
 /**
  * Reads aggregates from the snapshot table - the materialized current state - and writes
@@ -377,7 +378,7 @@ export abstract class SnapshotBaseRepository<T extends AggregateRoot<TState, TDo
             // shape-checked against the declared paths before anything is queued on the unit of
             // work, so a fatal issue (a @serialize rename, raw-path drift) rejects the save whole -
             // once per process per query set, one WeakSet lookup per save after that
-            const snapshot = value.snapshot() as object;
+            const snapshot = toSnapshotDocument(value);
             await SnapshotShapeGuard.verify(this.table, this.querySet, snapshot, this.logger);
 
             // always the non-committing door: this repository decides whether the transaction gets
@@ -418,7 +419,7 @@ export abstract class SnapshotBaseRepository<T extends AggregateRoot<TState, TDo
         if (queryResult.isEmpty)
             return [];
 
-        return queryResult.rows.map(t => t.data as AggregateState)
-            .map(t => AggregateRoot.deserializeFromSnapshot(this.domainContext, this._eventStreamRepository.aggregateType, this._eventStreamRepository.aggregateStateFactory, t));
+        return queryResult.rows.map(t => t.data as SnapshotDocumentOf<TState>)
+            .map(t => AggregateRoot.deserializeFromSnapshot(this.domainContext, this._eventStreamRepository.aggregateType, this._eventStreamRepository.aggregateStateFactory, snapshotDocumentToState(t)));
     }
 }

@@ -1,4 +1,5 @@
 import { given } from "@nivinjoseph/n-defensive";
+import type { DomainObject, SerializedValue } from "@nivinjoseph/n-domain";
 
 /**
  * The Postgres types a value extracted out of a jsonb column can be cast to.
@@ -98,42 +99,50 @@ export type SnapshotOpaqueContainer =
     ReadonlyMap<any, any> | ReadonlySet<any> | WeakMap<any, any> | WeakSet<any>;
 
 /**
- * The shape a nested value actually stores: the return type of a *typed* `serialize()` where one
- * exists, or the value itself where none does.
+ * The shape a nested value actually stores: n-domain's {@link SerializedValue} where the value is a
+ * `DomainObject`, or the value itself where it is plain data.
  *
  * `_serializeForSnapshot` routes any `Serializable` through `serialize()`, so for such a value the
- * stored keys are the serialized shape's keys, not the class's property names. n-domain >= 4.0.1
- * types that shape - `DomainObject<TThis, TDataKeys>` returns `Schema<TThis, TDataKeys>` - which is
- * what makes this substitution possible.
+ * stored keys are the serialized shape's keys, not the class's property names. n-domain 4.0.2 types
+ * that shape - `DomainObject<TThis, TDataKeys>` returns `DomainObjectSerialized<TThis, TDataKeys>` -
+ * and only that contract is trusted here: a member has a compiler-visible stored shape exactly when
+ * it is an n-domain `DomainObject`/`DomainEntity`. Anything else carrying a `serialize()` - a bare
+ * or custom `Serializable`, even one with a typed return - fails closed, because nothing pins its
+ * claimed shape to what n-domain's serializer actually emits.
  *
  * Guarded, and every guard fails CLOSED - to `Record<never, never>`, an object with no keys, whose
  * path union is `never` - because a substitution that produced an index signature would widen the
  * subtree's path union to `string` and disable checking entirely (the documented index-signature
  * gap):
- * - a `serialize()` whose return type carries a string index signature - which includes the bare
- *   `Serializable` default of `Record<string, any>`, and `any` - offers no nested paths at all;
- * - a `serialize()` typed to return an array offers none either, since an array's numeric keys are
+ * - a serialized shape carrying a string index signature (which includes `any`) offers no nested
+ *   paths at all;
+ * - a serialized shape typed as an array offers none either, since an array's numeric keys are
  *   not dot-addressable jsonb keys.
  *
  * Unions resolve by what the whole union can prove. The outer check is non-distributive (tuple
- * brackets), so it succeeds only when **every** member has a typed `serialize()` - `TData` is then
- * the union of their returns, and the walk over it offers the keys common to all of them, which is
- * sound. A union where only *some* members serialize fails closed (the middle branch below): the
- * class-shape keys of the serializable members are not their stored keys, so nothing checkable is
- * on offer. A union of plain objects passes through untouched - `keyof` over it already yields the
- * common keys, and for plain objects the TypeScript names *are* the stored keys.
+ * brackets), so it succeeds only when **every** member is a `DomainObject` - {@link SerializedValue}
+ * then distributes to the union of their serialized shapes, and the walk over it offers the keys
+ * common to all of them, which is sound. A union where only *some* members serialize fails closed
+ * (the middle branch below): the class-shape keys of the serializable members are not their stored
+ * keys, so nothing checkable is on offer. A union of plain objects passes through untouched -
+ * `keyof` over it already yields the common keys, and for plain objects the TypeScript names *are*
+ * the stored keys.
  *
- * The check is structural on purpose - a test fixture with a typed `serialize()` behaves like a
- * real DomainObject without depending on n-domain classes.
+ * The substitution is idempotent through nesting: a `DomainObject` member's serialized shape holds
+ * *already-serialized* values (no `serialize()` on them), so deeper levels of the walk pass them
+ * through the plain-data branch untouched.
  *
  * Exported so `SnapshotArrayPath` and `SnapshotValueAt` apply the same substitution - the three
  * walk the same state shape. Deliberately absent from the barrel, like {@link PreviousDepth}.
  */
 export type SerializedShapeOf<V> =
-    [V] extends [{ serialize(): infer TData extends object; }]
-        ? [TData] extends [ReadonlyArray<any>] ? Record<never, never>
-        : string extends keyof TData ? Record<never, never>
-        : TData
+    // non-distributive: succeeds only when EVERY union member is an n-domain DomainObject
+    [V] extends [DomainObject<object, never>]
+        ? SerializedValue<V> extends infer TData extends object
+            ? [TData] extends [ReadonlyArray<any>] ? Record<never, never>
+            : string extends keyof TData ? Record<never, never>
+            : TData
+            : Record<never, never>
         // distributive on purpose: true lands in the union exactly when SOME member serializes
         : true extends (V extends { serialize(): object; } ? true : false)
             ? Record<never, never>
@@ -155,9 +164,12 @@ type SnapshotLeafPath<T, TDepth extends number = 5> = [TDepth] extends [never] ?
         // filtering here rather than with an `as` clause keeps the key set intact, so indexing stays legal.
         // `Function` is named explicitly because it does NOT match the call signature below, so without
         // it a Function-typed key falls to the object branch and fabricates a subtree of its methods.
-        // The any/unknown guard comes first because `any` matches every later check.
+        // The $-guard comes first: the segment regex rejects `$`, so a $-key - the `$typename` every
+        // DomainObjectSerialized carries, or a plain member so named - must not be offered only to
+        // throw at declaration time. Then any/unknown, because `any` matches every later check.
         [K in keyof T & string]:
-        IsAnyOrUnknown<T[K]> extends true ? never
+        K extends `$${string}` ? never
+        : IsAnyOrUnknown<T[K]> extends true ? never
         // eslint-disable-next-line @typescript-eslint/no-unsafe-function-type
         : NonNullable<T[K]> extends Function ? never
         : NonNullable<T[K]> extends SnapshotOpaqueContainer ? never
@@ -203,35 +215,37 @@ type SnapshotLeafPath<T, TDepth extends number = 5> = [TDepth] extends [never] ?
  * copies the state with `Object.assign`, so `T`'s own keys are `data`'s keys. One level down,
  * `_serializeForSnapshot` routes any `Serializable` value through `serialize()`, which emits
  * `field.key ?? field.name` over `@serialize` decorated getters *only* - so this type recurses into
- * the *return type of `serialize()`* rather than the class ({@link SerializedShapeOf}). For a
- * nested value with a typed `serialize()` (n-domain >= 4.0.1 `DomainObject`/`DomainEntity`), a path
+ * the *serialized shape* rather than the class ({@link SerializedShapeOf}). For a nested n-domain
+ * 4.0.2 `DomainObject`/`DomainEntity` (whose `serialize()` returns `DomainObjectSerialized`), a path
  * segment therefore compiles only if a getter of that name is serialized - an undecorated getter is
- * a compile error rather than an always-null index. A bare/untyped `Serializable` member gives the
- * compiler nothing to check against and offers **no** nested paths at all (fail-closed;
- * {@link SnapshotIndex.forRawPath} is the door). Nested plain objects are safe as before, since
- * those are copied by `JSON.parse(JSON.stringify(...))` and their TypeScript names are their stored
- * keys.
+ * a compile error rather than an always-null index. A `Serializable` member that is not a
+ * `DomainObject` - bare, untyped, or even structurally typed - gives the compiler nothing it can
+ * trust and offers **no** nested paths at all (fail-closed; {@link SnapshotIndex.forRawPath} is the
+ * door). Nested plain objects are safe as before, since those are copied by
+ * `JSON.parse(JSON.stringify(...))` and their TypeScript names are their stored keys.
  *
- * What the *type system* still cannot check: an explicit `@serialize("customKey")` rename. `Schema`'s
- * keys are the getter *names* - a decorator cannot change a type - so a renamed field is still
- * offered under its TypeScript name while the data holds the custom key. It is no longer silent,
- * though: the snapshot repositories verify every declared path against the first document each
- * process saves (`SnapshotQuerySet.verifyDocument`), and a rename throws there, before anything is
- * written. What remains genuinely uncaught: a rename inside an optional member a process never
- * stores (close it with the `verifyDocument` assertion in a test), and a rename whose custom key
- * coincidentally equals another real key. Also not addressable: the `$typename` every serialized
- * `Serializable` carries - it is
- * real in storage, but the segment regex rejects `$`, so neither the typed nor the raw path door
- * reaches it; index it by hand in a migration and query through `raw` if a polymorphic-type
+ * What the *type system* still cannot check: an explicit `@serialize("customKey")` rename.
+ * `DomainObjectSerialized`'s keys are the getter *names* - a decorator cannot change a type - so a
+ * renamed field is still offered under its TypeScript name while the data holds the custom key. It
+ * is no longer silent, though: the snapshot repositories verify every declared path against the
+ * first document each process saves (`SnapshotQuerySet.verifyDocument`), and a rename throws there,
+ * before anything is written. What remains genuinely uncaught: a rename inside an optional member a
+ * process never stores (close it with the `verifyDocument` assertion in a test), and a rename whose
+ * custom key coincidentally equals another real key. Deliberately not addressable: the `$typename`
+ * every serialized `Serializable` carries. As of n-domain 4.0.2 it is present in the *type* too
+ * (`DomainObjectSerialized` stamps it), but the segment regex rejects `$`, so every `$`-prefixed key
+ * is filtered out of the walk rather than offered only to throw - and the raw path door does not
+ * reach it either. Index it by hand in a migration and query through `raw` if a polymorphic-type
  * predicate has to be fast.
  *
  * Everything unverifiable fails **closed** - no paths rather than unchecked ones, with `forRawPath`
  * as the door: a level carrying a string index signature ('keyof' cannot recover its literal keys);
  * an `any`- or `unknown`-typed member; a `Map`/`Set`/`WeakMap`/`WeakSet` member (serializes to
- * `{}`); a mixed union like `string | Customer` (rows may hold the object); and a union where only
- * some members serialize (class-shape keys are not stored keys). Unions where *every* member is
- * checkable stay useful: common keys are offered, which is sound in both the all-plain and the
- * all-serializable case. The remaining known gap besides the rename above: a template-literal index
+ * `{}`); a mixed union like `string | Customer` (rows may hold the object); a union where only
+ * some members serialize (class-shape keys are not stored keys); and any `serialize()`-bearer that
+ * is not an n-domain `DomainObject`, whatever its claimed return type. Unions where *every* member
+ * is checkable stay useful: common keys are offered, which is sound in both the all-plain and the
+ * all-DomainObject case. The remaining known gap besides the rename above: a template-literal index
  * signature (`` [k: `x${string}`] ``) still partially widens its level.
  */
 export type SnapshotPath<T> = Exclude<SnapshotLeafPath<T>, "organizationId">;
@@ -261,14 +275,15 @@ export type SnapshotPath<T> = Exclude<SnapshotLeafPath<T>, "organizationId">;
  * type-argument inference, so `forPath<OrderState>("status")` - supplying the state explicitly - cannot
  * also infer the path.
  *
- * What this class is still for is the path a typed signature cannot name: a computed or dynamic key, a
- * `$`-prefixed serialized name, or a whole subtree, all through {@link forRawPath}. Pass such a
- * declaration to `DbTableCreator` alongside a set, or on its own.
+ * What this class is still for is the path a typed signature cannot name: a computed or dynamic key,
+ * or a whole subtree, through {@link forRawPath}. (Not a `$`-prefixed name - the segment regex
+ * rejects `$` through every door; see {@link SnapshotPath}.) Pass such a declaration to
+ * `DbTableCreator` alongside a set, or on its own.
  *
  * @example
  * ```typescript
  * // the escape hatch: a key outside the state shape, which SnapshotQuerySet cannot name
- * const legacyIndex = SnapshotIndex.forRawPath<OrderState>("$legacyCode");
+ * const legacyIndex = SnapshotIndex.forRawPath<OrderState>("legacy_code");
  *
  * await tableCreator.createSnapshotTableForAggregate(Order, {
  *     indexes: [...OrderRepository.indexes.indexes, legacyIndex],
@@ -276,7 +291,7 @@ export type SnapshotPath<T> = Exclude<SnapshotLeafPath<T>, "organizationId">;
  * });
  *
  * // and the predicate for it, built from the same declaration
- * const expression = legacyIndex.expressionForRawPath("$legacyCode");
+ * const expression = legacyIndex.expressionForRawPath("legacy_code");
  * ```
  *
  * @class SnapshotIndex

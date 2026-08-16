@@ -1,7 +1,8 @@
 import { given } from "@nivinjoseph/n-defensive";
-import { AggregateRoot, AggregateState, DomainEvent, OrgAggregateRoot, OrgAggregateState, OrgDomainEvent } from "@nivinjoseph/n-domain";
+import { AggregateRoot, AggregateState, DomainEvent, DomainObject, DomainObjectData, OrgAggregateRoot, OrgAggregateState, OrgDomainEvent } from "@nivinjoseph/n-domain";
 import { Exception } from "@nivinjoseph/n-exception";
 import { Logger } from "@nivinjoseph/n-log";
+import { serialize } from "@nivinjoseph/n-util";
 import assert from "node:assert";
 import test, { after, before, describe } from "node:test";
 import { DataHelper, Db, DbConnectionConfig, DbConnectionFactory, DbTableCreator, JsonValueType, KnexPgDb, KnexPgDbConnectionFactory, QueryResult, SnapshotArrayIndex, SnapshotIndex, SnapshotQuerySet, SnapshotTableOptions } from "../src/index.js";
@@ -43,28 +44,52 @@ interface Serialish
     serialize(): object;
 }
 
-// stand-ins for n-domain DomainObjects: a typed serialize() (n-domain >= 4.0.1) is what the path
-// types recurse into, and the substitution is structural, so these exercise it without depending on
-// n-domain classes
+// real n-domain DomainObjects: as of 4.0.2 the substitution trusts ONLY these - serialize() returns
+// DomainObjectSerialized, which is what pins the offered paths to what the serializer actually
+// emits. Never instantiated by these suites; the classes exist to be walked by the path types.
 
-// the serialized shape drops the derived getter and the method noise
-interface Plan
+// the serialized shape drops the derived getter and the method noise (equals comes with the base)
+@serialize
+class Plan extends DomainObject<Plan, "tier" | "seatLimit">
 {
-    readonly tier: string;
-    readonly seatLimit: number;
-    readonly isUnlimited: boolean;          // derived getter - NOT serialized, must not be a path
-    serialize(): { tier: string; seatLimit: number; };
-    equals(value: object | null): boolean;  // method noise the serialized shape strips
+    private readonly _tier: string;
+    private readonly _seatLimit: number;
+
+    @serialize public get tier(): string { return this._tier; }
+    @serialize public get seatLimit(): number { return this._seatLimit; }
+    public get isUnlimited(): boolean { return this._seatLimit === 0; }     // derived - NOT serialized, must not be a path
+
+    public constructor(data: DomainObjectData<Plan>)
+    {
+        super(data);
+        this._tier = data.tier;
+        this._seatLimit = data.seatLimit;
+    }
 }
 
-// a DomainObject nested in a DomainObject: the serialized shape's member is the CLASS type, so the
-// substitution has to apply again one level down
-interface Billing
+// a DomainObject nested in a DomainObject: its serialized shape's member is the nested SERIALIZED
+// record (already substituted by DomainObjectSerialized), so the walk descends straight into it.
+// `since` is a Date data key: SerializedValue types it as the string it actually stores, so
+// `billing.since` is a leaf path - something the pre-4.0.2 structural check could not offer.
+@serialize
+class Billing extends DomainObject<Billing, "plan" | "currency" | "since">
 {
-    readonly plan: Plan;
-    readonly currency: string;
-    readonly summary: string;               // NOT serialized
-    serialize(): { plan: Plan; currency: string; };
+    private readonly _plan: Plan;
+    private readonly _currency: string;
+    private readonly _since: Date;
+
+    @serialize public get plan(): Plan { return this._plan; }
+    @serialize public get currency(): string { return this._currency; }
+    @serialize public get since(): Date { return this._since; }
+    public get summary(): string { return `${this._plan.tier} ${this._currency}`; }    // NOT serialized
+
+    public constructor(data: DomainObjectData<Billing>)
+    {
+        super(data);
+        this._plan = data.plan;
+        this._currency = data.currency;
+        this._since = data.since;
+    }
 }
 
 // extends bare Serializable: serialize() returns Record<string, any>, which must offer NO nested
@@ -75,20 +100,51 @@ interface BareSerialish
     serialize(): Record<string, any>;
 }
 
-// an array element with a FLAT typed serialized shape: legally containment-indexable, since the
-// stored element carries exactly those keys (plus a $typename that @> subset matching ignores)
-interface PlanChange
+// the OLD duck-typed contract: a structurally typed serialize() on something that is not an
+// n-domain DomainObject. Before 4.0.2 this granted nested paths; now nothing pins its claimed
+// shape to what the serializer emits, so it must fail closed like every other serialize()-bearer.
+interface StructuralPlan
 {
     readonly tier: string;
-    readonly changedAt: number;
-    readonly isRecent: boolean;             // derived - not serialized, must not be a match key
-    serialize(): { tier: string; changedAt: number; };
+    serialize(): { tier: string; };
 }
 
-// an element whose SERIALIZED shape nests a DomainObject: not a flat record, so still excluded
-interface AuditEntry
+// an array element with a FLAT serialized shape: legally containment-indexable, since the stored
+// element carries exactly those keys (plus a $typename that @> subset matching ignores)
+@serialize
+class PlanChange extends DomainObject<PlanChange, "tier" | "changedAt">
 {
-    serialize(): { actor: Plan; note: string; };
+    private readonly _tier: string;
+    private readonly _changedAt: number;
+
+    @serialize public get tier(): string { return this._tier; }
+    @serialize public get changedAt(): number { return this._changedAt; }
+    public get isRecent(): boolean { return this._changedAt > 0; }          // derived - not serialized, must not be a match key
+
+    public constructor(data: DomainObjectData<PlanChange>)
+    {
+        super(data);
+        this._tier = data.tier;
+        this._changedAt = data.changedAt;
+    }
+}
+
+// an element whose SERIALIZED shape nests a DomainObject's record: not a flat record, so still excluded
+@serialize
+class AuditEntry extends DomainObject<AuditEntry, "actor" | "note">
+{
+    private readonly _actor: Plan;
+    private readonly _note: string;
+
+    @serialize public get actor(): Plan { return this._actor; }
+    @serialize public get note(): string { return this._note; }
+
+    public constructor(data: DomainObjectData<AuditEntry>)
+    {
+        super(data);
+        this._actor = data.actor;
+        this._note = data.note;
+    }
 }
 
 // a plain-object union: the common keys are offered, which is sound - for plain objects the
@@ -119,9 +175,11 @@ interface OrderState extends AggregateState
     matrix: Array<Array<string>>;           // an array of arrays: must not be offered
     nested: Array<{ a: string; b: Address; }>;  // an element that nests: must not be offered
     serials: Array<Serialish>;              // an element with an untyped serialize(): must not be offered
-    plan: Plan;                             // typed serialize(): paths follow the serialized shape
-    billing: Billing;                       // a serializable inside a serializable: substituted at every level
+    plan: Plan;                             // a DomainObject: paths follow the serialized shape
+    billing: Billing;                       // a DomainObject inside a DomainObject: substituted at every level
     bare: BareSerialish;                    // untyped serialize(): offers no nested paths at all
+    structuralPlan: StructuralPlan;         // the old duck-typed contract: must offer no nested paths anymore
+    "$legacy": string;                      // a $-prefixed key: real in storage, but the segment regex rejects $
     planHistory: Array<PlanChange>;         // element with a flat serialized shape: an array path
     audits: Array<AuditEntry>;              // element whose serialized shape nests: must not be offered
     blob: any;                              // unverifiable: must offer nothing, not a `string`-widened subtree
@@ -899,14 +957,16 @@ await describe("DbTableCreator tests", async () =>
             assert.ok(true);
         });
 
-        // nested paths follow the SERIALIZED shape: for a member with a typed serialize(), what is
-        // offered is what _serializeForSnapshot actually stores - the return type of serialize()
+        // nested paths follow the SERIALIZED shape: for a DomainObject member, what is offered is
+        // what _serializeForSnapshot actually stores - DomainObjectSerialized (n-domain 4.0.2)
         await test("paths through a serializable member follow its serialized shape", () =>
         {
             SnapshotIndex.forPath<OrderState>("plan.tier");
             SnapshotIndex.forPath<OrderState>("plan.seatLimit");
             SnapshotIndex.forPath<OrderState>("billing.currency");
             SnapshotIndex.forPath<OrderState>("billing.plan.tier");          // substituted twice
+            // a Date data key stores - and is typed as - a string leaf, per SerializedValue
+            SnapshotIndex.forPath<OrderState>("billing.since");
 
             // @ts-expect-error - a derived getter is absent from the stored record (the gap this closes)
             SnapshotIndex.forPath<OrderState>("plan.isUnlimited");
@@ -916,6 +976,10 @@ await describe("DbTableCreator tests", async () =>
             // type does not offer it, and the segment regex throws on '$' even through the raw door
             // @ts-expect-error - not offered by the path type
             assert.throws(() => SnapshotIndex.forPath<OrderState>("plan.$typename"));
+            // @ts-expect-error - filtered at every depth, not merely the first
+            assert.throws(() => SnapshotIndex.forPath<OrderState>("billing.plan.$typename"));
+            // @ts-expect-error - a plain $-prefixed state key is excluded the same way
+            assert.throws(() => SnapshotIndex.forPath<OrderState>("$legacy"));
             // @ts-expect-error - not serialized on the nested serializable either
             SnapshotIndex.forPath<OrderState>("billing.plan.isUnlimited");
             // @ts-expect-error - not serialized
@@ -928,8 +992,15 @@ await describe("DbTableCreator tests", async () =>
             // @ts-expect-error - and no fabricated ones either
             SnapshotIndex.forPath<OrderState>("bare.anything");
 
+            // the old duck-typed contract: a structurally typed serialize() on a non-DomainObject
+            // granted nested paths before 4.0.2; nothing pins its claimed shape to what the
+            // serializer emits, so it now fails closed like every other serialize()-bearer
+            // @ts-expect-error - a structural serialize() no longer offers nested paths
+            SnapshotIndex.forPath<OrderState>("structuralPlan.tier");
+
             // forRawPath remains the deliberate way through for what the stored shape cannot offer
             SnapshotIndex.forRawPath<OrderState>("bare.foo");
+            SnapshotIndex.forRawPath<OrderState>("structuralPlan.tier");
 
             assert.ok(true);
         });
@@ -1117,8 +1188,8 @@ await describe("DbTableCreator tests", async () =>
             assert.ok(true);
         });
 
-        // the element judgment is also over the STORED shape: a typed serialize() makes an array of
-        // serializable elements indexable when its serialized record is flat, and keeps it out when it nests
+        // the element judgment is also over the STORED shape: a DomainObject element's serialized
+        // record makes its array indexable when flat, and keeps it out when it nests
         await test("arrays of serializable elements are judged by their serialized shape", () =>
         {
             SnapshotArrayIndex.forPath<OrderState>("planHistory");           // flat serialized shape
@@ -1140,6 +1211,8 @@ await describe("DbTableCreator tests", async () =>
             history.contains({ serialize: "x" });
             // @ts-expect-error - $typename is not offered through the typed door; the raw door takes it
             history.contains({ $typename: "PlanChange" });
+            // @ts-expect-error - nor may it ride along in an otherwise-valid match literal
+            history.contains({ tier: "free", $typename: "PlanChange" });
 
             assert.ok(true);
         });
@@ -1224,11 +1297,15 @@ await describe("DbTableCreator tests", async () =>
             // @ts-expect-error - a leaf scalar is not an array path
             assert.throws(() => tagsIndex.containmentForPath("status"));
 
-            // the raw door stays open, and is unchecked by default
+            // the raw door stays open, but there is no silent default: TElement is `never` until
+            // the caller chooses, and <any> is the explicit, visible opt-out of checking
             const dynamicKey: string = "tags";
             assert.strictEqual(
-                tagsIndex.containmentForRawPath(dynamicKey).contains({ anything: 1 }).params[0],
+                tagsIndex.containmentForRawPath<any>(dynamicKey).contains({ anything: 1 }).params[0],
                 "[{\"anything\":1}]");
+
+            // @ts-expect-error - without a type argument no match document can be built
+            tagsIndex.containmentForRawPath(dynamicKey).contains({ anything: 1 });
 
             // ...and checked when the element type is supplied
             const typedRaw = tagsIndex.containmentForRawPath<{ id: string; }>("tags");
@@ -1346,7 +1423,9 @@ await describe("DbTableCreator tests", async () =>
 
         await test("values that do not survive JSON.stringify are rejected", () =>
         {
-            const raw = SnapshotArrayIndex.forRawPath<OrderState>("tags").containmentForRawPath("tags");
+            // <any> on purpose: this suite feeds the runtime validators deliberate garbage the
+            // never-default would otherwise stop at compile time
+            const raw = SnapshotArrayIndex.forRawPath<OrderState>("tags").containmentForRawPath<any>("tags");
 
             // all four render as `null`, turning a bug into a null-element match
             assert.throws(() => raw.contains(null));

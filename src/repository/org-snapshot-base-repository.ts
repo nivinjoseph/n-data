@@ -1,4 +1,4 @@
-import { AggregateRoot, AggregateState, OrgAggregateRoot, OrgAggregateState, OrgDomainContext, OrgDomainEvent } from "@nivinjoseph/n-domain";
+import { AggregateRoot, OrgAggregateRoot, OrgAggregateState, OrgDomainContext, OrgDomainEvent } from "@nivinjoseph/n-domain";
 import { Repository } from "./repository.js";
 import { BaseRepository } from "./base-repository.js";
 import { UnitOfWork } from "../unit-of-work/unit-of-work.js";
@@ -11,6 +11,7 @@ import { QueryResult } from "../db/query-result.js";
 import { executeRawQuery } from "./raw-query.js";
 import type { DeclaredSnapshotQuerySet, SnapshotPredicate } from "../migration/snapshot-query-set.js";
 import { SnapshotShapeGuard } from "./snapshot-shape-guard.js";
+import { snapshotDocumentToState, toSnapshotDocument, type SnapshotDocumentOf } from "../migration/snapshot-document.js";
 
 /**
  * The organization-scoped counterpart to `SnapshotBaseRepository`.
@@ -422,7 +423,7 @@ export abstract class OrgSnapshotBaseRepository<T extends OrgAggregateRoot<TStat
             // shape-checked against the declared paths before anything is queued on the unit of
             // work, so a fatal issue (a @serialize rename, raw-path drift) rejects the save whole -
             // once per process per query set, one WeakSet lookup per save after that
-            const snapshot = value.snapshot() as object;
+            const snapshot = toSnapshotDocument(value);
             await SnapshotShapeGuard.verify(this.table, this.querySet, snapshot, this.logger);
 
             // always the non-committing door: this repository decides whether the transaction gets
@@ -464,7 +465,7 @@ export abstract class OrgSnapshotBaseRepository<T extends OrgAggregateRoot<TStat
         if (queryResult.isEmpty)
             return [];
 
-        return queryResult.rows.map(t => t.data as AggregateState)
-            .map(t => AggregateRoot.deserializeFromSnapshot(this.domainContext, this._eventStreamRepository.aggregateType, this._eventStreamRepository.aggregateStateFactory, t));
+        return queryResult.rows.map(t => t.data as SnapshotDocumentOf<TState>)
+            .map(t => AggregateRoot.deserializeFromSnapshot(this.domainContext, this._eventStreamRepository.aggregateType, this._eventStreamRepository.aggregateStateFactory, snapshotDocumentToState(t)));
     }
 }

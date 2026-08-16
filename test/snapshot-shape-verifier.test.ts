@@ -1,9 +1,10 @@
-import { AggregateState } from "@nivinjoseph/n-domain";
+import { AggregateState, DomainObject, DomainObjectData } from "@nivinjoseph/n-domain";
 import { Exception } from "@nivinjoseph/n-exception";
 import { Logger } from "@nivinjoseph/n-log";
+import { serialize } from "@nivinjoseph/n-util";
 import assert from "node:assert";
 import test, { describe } from "node:test";
-import { DeclaredSnapshotQuerySet, JsonValueType, SnapshotQuerySet, SnapshotShapeIssue } from "../src/index.js";
+import { DeclaredSnapshotQuerySet, JsonValueType, SnapshotDocumentOf, SnapshotQuerySet, SnapshotShapeIssue } from "../src/index.js";
 import { SnapshotShapeGuard } from "../src/repository/snapshot-shape-guard.js";
 
 
@@ -11,11 +12,21 @@ import { SnapshotShapeGuard } from "../src/repository/snapshot-shape-guard.js";
 // disagreeing is exactly what verifyDocument exists to catch - so unlike every other suite, most
 // documents here are deliberately wrong.
 
-interface Plan
+@serialize
+class Plan extends DomainObject<Plan, "tier" | "seatLimit">
 {
-    readonly tier: string;
-    readonly seatLimit: number;
-    serialize(): { tier: string; seatLimit: number; };
+    private readonly _tier: string;
+    private readonly _seatLimit: number;
+
+    @serialize public get tier(): string { return this._tier; }
+    @serialize public get seatLimit(): number { return this._seatLimit; }
+
+    public constructor(data: DomainObjectData<Plan>)
+    {
+        super(data);
+        this._tier = data.tier;
+        this._seatLimit = data.seatLimit;
+    }
 }
 
 interface StudioState extends AggregateState
@@ -36,9 +47,11 @@ const querySet = SnapshotQuerySet.for<StudioState>()
 /**
  * A document as `AggregateRoot.snapshot()` emits it: top-level state keys verbatim, the nested
  * Serializable through `serialize()` - every decorated key (null-valued ones included) plus a
- * `$typename` nobody wrote.
+ * `$typename` nobody wrote. `SnapshotDocumentOf` is the assertion: the literal is checked against
+ * the real stored shape, nested DomainObject as its serialized record and the null-valued optional
+ * included.
  */
-function cleanDocument(): Record<string, any>
+function cleanDocument(): SnapshotDocumentOf<StudioState>
 {
     return {
         id: "studio_1", version: 3, createdAt: 1, updatedAt: 2,
@@ -48,6 +61,18 @@ function cleanDocument(): Record<string, any>
         tags: ["a", "b"],
         note: null
     };
+}
+
+/**
+ * A clean document mutated into a deliberately wrong shape - which is most of this suite. The
+ * mutation runs over an untyped view, because the wrongness would not compile otherwise; the result
+ * keeps the document type, because a drifted store hands back exactly this at the same boundary.
+ */
+function mutatedDocument(mutate: (document: Record<string, any>) => void): SnapshotDocumentOf<StudioState>
+{
+    const document = cleanDocument();
+    mutate(document);
+    return document;
 }
 
 function kinds(issues: ReadonlyArray<SnapshotShapeIssue>): Array<string>
@@ -66,9 +91,7 @@ await describe("verifyDocument tests", async () =>
     // null is what an optional stores, and extraction turns it into SQL NULL - never an issue
     await test("null intermediates and leaves are clean", () =>
     {
-        const document = cleanDocument();
-        document.plan = null;
-        document.tags = null;
+        const document = mutatedDocument(t => { t.plan = null; t.tags = null; });
 
         assert.deepStrictEqual(querySet.verifyDocument(document), []);
     });
@@ -77,8 +100,8 @@ await describe("verifyDocument tests", async () =>
     // absent under a $typename parent is definitively a @serialize("customKey") rename
     await test("a key absent under a $typename parent is a fatal rename", () =>
     {
-        const document = cleanDocument();
-        document.plan = { tier: "free", $typename: "Test.StudioPlan" };  // seatLimit renamed away
+        // seatLimit renamed away
+        const document = mutatedDocument(t => t.plan = { tier: "free", $typename: "Test.StudioPlan" });
 
         const issues = querySet.verifyDocument(document);
 
@@ -91,8 +114,7 @@ await describe("verifyDocument tests", async () =>
     // absence under a PLAIN parent is ambiguous - it may be an omitted optional - so it warns
     await test("a key absent at the top level is an advisory", () =>
     {
-        const document = cleanDocument();
-        delete document.note;
+        const document = mutatedDocument(t => delete t.note);
 
         const issues = querySet.verifyDocument(document);
 
@@ -102,8 +124,7 @@ await describe("verifyDocument tests", async () =>
 
     await test("an absent key under an empty plain parent hints at Map/Set", () =>
     {
-        const document = cleanDocument();
-        document.plan = {};                                              // what a Map serializes to
+        const document = mutatedDocument(t => t.plan = {});              // what a Map serializes to
 
         const issues = querySet.verifyDocument(document);
 
@@ -115,15 +136,13 @@ await describe("verifyDocument tests", async () =>
     // a value of the wrong KIND is never what an optional produces, so it is always fatal
     await test("a scalar or array intermediate is fatal", () =>
     {
-        const withScalar = cleanDocument();
-        withScalar.plan = "free";
+        const withScalar = mutatedDocument(t => t.plan = "free");
 
         const scalarIssues = querySet.verifyDocument(withScalar);
         assert.deepStrictEqual(kinds(scalarIssues), ["non-object-intermediate:plan.seatLimit", "non-object-intermediate:plan.tier"]);
         assert.ok(scalarIssues.every(t => t.severity === "fatal"));
 
-        const withArray = cleanDocument();
-        withArray.plan = ["free"];
+        const withArray = mutatedDocument(t => t.plan = ["free"]);
 
         const arrayIssues = querySet.verifyDocument(withArray);
         assert.deepStrictEqual(kinds(arrayIssues), ["non-object-intermediate:plan.seatLimit", "non-object-intermediate:plan.tier"]);
@@ -131,8 +150,7 @@ await describe("verifyDocument tests", async () =>
 
     await test("an array path resolving to a non-array is fatal", () =>
     {
-        const document = cleanDocument();
-        document.tags = {};                                              // a Set serializes to {}
+        const document = mutatedDocument(t => t.tags = {});              // a Set serializes to {}
 
         const issues = querySet.verifyDocument(document);
 
@@ -143,8 +161,7 @@ await describe("verifyDocument tests", async () =>
 
     await test("an absent array path is an advisory, like any absent key", () =>
     {
-        const document = cleanDocument();
-        delete document.tags;
+        const document = mutatedDocument(t => delete t.tags);
 
         assert.deepStrictEqual(kinds(querySet.verifyDocument(document)), ["absent-key:tags"]);
     });
@@ -152,8 +169,7 @@ await describe("verifyDocument tests", async () =>
     // a scalar path landing on an empty object is the Map/Set gap on the leaf itself
     await test("a scalar path resolving to an empty object is an advisory", () =>
     {
-        const document = cleanDocument();
-        document.note = {};
+        const document = mutatedDocument(t => t.note = {});
 
         const issues = querySet.verifyDocument(document);
 
@@ -164,18 +180,19 @@ await describe("verifyDocument tests", async () =>
     // a NON-empty object leaf stays silent: indexing a whole subtree is a documented raw-door use
     await test("a scalar path resolving to a non-empty object is silent", () =>
     {
-        const document = cleanDocument();
-        document.note = { a: 1 };
+        const document = mutatedDocument(t => t.note = { a: 1 });
 
         assert.deepStrictEqual(querySet.verifyDocument(document), []);
     });
 
     await test("several issues are reported together, one per declared path", () =>
     {
-        const document = cleanDocument();
-        document.plan = { tier: "free", $typename: "Test.StudioPlan" };
-        document.tags = {};
-        delete document.note;
+        const document = mutatedDocument(t =>
+        {
+            t.plan = { tier: "free", $typename: "Test.StudioPlan" };
+            t.tags = {};
+            delete t.note;
+        });
 
         assert.deepStrictEqual(kinds(querySet.verifyDocument(document)),
             ["absent-key:note", "non-array-leaf:tags", "unresolvable-key:plan.seatLimit"]);
@@ -186,6 +203,30 @@ await describe("verifyDocument tests", async () =>
         assert.throws(() => querySet.verifyDocument(<any>null));
         assert.throws(() => querySet.verifyDocument(<any>undefined));
         assert.throws(() => querySet.verifyDocument(<any>"{}"));
+    });
+
+    // the type-level half of the round trip: a document literal is checked against the REAL stored
+    // shape - nested DomainObjects as their serialized records ($typename included), wrong leaves
+    // rejected at compile time
+    await test("a document typed as SnapshotDocumentOf is accepted, and a wrong leaf is a compile error", () =>
+    {
+        const document: SnapshotDocumentOf<StudioState> = {
+            id: "studio_1", version: 3, createdAt: 1, updatedAt: 2,
+            isRebased: false, rebasedFromVersion: 0, typeVersion: 1,
+            name: "n",
+            plan: { tier: "free", seatLimit: 3, $typename: "Test.Plan" },
+            tags: ["a", "b"],
+            note: null                          // what an undefined optional stores - and how the type states it
+        };
+
+        assert.deepStrictEqual(querySet.verifyDocument(document), []);
+
+        const wrongLeaf: SnapshotDocumentOf<StudioState> = {
+            ...document,
+            // @ts-expect-error - seatLimit stores a number; a string literal is a compile error
+            plan: { tier: "free", seatLimit: "3", $typename: "Test.Plan" }
+        };
+        assert.ok(wrongLeaf);
     });
 });
 
@@ -230,7 +271,7 @@ await describe("SnapshotShapeGuard tests", async () =>
             indexes: set.indexes, arrayIndexes: set.arrayIndexes,
             paths: set.paths, arrayPaths: set.arrayPaths,
             _pathCheckingIntact: true,
-            verifyDocument: (document: object) =>
+            verifyDocument: (document: SnapshotDocumentOf<StudioState>) =>
             {
                 walks++;
                 return set.verifyDocument(document);
@@ -249,8 +290,8 @@ await describe("SnapshotShapeGuard tests", async () =>
     {
         const set = freshSet();
         const logger = new CapturingLogger();
-        const renamed = cleanDocument();
-        renamed.plan = { tier: "free", $typename: "Test.StudioPlan" };   // seatLimit renamed away
+        // seatLimit renamed away
+        const renamed = mutatedDocument(t => t.plan = { tier: "free", $typename: "Test.StudioPlan" });
 
         // the flag is set only on a fatal-free pass, so both saves reject - never the second one through
         await assert.rejects(() => SnapshotShapeGuard.verify("studio_snaps", set, renamed, logger),
@@ -262,8 +303,7 @@ await describe("SnapshotShapeGuard tests", async () =>
     {
         const set = freshSet();
         const logger = new CapturingLogger();
-        const document = cleanDocument();
-        delete document.note;
+        const document = mutatedDocument(t => delete t.note);
 
         await SnapshotShapeGuard.verify("studio_snaps", set, document, logger);
         await SnapshotShapeGuard.verify("studio_snaps", set, document, logger);
@@ -277,8 +317,7 @@ await describe("SnapshotShapeGuard tests", async () =>
     {
         const set = freshSet();
         const logger = new CapturingLogger();
-        const broken = cleanDocument();
-        broken.tags = {};
+        const broken = mutatedDocument(t => t.tags = {});
 
         await assert.rejects(() => SnapshotShapeGuard.verify("studio_snaps", set, broken, logger));
 

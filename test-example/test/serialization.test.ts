@@ -2,8 +2,10 @@ import { AggregateRoot, ConfigurableDomainContext, DomainContext, OrgConfigurabl
 import { Deserializer } from "@nivinjoseph/n-util";
 import assert from "node:assert";
 import test, { describe } from "node:test";
+import { toSnapshotDocument } from "../../src/index.js";
 import { Creator } from "../creator/creator.js";
 import { CreatorStateFactory } from "../creator/creator-state.js";
+import { SnapshotCreatorRepository } from "../creator/repositories/snapshot-creator-repository.js";
 import { DefaultCreatorFactory } from "../creator/factories/default-creator-factory.js";
 import { DefaultStudioFactory } from "../studio/factories/default-studio-factory.js";
 import { SnapshotStudioRepository } from "../studio/repositories/snapshot-studio-repository.js";
@@ -122,11 +124,20 @@ await describe("Serialization", async () =>
     // repository declares resolves inside a real snapshot document. This is what catches a
     // '@serialize("customKey")' rename hiding inside an OPTIONAL member that production might not
     // store for a while - the compile-time check cannot see renames at all.
+    // toSnapshotDocument is the cast-free door: it types snapshot()'s output as what is stored.
     await test("every declared index path resolves in a real snapshot", async () =>
     {
         const studio = await createStudio();
 
-        assert.deepStrictEqual(SnapshotStudioRepository.indexes.verifyDocument(studio.snapshot() as object), []);
+        assert.deepStrictEqual(SnapshotStudioRepository.indexes.verifyDocument(toSnapshotDocument(studio)), []);
+    });
+
+    // the same assertion for the org-scoped side, against the creator repository's declaration
+    await test("every declared creator index path resolves in a real snapshot", async () =>
+    {
+        const creator = await createCreator();
+
+        assert.deepStrictEqual(SnapshotCreatorRepository.indexes.verifyDocument(toSnapshotDocument(creator)), []);
     });
 
     await test("replay and snapshot agree", async () =>

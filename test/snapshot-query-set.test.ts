@@ -1,6 +1,7 @@
-import { OrgAggregateRoot, OrgAggregateState, OrgDomainEvent } from "@nivinjoseph/n-domain";
+import { DomainObject, DomainObjectData, OrgAggregateRoot, OrgAggregateState, OrgDomainEvent } from "@nivinjoseph/n-domain";
 import { ArgumentException, ArgumentNullException, Exception } from "@nivinjoseph/n-exception";
 import { Logger } from "@nivinjoseph/n-log";
+import { serialize } from "@nivinjoseph/n-util";
 import assert from "node:assert";
 import test, { after, before, describe } from "node:test";
 import { Db, DbConnectionConfig, DbConnectionFactory, DbTableCreator, DeclaredSnapshotQuerySet, JsonValueType, KnexPgDb, KnexPgDbConnectionFactory, OrgEventStreamBaseRepository, OrgSnapshotBaseRepository, SnapshotArrayIndex, SnapshotIndex, SnapshotQuerySet } from "../src/index.js";
@@ -27,13 +28,24 @@ interface Line
     isVoid: boolean;
 }
 
-// a stand-in for an n-domain DomainObject: a typed serialize() is the stored shape paths follow
-interface PlanVo
+// a real n-domain DomainObject: as of 4.0.2 the path types trust only these - the serialized shape
+// (DomainObjectSerialized) is the stored shape paths follow. Never instantiated by this suite.
+@serialize
+class PlanVo extends DomainObject<PlanVo, "tier" | "seatLimit">
 {
-    readonly tier: string;
-    readonly seatLimit: number;
-    readonly isUnlimited: boolean;  // derived - not serialized, so not declarable as a path
-    serialize(): { tier: string; seatLimit: number; };
+    private readonly _tier: string;
+    private readonly _seatLimit: number;
+
+    @serialize public get tier(): string { return this._tier; }
+    @serialize public get seatLimit(): number { return this._seatLimit; }
+    public get isUnlimited(): boolean { return this._seatLimit === 0; }     // derived - not serialized, so not declarable as a path
+
+    public constructor(data: DomainObjectData<PlanVo>)
+    {
+        super(data);
+        this._tier = data.tier;
+        this._seatLimit = data.seatLimit;
+    }
 }
 
 interface TicketState extends OrgAggregateState
