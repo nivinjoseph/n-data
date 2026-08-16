@@ -3,7 +3,7 @@ import { Exception } from "@nivinjoseph/n-exception";
 import { Logger } from "@nivinjoseph/n-log";
 import assert from "node:assert";
 import test, { after, before, describe } from "node:test";
-import { Db, DbConnectionConfig, DbConnectionFactory, DbTableCreator, JsonValueType, KnexPgDb, KnexPgDbConnectionFactory, SnapshotDriftIssue, SnapshotIndex, SnapshotQuerySet } from "../src/index.js";
+import { Db, DbConnectionConfig, DbConnectionFactory, DbException, DbTableCreator, JsonValueType, KnexPgDb, KnexPgDbConnectionFactory, SnapshotDriftIssue, SnapshotIndex, SnapshotQuerySet } from "../src/index.js";
 
 
 class SilentLogger implements Logger
@@ -111,6 +111,9 @@ await describe("Snapshot drift verification", async () =>
 
         assert.deepStrictEqual(compact(issues), ["table-missing(fatal):parcel_snaps"]);
         assert.ok(issues[0].message.contains("parcel_snaps"));
+
+        // fatal, but no fix: the remedy is running the creating migration, not one statement
+        assert.strictEqual(issues[0].fix, undefined);
     });
 
     await test("event stream verification reports the missing table, and passes once created", async () =>
@@ -137,8 +140,13 @@ await describe("Snapshot drift verification", async () =>
         const issues = await creator.verifySnapshotTableForAggregate(parcelType, current);
 
         assert.deepStrictEqual(compact(issues), ["index-missing(fatal):idx_parcel_snaps_slug"]);
-        // the message hands over the exact DDL, so the fix is copy-ready
+        // the message hands over the exact DDL, and `fix` carries it structured - executable as-is
         assert.ok(issues[0].message.contains("create index if not exists idx_parcel_snaps_slug on parcel_snaps((data->>'slug'));"));
+        assert.strictEqual(issues[0].fix, "create index if not exists idx_parcel_snaps_slug on parcel_snaps((data->>'slug'));");
+
+        // the defined process converges: run the fix in the next migration, verify comes back empty
+        await db.executeCommand(issues[0].fix);
+        assert.deepStrictEqual(await creator.verifySnapshotTableForAggregate(parcelType, current), []);
     });
 
     // gap C: the drift the derived name cannot see - the name omits the cast, so `if not exists`
@@ -155,6 +163,14 @@ await describe("Snapshot drift verification", async () =>
 
         assert.deepStrictEqual(compact(issues), ["index-cast-mismatch(fatal):idx_parcel_snaps_weight"]);
         assert.ok(issues[0].message.contains("as text where the declaration casts to numeric"));
+
+        // a mismatch's fix is drop-and-recreate, and the defined process converges: run it in the
+        // next migration, verify comes back empty
+        assert.ok(issues[0].fix!.startsWith("drop index if exists idx_parcel_snaps_weight;"));
+        assert.ok(issues[0].fix!.contains("create index if not exists idx_parcel_snaps_weight on parcel_snaps(((data->>'weight')::numeric));"));
+
+        await db.executeCommand(issues[0].fix!);
+        assert.deepStrictEqual(await creator.verifySnapshotTableForAggregate(parcelType, current), []);
 
         // and the reverse: a cast removed leaves a numeric index behind a text expression
         await dropAll();
@@ -240,6 +256,14 @@ await describe("Snapshot drift verification", async () =>
             "index-uniqueness-mismatch(fatal):idx_parcel_snaps_status",
             "index-method-mismatch(fatal):idx_parcel_snaps_labels_gin"
         ]);
+
+        // every fatal shape mismatch carries an executable drop-and-recreate fix
+        assert.ok(issues.every(t => t.fix!.startsWith(`drop index if exists ${t.indexName};`)));
+
+        // and running both converges to a clean verify
+        for (const issue of issues)
+            await db.executeCommand(issue.fix!);
+        assert.deepStrictEqual(await creator.verifySnapshotTableForAggregate(parcelType, current), []);
     });
 
     await test("a GIN index over the wrong opclass is an advisory, not a fatal", async () =>
@@ -253,6 +277,7 @@ await describe("Snapshot drift verification", async () =>
         const issues = await creator.verifySnapshotTableForAggregate(parcelType, current);
 
         assert.deepStrictEqual(compact(issues), ["index-opclass-mismatch(advisory):idx_parcel_snaps_labels_gin"]);
+        assert.strictEqual(issues[0].fix, undefined);
     });
 
     await test("a hand-built index under the naming convention is an advisory orphan, never a fatal", async () =>
@@ -269,6 +294,10 @@ await describe("Snapshot drift verification", async () =>
 
         assert.deepStrictEqual(compact(issues), ["orphan-index(advisory):idx_parcel_snaps_slug_like"]);
         assert.ok(issues.every(t => t.severity === "advisory"));
+
+        // an advisory never carries a fix - an orphan may be deliberate, and no caller should hold
+        // a ready-made drop for an index that might be intentional
+        assert.ok(issues.every(t => t.fix === undefined));
     });
 
     await test("an org table verifies clean, standalone organization_id index included", async () =>
@@ -303,6 +332,9 @@ await describe("Snapshot drift verification", async () =>
 
         assert.ok(compact(issues).contains("column-missing(fatal):charter_snaps"));
         assert.ok(compact(issues).contains("index-missing(fatal):idx_charter_snaps_code"));
+
+        // fatal, but no fix: adding a not-null column to a populated table needs a backfill decision
+        assert.strictEqual(issues.find(t => t.kind === "column-missing")!.fix, undefined);
     });
 
     await test("an org index that does not lead with organization_id is a fatal columns mismatch", async () =>
@@ -332,6 +364,148 @@ await describe("Snapshot drift verification", async () =>
         await dropAll();
         await creator.createEventStreamTableForOrgAggregate(charterType);
         assert.deepStrictEqual(await creator.verifyEventStreamTableForOrgAggregate(charterType), []);
+    });
+
+    await describe("reconcile", async () =>
+    {
+        await test("a clean table reconciles to nothing fixed, nothing remaining", async () =>
+        {
+            await dropAll();
+            await creator.createSnapshotTableForAggregate(parcelType, parcelIndexes);
+
+            const result = await creator.reconcileSnapshotTableForAggregate(parcelType, parcelIndexes);
+
+            assert.deepStrictEqual(result, { tableName: "parcel_snaps", fixed: [], remaining: [] });
+        });
+
+        await test("a missing index and a cast mismatch are fixed, and the closing verify proves it", async () =>
+        {
+            await dropAll();
+
+            const migrated = SnapshotQuerySet.for<ParcelState>().withPath("weight").withPath("status");
+            await creator.createSnapshotTableForAggregate(parcelType, migrated);
+
+            // day-2 drift, twice over: weight gains a cast, slug is newly declared
+            const current = SnapshotQuerySet.for<ParcelState>()
+                .withPath("weight", { type: JsonValueType.numeric })
+                .withPath("status")
+                .withPath("slug");
+
+            const result = await creator.reconcileSnapshotTableForAggregate(parcelType, current);
+
+            assert.deepStrictEqual(result.fixed.map(t => `${t.kind}:${t.indexName}`), [
+                "index-cast-mismatch:idx_parcel_snaps_weight",
+                "index-missing:idx_parcel_snaps_slug"
+            ]);
+            assert.deepStrictEqual(result.remaining, []);
+            assert.deepStrictEqual(await creator.verifySnapshotTableForAggregate(parcelType, current), []);
+        });
+
+        await test("an advisory orphan is reported but never touched", async () =>
+        {
+            await dropAll();
+
+            const migrated = SnapshotQuerySet.for<ParcelState>()
+                .withPath("status")
+                .withPath("slug", { unique: true });
+            await creator.createSnapshotTableForAggregate(parcelType, migrated);
+
+            // slug's unique is cleared: the plain name goes missing, the _uq index becomes an orphan
+            const current = SnapshotQuerySet.for<ParcelState>().withPath("status").withPath("slug");
+
+            const result = await creator.reconcileSnapshotTableForAggregate(parcelType, current);
+
+            assert.deepStrictEqual(result.fixed.map(t => `${t.kind}:${t.indexName}`), ["index-missing:idx_parcel_snaps_slug"]);
+            assert.deepStrictEqual(compact(result.remaining), ["orphan-index(advisory):idx_parcel_snaps_slug_uq"]);
+
+            // never touched: the orphan still exists, uniqueness and all
+            const orphan = await db.executeQuery<{ indexdef: string; }>(
+                "select indexdef from pg_indexes where indexname = 'idx_parcel_snaps_slug_uq';");
+            assert.strictEqual(orphan.rows.length, 1);
+            assert.ok(orphan.rows[0].indexdef.contains("UNIQUE"));
+        });
+
+        await test("a missing table gates everything - nothing executes", async () =>
+        {
+            await dropAll();
+
+            const result = await creator.reconcileSnapshotTableForAggregate(parcelType, parcelIndexes);
+
+            assert.deepStrictEqual(result.fixed, []);
+            assert.deepStrictEqual(result.remaining.map(t => t.kind), ["table-missing"]);
+
+            // reconcile did not stand in for the missing migration
+            const table = await db.executeQuery<{ reg: string | null; }>("select to_regclass('parcel_snaps') as reg;");
+            assert.strictEqual(table.rows[0].reg, null);
+        });
+
+        await test("a missing organization_id column gates the org index fixes", async () =>
+        {
+            await dropAll();
+
+            await db.executeCommand("create table charter_snaps (id varchar(40) primary key, data jsonb not null);");
+
+            const indexes = SnapshotQuerySet.for<CharterState>().withPath("code");
+            const result = await creator.reconcileSnapshotTableForOrgAggregate(charterType, indexes);
+
+            assert.deepStrictEqual(result.fixed, []);
+            assert.ok(result.remaining.some(t => t.kind === "column-missing"));
+            assert.ok(result.remaining.some(t => t.kind === "index-missing"));
+
+            // the index fix was not attempted against the broken table
+            const idx = await db.executeQuery<{ indexname: string; }>(
+                "select indexname from pg_indexes where indexname = 'idx_charter_snaps_code';");
+            assert.strictEqual(idx.rows.length, 0);
+        });
+
+        // the atomicity claim, proven: each fix is one multi-statement command, which travels as one
+        // implicit transaction - so a unique recreate that fails over duplicate data rolls the drop
+        // back, and the old index survives
+        await test("a fix that fails leaves the old index standing, and a re-run resumes", async () =>
+        {
+            await dropAll();
+
+            await creator.createSnapshotTableForAggregate(parcelType);
+            // the impostor: non-unique, under the name the pinned unique declaration derives
+            await db.executeCommand("create index idx_parcel_snaps_pinned_uq on parcel_snaps((data->>'slug'));");
+            await db.executeCommand(`insert into parcel_snaps (id, data) values ('a', '{"slug":"dup"}'), ('b', '{"slug":"dup"}');`);
+
+            const current = SnapshotQuerySet.for<ParcelState>().withPath("slug", { unique: true, name: "pinned" });
+
+            await assert.rejects(
+                async () => creator.reconcileSnapshotTableForAggregate(parcelType, current),
+                (error: unknown) => error instanceof DbException);
+
+            // rolled back whole: still present, still not unique
+            const after = await db.executeQuery<{ indexdef: string; }>(
+                "select indexdef from pg_indexes where indexname = 'idx_parcel_snaps_pinned_uq';");
+            assert.strictEqual(after.rows.length, 1);
+            assert.ok(!after.rows[0].indexdef.contains("UNIQUE"));
+
+            // detection-driven means resumable: resolve the data, re-run, converge
+            await db.executeCommand("delete from parcel_snaps where id = 'b';");
+
+            const result = await creator.reconcileSnapshotTableForAggregate(parcelType, current);
+
+            assert.deepStrictEqual(result.fixed.map(t => t.kind), ["index-uniqueness-mismatch"]);
+            assert.deepStrictEqual(result.remaining, []);
+        });
+
+        await test("a second run finds nothing to do", async () =>
+        {
+            await dropAll();
+
+            const migrated = SnapshotQuerySet.for<ParcelState>().withPath("weight");
+            await creator.createSnapshotTableForAggregate(parcelType, migrated);
+
+            const current = SnapshotQuerySet.for<ParcelState>().withPath("weight", { type: JsonValueType.numeric });
+
+            const first = await creator.reconcileSnapshotTableForAggregate(parcelType, current);
+            assert.strictEqual(first.fixed.length, 1);
+
+            const second = await creator.reconcileSnapshotTableForAggregate(parcelType, current);
+            assert.deepStrictEqual(second, { tableName: "parcel_snaps", fixed: [], remaining: [] });
+        });
     });
 
     // a declaration that is itself broken throws exactly as the create call would - only *drift*

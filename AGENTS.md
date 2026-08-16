@@ -106,7 +106,13 @@ Ordered roughly by how expensive they are to get wrong.
   table/index (the message carries the fix DDL), cast/uniqueness/method/column mismatches (`fatal`,
   a migration is needed), orphan indexes (`advisory`, possibly deliberate). Run it at the tail of a
   migration run and throw on `fatal`, or assert it empty in an integration test — the same idiom as
-  `verifyDocument`.
+  `verifyDocument`. The fix process is defined: fatal issues carry executable DDL in `fix`
+  (advisories never do — an orphan may be deliberate); author the *next* migration, run the fixes
+  (or drop what was flagged and re-call the create), and verify empty. Or call
+  `reconcileSnapshotTableForAggregate` — **the one method in the API that drops anything** — which
+  runs exactly the fatal fixes (each atomic, so a failed unique recreate leaves the old index
+  standing) and returns `{ fixed, remaining }`; it never touches advisories and refuses to act on
+  a missing table or `organization_id` column. Migration-time only: index builds block writes.
 - **Expression indexes match textually.** A near-miss expression silently sequential-scans with no
   error. This is why expressions must come from the declaration.
 - **`@inject` keys are fixed strings.** `"DbConnectionFactory"`, `"ReadDbConnectionFactory"`,

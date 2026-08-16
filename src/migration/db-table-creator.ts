@@ -187,6 +187,52 @@ export interface SnapshotDriftIssue
      * is actionable on its own.
      */
     readonly message: string;
+
+    /**
+     * Executable DDL that remedies the issue - `create index ...` for a missing index,
+     * `drop index if exists ...; create ...` for a mismatched one - for the consumer to run in the
+     * *next* migration. Nothing here ever executes it; detection and remediation stay on opposite
+     * sides of the door on purpose.
+     *
+     * Present only on a `fatal` issue whose remedy is a statement, and that boundary is the point:
+     * fatal means definite drift, so handing over copy-paste DDL is safe, while an `advisory` issue
+     * may be deliberate - an orphan might be the hand-built `text_pattern_ops` index the docs
+     * recommend, and no caller (a coding agent least of all) should hold a ready-made `drop` for an
+     * index that might be intentional. Absent also on `table-missing` (the remedy is running the
+     * migration that creates the table) and `column-missing` (adding a not-null column to a
+     * populated table needs a default-and-backfill decision a canned statement would get wrong).
+     */
+    readonly fix?: string;
+}
+
+/**
+ * What a `reconcile*` call did, and what it left: the drift it mechanically fixed, and the issues
+ * that remain by design rather than by failure.
+ *
+ * A non-empty {@link remaining} is a legitimate outcome, not an error - it holds the advisories
+ * reconciliation never touches (an orphan may be deliberate) and the fatals no statement can fix
+ * (a missing table means the creating migration has not run; a missing `organization_id` column
+ * needs a backfill decision). An *execution* failure, by contrast, throws: recreating a unique
+ * index over data that has grown duplicates raises `DbException`, with the old index intact
+ * because each fix is one atomic command.
+ */
+export interface SnapshotReconcileResult
+{
+    /**
+     * The table that was reconciled.
+     */
+    readonly tableName: string;
+
+    /**
+     * The fatal issues whose {@link SnapshotDriftIssue.fix} was executed, in the order they ran.
+     */
+    readonly fixed: ReadonlyArray<SnapshotDriftIssue>;
+
+    /**
+     * What the closing verify still reports: advisories, and fatals with no mechanical fix. Empty
+     * means the database now matches the declarations exactly.
+     */
+    readonly remaining: ReadonlyArray<SnapshotDriftIssue>;
 }
 
 /**
@@ -279,7 +325,8 @@ export class DbTableCreator
             {
                 issues.push({
                     tableName, indexName: exp.name, kind: "index-missing", severity: "fatal",
-                    message: `index '${exp.name}' does not exist - a declaration with no matching migration run against this database, so queries on [${exp.paths.join(", ")}] sequential-scan while looking indexed; create it with: ${exp.ddl}`
+                    message: `index '${exp.name}' does not exist - a declaration with no matching migration run against this database, so queries on [${exp.paths.join(", ")}] sequential-scan while looking indexed; create it with: ${exp.ddl}`,
+                    fix: exp.ddl
                 });
 
                 continue;
@@ -289,7 +336,8 @@ export class DbTableCreator
             {
                 issues.push({
                     tableName, indexName: exp.name, kind: "index-method-mismatch", severity: "fatal",
-                    message: `index '${exp.name}' uses ${act.method} where the declaration produces ${exp.method} - it cannot serve the declared predicates; drop it in a hand-written migration and re-run the create`
+                    message: `index '${exp.name}' uses ${act.method} where the declaration produces ${exp.method} - it cannot serve the declared predicates; drop it in a hand-written migration and re-run the create`,
+                    fix: DbTableCreator._createFixDdl(exp)
                 });
 
                 // the shape checks below compare within one access method; against the wrong one
@@ -302,7 +350,8 @@ export class DbTableCreator
                     tableName, indexName: exp.name, kind: "index-uniqueness-mismatch", severity: "fatal",
                     message: exp.isUnique
                         ? `index '${exp.name}' is not unique where the declaration says unique - the constraint is not being enforced; drop it in a hand-written migration and re-run the create`
-                        : `index '${exp.name}' is unique where the declaration is not - a uniqueness constraint is being enforced that nothing declares; drop it in a hand-written migration and re-run the create`
+                        : `index '${exp.name}' is unique where the declaration is not - a uniqueness constraint is being enforced that nothing declares; drop it in a hand-written migration and re-run the create`,
+                    fix: DbTableCreator._createFixDdl(exp)
                 });
 
             const expectedColumnCount = (exp.leadingColumn != null ? 1 : 0) + exp.expressions.length;
@@ -311,7 +360,8 @@ export class DbTableCreator
             {
                 issues.push({
                     tableName, indexName: exp.name, kind: "index-columns-mismatch", severity: "fatal",
-                    message: `index '${exp.name}' has ${act.columnCount} column(s) where the declaration produces ${expectedColumnCount} - drop it in a hand-written migration and re-run the create`
+                    message: `index '${exp.name}' has ${act.columnCount} column(s) where the declaration produces ${expectedColumnCount} - drop it in a hand-written migration and re-run the create`,
+                    fix: DbTableCreator._createFixDdl(exp)
                 });
 
                 continue;
@@ -321,7 +371,8 @@ export class DbTableCreator
             {
                 issues.push({
                     tableName, indexName: exp.name, kind: "index-columns-mismatch", severity: "fatal",
-                    message: `index '${exp.name}' does not lead with '${exp.leadingColumn}' - org-scoped predicates constrain that column first and cannot use the index without it; drop it in a hand-written migration and re-run the create`
+                    message: `index '${exp.name}' does not lead with '${exp.leadingColumn}' - org-scoped predicates constrain that column first and cannot use the index without it; drop it in a hand-written migration and re-run the create`,
+                    fix: DbTableCreator._createFixDdl(exp)
                 });
 
                 continue;
@@ -346,7 +397,8 @@ export class DbTableCreator
                     {
                         issues.push({
                             tableName, indexName: exp.name, kind: "index-cast-mismatch", severity: "fatal",
-                            message: `index '${exp.name}' extracts '${path}' as ${columnType} where the declaration casts to ${expectedType} - the predicate expression cannot match the indexed one, so queries on it sequential-scan while looking indexed; drop the index in a hand-written migration and re-run the create`
+                            message: `index '${exp.name}' extracts '${path}' as ${columnType} where the declaration casts to ${expectedType} - the predicate expression cannot match the indexed one, so queries on it sequential-scan while looking indexed; drop the index in a hand-written migration and re-run the create`,
+                            fix: DbTableCreator._createFixDdl(exp)
                         });
 
                         // a type mismatch usually means a different expression altogether; the token
@@ -363,7 +415,8 @@ export class DbTableCreator
                 if (!columnDef.contains(token))
                     issues.push({
                         tableName, indexName: exp.name, kind: "index-expression-mismatch", severity: "fatal",
-                        message: `index '${exp.name}' column ${offset + i + 1} does not read path '${path}' - the indexed expression is not the declared one; drop the index in a hand-written migration and re-run the create`
+                        message: `index '${exp.name}' column ${offset + i + 1} does not read path '${path}' - the indexed expression is not the declared one; drop the index in a hand-written migration and re-run the create`,
+                        fix: DbTableCreator._createFixDdl(exp)
                     });
             });
 
@@ -406,6 +459,19 @@ export class DbTableCreator
     private static _createIndexDdl(tableName: string, index: TableIndex): string
     {
         return `create ${index.isUnique === true ? "unique " : ""}index if not exists ${index.name} on ${tableName}${index.method != null ? ` using ${index.method}` : ""}(${index.columns.join(", ")});`;
+    }
+
+    /**
+     * The remedy for an index that exists under the declared name but is not the declared index:
+     * drop it, then run the same statement creation would - the {@link ExpectedIndex.ddl} the plan
+     * already carries, so the recreate provably matches what a fresh migration would build.
+     *
+     * @param {ExpectedIndex} expected - The index the declaration produces.
+     * @returns {string} The two-statement fix.
+     */
+    private static _createFixDdl(expected: ExpectedIndex): string
+    {
+        return `drop index if exists ${expected.name}; ${expected.ddl}`;
     }
 
     /**
@@ -696,6 +762,75 @@ export class DbTableCreator
         const tableName = this._validateTableName(DataHelper.createEventStreamTableName(aggregateType));
 
         return this._verifyTable(tableName, true);
+    }
+
+    /**
+     * Detects drift on a plain aggregate's snapshot table and executes the mechanical fixes:
+     * verify, run each fatal issue's {@link SnapshotDriftIssue.fix}, verify again, and report both
+     * what was fixed and what remains.
+     *
+     * **This is the one method in this API that drops anything** - named for that consequence, the
+     * way `queryAcrossOrganizations` is named for its. What keeps it safe is the boundary the issues
+     * already draw: only a `fatal` issue carries a `fix`, so an advisory orphan - possibly the
+     * deliberate hand-built `text_pattern_ops` index the docs recommend - is never touched, ever.
+     * Each fix runs as one command, and a multi-statement command is one implicit transaction, so a
+     * `drop ...; create ...` whose create fails (recreating a unique index over data that has grown
+     * duplicates, say) rolls its drop back and leaves the old index standing; the `DbException`
+     * propagates, fixes already executed stand, and re-running resumes, since everything is
+     * detection-driven.
+     *
+     * Two refusals, both reported through {@link SnapshotReconcileResult.remaining} with nothing
+     * executed: a missing table (the creating migration has not run here - reconciling would
+     * silently stand in for migration history), and on the org variant a missing `organization_id`
+     * column (the index fixes would themselves fail against it; the table needs a hand-written
+     * migration first).
+     *
+     * Call it where migrations run. A plain `create index` blocks writes to the table for the
+     * duration of the build, which is a deploy-time cost and a production-traffic incident - the
+     * same reason nothing verifies or reconciles on the query path.
+     *
+     * @param {AggregateRootClassOf<TState>} aggregateType - The aggregate class whose snapshot table is reconciled.
+     * @param {SnapshotTableOptions<TState>} [options] - The same argument the create call takes. Omit for no indexes.
+     * @returns {Promise<SnapshotReconcileResult>} A promise that resolves to what was fixed and what remains.
+     * @throws {ArgumentNullException} If aggregateType is null or undefined, or an element of either collection is null or undefined.
+     * @throws {ArgumentException} If aggregateType is not a function, the derived table or index name is invalid, or the indexes are invalid or duplicated.
+     * @throws {DbException} If a catalog query or an executed fix fails.
+     */
+    public async reconcileSnapshotTableForAggregate<TState extends AggregateState>(
+        aggregateType: AggregateRootClassOf<TState>,
+        options?: SnapshotTableOptions<TState>): Promise<SnapshotReconcileResult>
+    {
+        const tableName = this._validateTableName(DataHelper.createSnapshotTableName(aggregateType as AggregateRootClass));
+
+        const plan = this._planSnapshotTable(tableName, options);
+
+        return this._reconcileSnapshotTable(tableName, plan.expected, false);
+    }
+
+    /**
+     * Like {@link reconcileSnapshotTableForAggregate}, for an org-scoped aggregate - every caveat
+     * there applies, plus the `organization_id` refusal described there.
+     *
+     * There are no event-stream reconcile methods on purpose: the event-stream verify only checks
+     * existence, and `createEventStreamTableForAggregate` *is* its reconcile - idempotent, and with
+     * nothing declaration-driven to drift.
+     *
+     * @param {OrgAggregateRootClassOf<TState>} aggregateType - The org-scoped aggregate class whose snapshot table is reconciled.
+     * @param {SnapshotTableOptions<TState>} [options] - The same argument the create call takes. Omit for no indexes.
+     * @returns {Promise<SnapshotReconcileResult>} A promise that resolves to what was fixed and what remains.
+     * @throws {ArgumentNullException} If aggregateType is null or undefined, or an element of either collection is null or undefined.
+     * @throws {ArgumentException} If aggregateType is not a function, the derived table or index name is invalid, or the indexes are invalid or duplicated.
+     * @throws {DbException} If a catalog query or an executed fix fails.
+     */
+    public async reconcileSnapshotTableForOrgAggregate<TState extends OrgAggregateState>(
+        aggregateType: OrgAggregateRootClassOf<TState>,
+        options?: SnapshotTableOptions<TState>): Promise<SnapshotReconcileResult>
+    {
+        const tableName = this._validateTableName(DataHelper.createSnapshotTableName(aggregateType as OrgAggregateRootClass));
+
+        const plan = this._planSnapshotTable(tableName, options, "organization_id");
+
+        return this._reconcileSnapshotTable(tableName, plan.expected, true);
     }
 
     /**
@@ -1052,7 +1187,10 @@ export class DbTableCreator
         if (orgScoped && !columns.contains("organization_id"))
             issues.push({
                 tableName, kind: "column-missing", severity: "fatal",
-                message: `table '${tableName}' has no 'organization_id' column - it predates the aggregate becoming org-scoped, and 'create table if not exists' never adds columns; add the column in a hand-written migration`
+                // no `fix`: adding a not-null column to a populated table needs a default-and-backfill
+                // decision (which organization owns the existing rows?) that a canned statement would
+                // get wrong
+                message: `table '${tableName}' has no 'organization_id' column - it predates the aggregate becoming org-scoped, and 'create table if not exists' never adds columns; add the column in a hand-written migration, with a backfill that decides which organization owns the existing rows`
             });
 
         return issues;
@@ -1080,6 +1218,50 @@ export class DbTableCreator
         issues.push(...DbTableCreator._compareIndexes(tableName, expected, actual));
 
         return issues;
+    }
+
+    /**
+     * The reconcile pipeline shared by the two snapshot `reconcile*` methods: verify, execute every
+     * fix the issues carry, verify again. Detection-driven end to end, which is what makes it
+     * resumable - a failed or interrupted run left real state behind, and the next run's opening
+     * verify finds exactly what is still wrong.
+     *
+     * @param {string} tableName - The validated snapshot table name.
+     * @param {ReadonlyArray<ExpectedIndex>} expected - The plan's expected indexes.
+     * @param {boolean} orgScoped - Whether the declaration is org-scoped.
+     * @returns {Promise<SnapshotReconcileResult>} What was fixed, and what the closing verify still reports.
+     */
+    private async _reconcileSnapshotTable(tableName: string, expected: ReadonlyArray<ExpectedIndex>, orgScoped: boolean): Promise<SnapshotReconcileResult>
+    {
+        const issues = await this._verifySnapshotTable(tableName, expected, orgScoped);
+
+        // a table-level fatal gates everything: a missing table means the creating migration has
+        // not run here, and reconciling past that would silently stand in for migration history;
+        // a missing organization_id column would make every org index fix fail against it
+        if (issues.some(t => t.kind === "table-missing" || t.kind === "column-missing"))
+            return { tableName, fixed: [], remaining: issues };
+
+        const fixed = new Array<SnapshotDriftIssue>();
+
+        for (const issue of issues)
+        {
+            // only fatal issues carry a fix; an advisory - possibly a deliberate hand-built index -
+            // is never touched
+            if (issue.fix == null)
+                continue;
+
+            // one command per fix: a multi-statement command travels as one implicit transaction,
+            // so a drop-and-recreate whose create fails rolls its drop back and the old index
+            // stands; the DbException propagates, and fixes already executed stand too
+            await this._db.executeCommand(issue.fix);
+            await this._logger.logInfo(`INDEX RECONCILED [${issue.indexName}] via: ${issue.fix}`);
+
+            fixed.push(issue);
+        }
+
+        const remaining = await this._verifySnapshotTable(tableName, expected, orgScoped);
+
+        return { tableName, fixed, remaining };
     }
 
     /**
