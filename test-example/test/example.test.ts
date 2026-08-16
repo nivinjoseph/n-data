@@ -160,6 +160,8 @@ await describe("The example application", async () =>
             assert.ok(names.contains("idx_studio_snaps_plan_seatlimit"), names.join(", "));
             assert.ok(names.contains("idx_studio_snaps_creatorcount"), names.join(", "));
             assert.ok(names.contains("idx_studio_snaps_tags_gin"), names.join(", "));
+            // the GIN array nested inside the plan value object's serialized record
+            assert.ok(names.contains("idx_studio_snaps_plan_features_gin"), names.join(", "));
 
             // and the creator side, whose btree indexes all lead with organization_id
             assert.ok(names.contains("idx_creator_snaps_email_uq"), names.join(", "));
@@ -246,7 +248,8 @@ await describe("The example application", async () =>
                 await studio.rename("Forge Works", repository);
                 studio.addTag("animation");
                 studio.addTag("vfx");
-                studio.changePlan(new StudioPlan({ tier: "enterprise", seatLimit: 0 }));
+                // features land in the nested array index the snapshot repository declares
+                studio.changePlan(new StudioPlan({ tier: "enterprise", seatLimit: 0, features: ["4k-export", "priority-support"] }));
                 studio.setCreatorCount(2);
 
                 assert.strictEqual(studio.hasChanges, true);
@@ -354,10 +357,17 @@ await describe("The example application", async () =>
 
                 // a projection, so it lives on the implementation rather than the domain interface - the
                 // domain has no question shaped like "group by tier"
-                const counts = await scope.resolve<SnapshotStudioRepository>("SnapshotStudioRepository")
-                    .getCountByPlanTier();
+                const snapshotRepository = scope.resolve<SnapshotStudioRepository>("SnapshotStudioRepository");
+
+                const counts = await snapshotRepository.getCountByPlanTier();
                 assert.deepStrictEqual([...counts].orderBy(t => t.tier),
                     [{ tier: "enterprise", count: 1 }, { tier: "free", count: 1 }]);
+
+                // containment against the array nested inside the plan: the same read `tags` gets,
+                // one level down. Studio A is the only one whose plan bought any features.
+                const byFeature = await snapshotRepository.getByPlanFeature("4k-export");
+                assert.deepStrictEqual(byFeature.map(t => t.id), [studioAId]);
+                assert.strictEqual((await snapshotRepository.getByPlanFeature("nope")).length, 0);
             }
             finally
             {

@@ -13,19 +13,24 @@ import { SnapshotShapeGuard } from "../src/repository/snapshot-shape-guard.js";
 // documents here are deliberately wrong.
 
 @serialize
-class Plan extends DomainObject<Plan, "tier" | "seatLimit">
+class Plan extends DomainObject<Plan, "tier" | "seatLimit" | "badges">
 {
     private readonly _tier: string;
     private readonly _seatLimit: number;
+    private readonly _badges: Array<string>;
 
     @serialize public get tier(): string { return this._tier; }
     @serialize public get seatLimit(): number { return this._seatLimit; }
+    // an array data key, writable only as of n-domain 4.0.3 - so `plan.badges` is the first array
+    // path this suite can verify that lives INSIDE a serialized record rather than beside one
+    @serialize public get badges(): Array<string> { return this._badges; }
 
     public constructor(data: DomainObjectData<Plan>)
     {
         super(data);
         this._tier = data.tier;
         this._seatLimit = data.seatLimit;
+        this._badges = data.badges;
     }
 }
 
@@ -57,7 +62,7 @@ function cleanDocument(): SnapshotDocumentOf<StudioState>
         id: "studio_1", version: 3, createdAt: 1, updatedAt: 2,
         isRebased: false, rebasedFromVersion: 0, typeVersion: 1,
         name: "n",
-        plan: { tier: "free", seatLimit: 3, $typename: "Test.StudioPlan" },
+        plan: { tier: "free", seatLimit: 3, badges: ["beta"], $typename: "Test.StudioPlan" },
         tags: ["a", "b"],
         note: null
     };
@@ -166,6 +171,37 @@ await describe("verifyDocument tests", async () =>
         assert.deepStrictEqual(kinds(querySet.verifyDocument(document)), ["absent-key:tags"]);
     });
 
+    // `plan.badges` is an array path whose leaf sits INSIDE a serialized record - a shape that could
+    // not be written before n-domain 4.0.3, so the runtime walk has never been exercised on it. The
+    // rules must be the ones a top-level array path already gets, one level deeper.
+    await test("an array path inside a serialized record is verified like any other", () =>
+    {
+        const nestedArraySet = SnapshotQuerySet.for<StudioState>().withArrayPath("plan.badges");
+
+        assert.deepStrictEqual(nestedArraySet.verifyDocument(cleanDocument()), []);
+
+        // an empty array is clean: a containment index over [] is legal, it just never matches
+        assert.deepStrictEqual(nestedArraySet.verifyDocument(mutatedDocument(t => t.plan.badges = [])), []);
+
+        // THE case verifyDocument exists for, now reachable through a nested array: serialize()
+        // emits every decorated key, so an absent one under a $typename parent is a rename
+        const renamed = mutatedDocument(t => t.plan = { tier: "free", seatLimit: 3, $typename: "Test.StudioPlan" });
+        const renamedIssues = nestedArraySet.verifyDocument(renamed);
+
+        assert.deepStrictEqual(kinds(renamedIssues), ["unresolvable-key:plan.badges"]);
+        assert.strictEqual(renamedIssues[0].severity, "fatal");
+
+        // the Map/Set gap on a nested array leaf, same as `tags` gets at the top level
+        const notAnArray = mutatedDocument(t => t.plan.badges = {});
+        const notAnArrayIssues = nestedArraySet.verifyDocument(notAnArray);
+
+        assert.deepStrictEqual(kinds(notAnArrayIssues), ["non-array-leaf:plan.badges"]);
+        assert.strictEqual(notAnArrayIssues[0].severity, "fatal");
+
+        // and a null intermediate stays clean, because that is what an optional stores
+        assert.deepStrictEqual(nestedArraySet.verifyDocument(mutatedDocument(t => t.plan = null)), []);
+    });
+
     // a scalar path landing on an empty object is the Map/Set gap on the leaf itself
     await test("a scalar path resolving to an empty object is an advisory", () =>
     {
@@ -214,7 +250,7 @@ await describe("verifyDocument tests", async () =>
             id: "studio_1", version: 3, createdAt: 1, updatedAt: 2,
             isRebased: false, rebasedFromVersion: 0, typeVersion: 1,
             name: "n",
-            plan: { tier: "free", seatLimit: 3, $typename: "Test.Plan" },
+            plan: { tier: "free", seatLimit: 3, badges: ["beta"], $typename: "Test.Plan" },
             tags: ["a", "b"],
             note: null                          // what an undefined optional stores - and how the type states it
         };
@@ -224,7 +260,7 @@ await describe("verifyDocument tests", async () =>
         const wrongLeaf: SnapshotDocumentOf<StudioState> = {
             ...document,
             // @ts-expect-error - seatLimit stores a number; a string literal is a compile error
-            plan: { tier: "free", seatLimit: "3", $typename: "Test.Plan" }
+            plan: { tier: "free", seatLimit: "3", badges: ["beta"], $typename: "Test.Plan" }
         };
         assert.ok(wrongLeaf);
     });
@@ -297,6 +333,19 @@ await describe("SnapshotShapeGuard tests", async () =>
         await assert.rejects(() => SnapshotShapeGuard.verify("studio_snaps", set, renamed, logger),
             (error: Error) => error.message.contains("plan.seatLimit"));
         await assert.rejects(() => SnapshotShapeGuard.verify("studio_snaps", set, renamed, logger));
+    });
+
+    // the rename that hides inside a nested array declaration - the shape n-domain 4.0.3 made
+    // writable. It must reach the save-time guard exactly as a nested scalar rename does.
+    await test("a rename under a nested array path rejects the save too", async () =>
+    {
+        const set = SnapshotQuerySet.for<StudioState>().withArrayPath("plan.badges");
+        const logger = new CapturingLogger();
+        const renamed = mutatedDocument(t => t.plan = { tier: "free", seatLimit: 3, $typename: "Test.StudioPlan" });
+
+        await assert.rejects(() => SnapshotShapeGuard.verify("studio_snaps", set, renamed, logger),
+            (error: Error) => error.message.contains("plan.badges"));
+        assert.deepStrictEqual(logger.warnings, []);
     });
 
     await test("advisories warn once and let the save proceed", async () =>

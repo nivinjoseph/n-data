@@ -50,7 +50,8 @@ export class DefaultStudioFactory implements StudioFactory
 
         given(slug, "slug").ensure(t => t.isNotEmptyOrWhiteSpace(), "name must yield a non-empty slug");
 
-        const plan = new StudioPlan({ tier, seatLimit });
+        // a new studio buys no features; they are added by changing the plan
+        const plan = new StudioPlan({ tier, seatLimit, features: [] });
 
         const slugExists = await this._studioRepository.checkIfSlugExists(slug);
         if (slugExists)

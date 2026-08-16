@@ -44,7 +44,8 @@ await describe("Serialization", async () =>
 
         studio.addTag("animation");
         studio.setCreatorCount(4);
-        studio.changePlan(new StudioPlan({ tier: "enterprise", seatLimit: 0 }));
+        // a populated array inside the value object, so the snapshot round trip below carries one
+        studio.changePlan(new StudioPlan({ tier: "enterprise", seatLimit: 0, features: ["4k-export", "priority-support"] }));
 
         return studio;
     }
@@ -197,13 +198,15 @@ await describe("Serialization", async () =>
 
     await test("a value object round-trips on its own", async () =>
     {
-        const plan = new StudioPlan({ tier: "studio", seatLimit: 25 });
+        const plan = new StudioPlan({ tier: "studio", seatLimit: 25, features: ["beta"] });
 
         const restored = Deserializer.deserialize<StudioPlan>(plan.serialize());
 
         assert.ok(restored instanceof StudioPlan);
         assert.strictEqual(restored.tier, "studio");
         assert.strictEqual(restored.seatLimit, 25);
+        // an array data key survives the round trip as an array, not as a stringified one
+        assert.deepStrictEqual([...restored.features], ["beta"]);
         assert.ok(restored.equals(plan));
     });
 });

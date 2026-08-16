@@ -17,13 +17,21 @@ import { serialize } from "@nivinjoseph/n-util";
  * members), it is not offered as a path either: `withPath("plan.isUnlimited")` is a compile error
  * rather than an always-null index.
  *
+ * `features` is an array data key, and it needs **n-domain >= 4.0.3**. In 4.0.2 a scalar array on a
+ * `DomainObject` was poisoned to `never` by `IllegalDataKeys`, so a class declaring one could not be
+ * constructed - which is why no value object here carried an array until now. The path types were
+ * never affected: `SerializedValue` turned it into `Array<string>` all along. So `plan.features` is a
+ * nested **array** path - `withArrayPath("plan.features")`, indexed with GIN and read with
+ * `contains` - and *not* a scalar one, because a container is never a leaf.
+ *
  * @class StudioPlan
  */
 @serialize
-export class StudioPlan extends DomainObject<StudioPlan, "tier" | "seatLimit">
+export class StudioPlan extends DomainObject<StudioPlan, "tier" | "seatLimit" | "features">
 {
     private readonly _tier: string;
     private readonly _seatLimit: number;
+    private readonly _features: ReadonlyArray<string>;
 
     public static get tiers(): ReadonlyArray<string> { return ["free", "studio", "enterprise"]; }
 
@@ -32,6 +40,9 @@ export class StudioPlan extends DomainObject<StudioPlan, "tier" | "seatLimit">
 
     @serialize
     public get seatLimit(): number { return this._seatLimit; }
+
+    @serialize
+    public get features(): ReadonlyArray<string> { return this._features; }
 
     /**
      * Derived, and deliberately **not** serialized - it is recomputed on every read, so the rule behind
@@ -43,7 +54,7 @@ export class StudioPlan extends DomainObject<StudioPlan, "tier" | "seatLimit">
     {
         super(data);
 
-        const { tier, seatLimit } = data;
+        const { tier, seatLimit, features } = data;
 
         given(tier, "tier").ensureHasValue().ensureIsString()
             .ensure(t => StudioPlan.tiers.contains(t), `must be one of ${StudioPlan.tiers.join(", ")}`);
@@ -52,10 +63,15 @@ export class StudioPlan extends DomainObject<StudioPlan, "tier" | "seatLimit">
         given(seatLimit, "seatLimit").ensureHasValue().ensureIsNumber()
             .ensure(t => Number.isInteger(t) && t >= 0, "must be a non-negative integer");
         this._seatLimit = seatLimit;
+
+        given(features, "features").ensureHasValue().ensureIsArray()
+            .ensure(t => t.every(u => typeof u === "string"), "must be strings");
+        // copied, so the caller's array cannot mutate the value object out from under equality
+        this._features = [...features];
     }
 
     public static createFree(): StudioPlan
     {
-        return new StudioPlan({ tier: "free", seatLimit: 3 });
+        return new StudioPlan({ tier: "free", seatLimit: 3, features: [] });
     }
 }
