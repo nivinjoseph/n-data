@@ -26,7 +26,7 @@ export { RedisCacheService } from "./caching/redis-cache-service.js";
 export { DistributedLock, DistributedLockService } from "./distributed-lock/distributed-lock-service.js";
 export { RedisDistributedLockService, DistributedLockConfig, UnableToAcquireDistributedLockException } from "./distributed-lock/redis-distributed-lock-service.js";
 export { FileStore } from "./file-store/file-store.js";
-export { StoredFile, StoredFileSchema } from "./file-store/stored-file.js";
+export { StoredFile } from "./file-store/stored-file.js";
 export { S3FileStoreConfig } from "./file-store/s3-file-store-config.js";
 export { S3FileStore } from "./file-store/s3-file-store.js";
 export { DataHelper, AggregateRootClass, AggregateRootClassOf, OrgAggregateRootClass, OrgAggregateRootClassOf } from "./repository/data-helper.js";

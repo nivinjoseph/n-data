@@ -16,10 +16,9 @@ export declare class StoredFile extends DomainEntity<StoredFile, "name" | "ext" 
     get signature(): string;
     get publicUrl(): string | null;
     get privateUrl(): string | null;
-    constructor(data: StoredFileSchema);
+    constructor(data: DomainObjectData<StoredFile>);
     static createFileDataHash(fileData: Buffer): string;
     updatePublicUrl(url: string): StoredFile;
     updatePrivateUrl(url: string): StoredFile;
 }
-export type StoredFileSchema = DomainObjectData<StoredFile>;
 //# sourceMappingURL=stored-file.d.ts.map
