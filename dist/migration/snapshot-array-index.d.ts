@@ -12,17 +12,19 @@ type NonScalarKeys<TElement> = {
  * flat record.
  *
  * The caller passes the element through {@link SerializedShapeOf} first, so what is judged here is
- * the element's *stored* shape: for a `Serializable` element with a typed `serialize()` (n-domain
- * >= 4.0.1 `DomainObject`), that is the serialized record - which, when flat, is legally
- * containment-indexable, because `_serializeForSnapshot` stores exactly those keys. The `$typename`
- * every serialized element also carries never blocks a match, since `@>` under `jsonb_path_ops` is
- * subset matching.
+ * the element's *stored* shape: for an n-domain 4.0.2 `DomainObject` element, that is the serialized
+ * record (`DomainObjectSerialized`) - which, when flat, is legally containment-indexable, because
+ * `_serializeForSnapshot` stores exactly those keys. The `$typename` every serialized element also
+ * carries never blocks a match, since `@>` under `jsonb_path_ops` is subset matching - and it does
+ * not count as a non-scalar (it is a `string`), so it never disqualifies a record either.
  *
- * The emptiness rule (`keyof TElement` must not be `never`) is a widening guard, not tidiness: an
- * *untyped* `serialize()` comes out of {@link SerializedShapeOf} as a keyless shape (fail-closed),
- * and a keyless element passing this check would make such arrays silently legal - while also being
- * useless, since {@link SnapshotElementFilter} over no keys is `never` and the runtime rejects an
- * empty match record anyway.
+ * The emptiness rule is a widening guard, not tidiness: a non-`DomainObject` `serialize()`-bearer
+ * comes out of {@link SerializedShapeOf} as a keyless shape (fail-closed), and a keyless element
+ * passing this check would make such arrays silently legal - while also being useless, since
+ * {@link SnapshotElementFilter} over no keys is `never` and the runtime rejects an empty match
+ * record anyway. `$`-prefixed keys do not count toward "has at least one matchable key": a
+ * `DomainObject` with no data keys serializes to `{ $typename }` alone, and offering its array
+ * would be unmatchable through the typed door ({@link SnapshotElementMatch} strips `$`-keys).
  *
  * A plain object literal is safe, because a nested plain object is copied into the snapshot through
  * `JSON.parse(JSON.stringify(...))`, so its TypeScript names *are* its stored keys.
@@ -31,7 +33,7 @@ type NonScalarKeys<TElement> = {
  */
 type IsScalarRecord<TElement> = [
     TElement
-] extends [object] ? [keyof TElement] extends [never] ? false : [NonScalarKeys<TElement>] extends [never] ? true : false : false;
+] extends [object] ? [Exclude<keyof TElement, `$${string}`>] extends [never] ? false : [NonScalarKeys<TElement>] extends [never] ? true : false : false;
 /**
  * The raw array-path union, before {@link SnapshotArrayPath} removes what must never be indexed.
  *
@@ -40,7 +42,7 @@ type IsScalarRecord<TElement> = [
  * take `string`, which is what makes them the escape hatch.
  */
 type SnapshotContainerArrayPath<T, TDepth extends number = 5> = [TDepth] extends [never] ? never : string extends keyof T ? never : {
-    [K in keyof T & string]: IsAnyOrUnknown<T[K]> extends true ? never : NonNullable<T[K]> extends Function ? never : NonNullable<T[K]> extends SnapshotOpaqueContainer ? never : NonNullable<T[K]> extends ReadonlyArray<infer TElement> ? (IsAnyOrUnknown<TElement> extends true ? never : [NonNullable<TElement>] extends [SnapshotOpaqueContainer] ? never : [NonNullable<TElement>] extends [JsonScalar] ? K : IsScalarRecord<SerializedShapeOf<NonNullable<TElement>>> extends true ? K : never) : NonNullable<T[K]> extends object ? `${K}.${SnapshotContainerArrayPath<SerializedShapeOf<NonNullable<T[K]>>, PreviousDepth[TDepth]>}` : never;
+    [K in keyof T & string]: K extends `$${string}` ? never : IsAnyOrUnknown<T[K]> extends true ? never : NonNullable<T[K]> extends Function ? never : NonNullable<T[K]> extends SnapshotOpaqueContainer ? never : NonNullable<T[K]> extends ReadonlyArray<infer TElement> ? (IsAnyOrUnknown<TElement> extends true ? never : [NonNullable<TElement>] extends [SnapshotOpaqueContainer] ? never : [NonNullable<TElement>] extends [JsonScalar] ? K : IsScalarRecord<SerializedShapeOf<NonNullable<TElement>>> extends true ? K : never) : NonNullable<T[K]> extends object ? `${K}.${SnapshotContainerArrayPath<SerializedShapeOf<NonNullable<T[K]>>, PreviousDepth[TDepth]>}` : never;
 }[keyof T & string];
 /**
  * A dot-delimited path to an **array of JSON scalars, or of flat scalar records**, inside `T`, for
@@ -51,8 +53,8 @@ type SnapshotContainerArrayPath<T, TDepth extends number = 5> = [TDepth] extends
  * `SnapshotIndex.forPath("members")` and `SnapshotArrayIndex.forPath("status")` both compile errors,
  * and that makes a key belong to exactly one kind of index.
  *
- * Like `SnapshotLeafPath`, the walk follows the **stored** shape: an element or a nested member with
- * a typed `serialize()` is judged by - and recursed into - its serialized record
+ * Like `SnapshotLeafPath`, the walk follows the **stored** shape: an n-domain 4.0.2 `DomainObject`
+ * element or nested member is judged by - and recursed into - its serialized record
  * ({@link SerializedShapeOf}). So an array of `DomainObject`s whose serialized shape is a flat
  * scalar record *is* offered, and a containment document built from those keys matches what is
  * actually stored - the `$typename` each stored element also carries never blocks `@>`, which is
@@ -62,8 +64,9 @@ type SnapshotContainerArrayPath<T, TDepth extends number = 5> = [TDepth] extends
  *
  * Not offered, all of which fail closed to {@link SnapshotArrayIndex.forRawPath}:
  *
- * - **Arrays of *untyped* `Serializable`.** A bare `serialize()` gives the compiler nothing to check
- *   a containment document against, so such arrays offer no path (see {@link IsScalarRecord}).
+ * - **Arrays of `serialize()`-bearers that are not `DomainObject`s.** A bare, untyped, or merely
+ *   structural `serialize()` gives the compiler nothing it can trust a containment document
+ *   against, so such arrays offer no path (see {@link IsScalarRecord}).
  * - **Arrays whose elements nest.** An element whose *stored* shape carries an object- or
  *   array-valued member is not a flat record, and containment against it would be a far larger
  *   semantic surface than "does some element look like this".
@@ -82,7 +85,7 @@ type SnapshotContainerArrayPath<T, TDepth extends number = 5> = [TDepth] extends
 export type SnapshotArrayPath<T> = Exclude<SnapshotContainerArrayPath<T>, "organizationId">;
 /**
  * Resolves a dotted array path within `T` to the **stored** type of that array's elements - the
- * serialized shape for an element with a typed `serialize()` ({@link SerializedShapeOf}), the
+ * serialized shape for an n-domain `DomainObject` element ({@link SerializedShapeOf}), the
  * element itself otherwise. Resolving to the class instead would offer `serialize` and derived
  * getters as match keys, every one of which would silently match nothing.
  *
@@ -112,10 +115,16 @@ type SnapshotElementFilter<TElement> = {
  * jsonb object containment is **partial and recursive**, so `{ userId, isDeactivated }` matches an
  * element that also carries `role`. Crucially, it requires *one* element to carry all the named
  * fields - which is why a multi-field match is one document rather than several ANDed predicates.
+ *
+ * `$`-prefixed keys are stripped: no typed door anywhere names a `$`-prefixed storage key, and a
+ * polymorphic `$typename` match belongs to {@link SnapshotArrayIndex.containmentForRawPath}, where
+ * the caller owns the element shape. (The rejection of a mixed literal like
+ * `{ tier: "x", $typename: "y" }` rides on excess-property checking, so it catches fresh literals -
+ * a widened variable slips through, the same class of gap as any excess key.)
  */
 export type SnapshotElementMatch<TElement> = [
     NonNullable<TElement>
-] extends [JsonScalar] ? NonNullable<TElement> : SnapshotElementFilter<NonNullable<TElement>>;
+] extends [JsonScalar] ? NonNullable<TElement> : SnapshotElementFilter<Omit<NonNullable<TElement>, `$${string}`>>;
 /**
  * A predicate fragment and the values that bind to its `?` placeholders, in order.
  *
@@ -427,8 +436,9 @@ export declare class SnapshotArrayIndex<T> {
      * Like {@link containmentForPath} but takes any string, for a path declared with
      * {@link forRawPath}. Prefer {@link containmentForPath}.
      *
-     * `TElement` defaults to `any`, so matches are unchecked - which is the raw door's contract: the
-     * caller owns knowing the elements' stored shape. Supply it explicitly to get the checking back.
+     * `TElement` has no silent default: it defaults to `never`, under which no match document can
+     * be built, so the raw door forces a choice - supply the elements' stored shape to get
+     * checking, or `<any>` to explicitly own the lack of it.
      *
      * A raw match document may also name `$typename` - only path segments go through the segment
      * regex, never match keys - which is the escape hatch for filtering a polymorphic element by its
@@ -439,6 +449,6 @@ export declare class SnapshotArrayIndex<T> {
      * @throws {ArgumentNullException} If path is null or undefined.
      * @throws {ArgumentException} If path is not a string, is empty or whitespace, or is not the path this index covers.
      */
-    containmentForRawPath<TElement = any>(path: string): SnapshotArrayContainment<TElement>;
+    containmentForRawPath<TElement = never>(path: string): SnapshotArrayContainment<TElement>;
 }
 //# sourceMappingURL=snapshot-array-index.d.ts.map

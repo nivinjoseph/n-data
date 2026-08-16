@@ -22,7 +22,7 @@ import { SnapshotArrayIndex } from "./snapshot-array-index.js";
  * the rest of this possible.
  *
  * {@link SnapshotIndex} and {@link SnapshotArrayIndex} remain public underneath, for a computed or
- * `$`-prefixed key outside the state shape; this builds them, and hands them to the creator through
+ * dynamic key outside the state shape; this builds them, and hands them to the creator through
  * {@link indexes} and {@link arrayIndexes}.
  *
  * @example
@@ -78,6 +78,9 @@ import { SnapshotArrayIndex } from "./snapshot-array-index.js";
  *
  * // in the migration - the same object
  * await tableCreator.createSnapshotTableForAggregate(Order, OrderRepository.indexes);
+ *
+ * // and in an integration test - the same object again, so drift has a detector
+ * assert.deepStrictEqual(await tableCreator.verifySnapshotTableForAggregate(Order, OrderRepository.indexes), []);
  * ```
  *
  * @class SnapshotQuerySet
@@ -150,11 +153,13 @@ export class SnapshotQuerySet {
     /**
      * Declares a btree index over one leaf scalar inside `data`, and makes that path queryable.
      *
-     * **Pass the path as an inline literal.** A `string`-typed variable widens `TP` to the whole
-     * path union, so `TIndexed` gains *every* state path with no cast - after which `eq`/`orderBy`
-     * accept any state path and the cast checks silently vanish, while the runtime set still holds
-     * only the one path. A computed key belongs to `SnapshotIndex.forRawPath`, where owning that is
-     * explicit.
+     * Pass the path as an inline literal: a variable typed as the path union arrives as the whole
+     * union, which would make `TIndexed` gain *every* state path with no cast - so the signature
+     * rejects a union-typed argument outright ({@link SnapshotInlineLiteralRequired} is the
+     * diagnostic). A computed key belongs to `SnapshotIndex.forRawPath`, where owning that is
+     * explicit. The one shape the guard cannot see: a state with exactly one declarable path has a
+     * one-member "union", indistinguishable from a literal - and harmless, since widening to one
+     * path declares that path.
      *
      * @param {TP} path - The key to index, dot delimited to reach a nested one. Checked against the state shape.
      * @param {object} [options] - `type` to cast the extracted text, checked against the leaf ({@link SnapshotCastFor}: numeric types for a number, text/uuid for a string, boolean for a boolean - a mismatch is a compile error rather than an insert-time failure); `unique` to enforce a natural key; `name` to override the derived index name.
@@ -176,11 +181,11 @@ export class SnapshotQuerySet {
      * property of the plan, not of the types, so it is not expressible here - read `info.createdIndexes`
      * from the create call for the column order.
      *
-     * **Pass the specs as an inline tuple literal.** A variable typed
-     * `ReadonlyArray<SnapshotPathSpec<TState>>` widens `TSpecs[number]` to the whole union, so
-     * `TIndexed` gains *every* state path with no cast - after which `eq`/`orderBy` accept any state
-     * path and the cast checks silently vanish, while the runtime set still holds only the declared
-     * paths.
+     * Pass the specs as an inline tuple literal: a variable typed
+     * `ReadonlyArray<SnapshotPathSpec<TState>>` - or a union-typed member inside an inline tuple -
+     * would widen `TIndexed` to *every* state path with no cast, so the signature rejects both
+     * ({@link SnapshotSpecsAreLiteral} is the guard; the `const` type parameter is what makes an
+     * inline literal infer as a tuple for it).
      *
      * @param {TSpecs} paths - The keys to index, in index order; each a path or a `{ path, type }` pair whose `type` is checked against that path's leaf ({@link SnapshotCastFor}), so a mismatched cast is a compile error.
      * @param {object} [options] - `unique` to enforce the tuple as a natural key; `name` to override the derived index name.
@@ -198,6 +203,9 @@ export class SnapshotQuerySet {
      * On an org-scoped table this also causes a standalone `(organization_id)` btree to be created,
      * because a GIN index cannot lead with that column - see `SnapshotTableIndexInfo.leadingColumn`.
      *
+     * Pass the path as an inline literal - a union-typed variable is rejected for the same reason as
+     * in {@link withPath}.
+     *
      * @param {TP} path - The array key to index. Checked against the state shape.
      * @param {object} [options] - `name` to override the derived index name.
      * @returns {SnapshotQuerySet} A set that also knows this array path.
@@ -211,6 +219,8 @@ export class SnapshotQuerySet {
         if (options?.name != null)
             index = index.withName(options.name);
         next._arrayIndexes.push(index);
+        // <any> is deliberate: the path and element shape were already checked by this method's own
+        // typed signature, and the stored containment is re-typed per call by the contains methods
         next._containmentsByPath.set(path.trim(), index.containmentForRawPath(path));
         return next;
     }
@@ -393,20 +403,22 @@ export class SnapshotQuerySet {
      *
      * The snapshot repositories run this once per process against the first document they save, and
      * act on the severity split: `fatal` throws, `advisory` logs once. Call it yourself in a test -
-     * `assert.deepStrictEqual(MyRepository.indexes.verifyDocument(aggregate.snapshot()), [])` - to
-     * catch the one case the save-time check can meet late: a rename inside an optional object that
-     * happens to be null in every document a given process stores.
+     * `assert.deepStrictEqual(MyRepository.indexes.verifyDocument(toSnapshotDocument(aggregate)), [])`
+     * - to catch the one case the save-time check can meet late: a rename inside an optional object
+     * that happens to be null in every document a given process stores.
      *
      * What a clean result does *not* prove: a rename whose custom key coincidentally equals another
      * real key (the path resolves, to the wrong value), and rows written before the declaration
      * changed. It checks shape, not data.
      *
-     * @param {object} document - A snapshot document, i.e. what `AggregateRoot.snapshot()` returns.
+     * @param {SnapshotDocumentOf} document - A snapshot document - what `AggregateRoot.snapshot()` returns, as `toSnapshotDocument` types it.
      * @returns {ReadonlyArray<SnapshotShapeIssue>} Every issue found; empty when all paths resolve.
      * @throws {ArgumentNullException} If document is null or undefined.
      * @throws {ArgumentException} If document is not an object.
      */
     verifyDocument(document) {
+        // viewed as `object` for the ensurer: with TState unresolved, the mapped type gives the
+        // defensive overloads nothing to discriminate on
         given(document, "document").ensureHasValue().ensureIsObject();
         const issues = new Array();
         for (const path of this.paths)

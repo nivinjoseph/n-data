@@ -274,8 +274,9 @@ export class SnapshotArrayIndex {
      * Like {@link containmentForPath} but takes any string, for a path declared with
      * {@link forRawPath}. Prefer {@link containmentForPath}.
      *
-     * `TElement` defaults to `any`, so matches are unchecked - which is the raw door's contract: the
-     * caller owns knowing the elements' stored shape. Supply it explicitly to get the checking back.
+     * `TElement` has no silent default: it defaults to `never`, under which no match document can
+     * be built, so the raw door forces a choice - supply the elements' stored shape to get
+     * checking, or `<any>` to explicitly own the lack of it.
      *
      * A raw match document may also name `$typename` - only path segments go through the segment
      * regex, never match keys - which is the escape hatch for filtering a polymorphic element by its

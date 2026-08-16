@@ -7,6 +7,7 @@ import { OrgEventStreamBaseRepository } from "./org-event-stream-base-repository
 import { RepositoryQueryBuilder } from "./repository-query.js";
 import { executeRawQuery } from "./raw-query.js";
 import { SnapshotShapeGuard } from "./snapshot-shape-guard.js";
+import { snapshotDocumentToState, toSnapshotDocument } from "../migration/snapshot-document.js";
 /**
  * The organization-scoped counterpart to `SnapshotBaseRepository`.
  *
@@ -341,7 +342,7 @@ export class OrgSnapshotBaseRepository extends BaseRepository {
             // shape-checked against the declared paths before anything is queued on the unit of
             // work, so a fatal issue (a @serialize rename, raw-path drift) rejects the save whole -
             // once per process per query set, one WeakSet lookup per save after that
-            const snapshot = value.snapshot();
+            const snapshot = toSnapshotDocument(value);
             await SnapshotShapeGuard.verify(this.table, this.querySet, snapshot, this.logger);
             // always the non-committing door: this repository decides whether the transaction gets
             // committed, and the event stream write has to land or not land with the snapshot write
@@ -373,7 +374,7 @@ export class OrgSnapshotBaseRepository extends BaseRepository {
         if (queryResult.isEmpty)
             return [];
         return queryResult.rows.map(t => t.data)
-            .map(t => AggregateRoot.deserializeFromSnapshot(this.domainContext, this._eventStreamRepository.aggregateType, this._eventStreamRepository.aggregateStateFactory, t));
+            .map(t => AggregateRoot.deserializeFromSnapshot(this.domainContext, this._eventStreamRepository.aggregateType, this._eventStreamRepository.aggregateStateFactory, snapshotDocumentToState(t)));
     }
 }
 //# sourceMappingURL=org-snapshot-base-repository.js.map

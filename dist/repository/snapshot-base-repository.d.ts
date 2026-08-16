@@ -105,6 +105,10 @@ import type { DeclaredSnapshotQuerySet, SnapshotPredicate } from "../migration/s
  *
  * // in the migration - the same object, so a queried index is necessarily a created one
  * await tableCreator.createSnapshotTableForAggregate(Order, OrderRepository.indexes);
+ *
+ * // and in an integration test - the same object again, so a declaration changed after the
+ * // migration ran (which `if not exists` silently ignores) has a detector
+ * assert.deepStrictEqual(await tableCreator.verifySnapshotTableForAggregate(Order, OrderRepository.indexes), []);
  * ```
  *
  * @class SnapshotBaseRepository

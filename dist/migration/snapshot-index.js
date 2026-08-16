@@ -74,14 +74,15 @@ export var JsonValueType;
  * type-argument inference, so `forPath<OrderState>("status")` - supplying the state explicitly - cannot
  * also infer the path.
  *
- * What this class is still for is the path a typed signature cannot name: a computed or dynamic key, a
- * `$`-prefixed serialized name, or a whole subtree, all through {@link forRawPath}. Pass such a
- * declaration to `DbTableCreator` alongside a set, or on its own.
+ * What this class is still for is the path a typed signature cannot name: a computed or dynamic key,
+ * or a whole subtree, through {@link forRawPath}. (Not a `$`-prefixed name - the segment regex
+ * rejects `$` through every door; see {@link SnapshotPath}.) Pass such a declaration to
+ * `DbTableCreator` alongside a set, or on its own.
  *
  * @example
  * ```typescript
  * // the escape hatch: a key outside the state shape, which SnapshotQuerySet cannot name
- * const legacyIndex = SnapshotIndex.forRawPath<OrderState>("$legacyCode");
+ * const legacyIndex = SnapshotIndex.forRawPath<OrderState>("legacy_code");
  *
  * await tableCreator.createSnapshotTableForAggregate(Order, {
  *     indexes: [...OrderRepository.indexes.indexes, legacyIndex],
@@ -89,7 +90,7 @@ export var JsonValueType;
  * });
  *
  * // and the predicate for it, built from the same declaration
- * const expression = legacyIndex.expressionForRawPath("$legacyCode");
+ * const expression = legacyIndex.expressionForRawPath("legacy_code");
  * ```
  *
  * @class SnapshotIndex
@@ -105,6 +106,7 @@ export class SnapshotIndex {
      */
     static _jsonPathSegmentRegex = /^[A-Za-z_][A-Za-z0-9_]*$/;
     _expressionsByPath = new Map();
+    _castsByPath = new Map();
     _isUnique = false;
     _name = null;
     /**
@@ -120,6 +122,15 @@ export class SnapshotIndex {
      * position - and which fails loudly on a path this index does not cover.
      */
     get expressions() { return [...this._expressionsByPath.values()]; }
+    /**
+     * The declared casts, positionally matching {@link paths} and {@link expressions}; `undefined`
+     * where a path was declared without one.
+     *
+     * Public for the same reason as {@link expressions}: `DbTableCreator` reads them across a module
+     * boundary - drift verification compares each declared cast against the type Postgres actually
+     * indexed, which the expression string also encodes but would have to be parsed back out of.
+     */
+    get casts() { return [...this._castsByPath.values()]; }
     /**
      * Whether this index enforces uniqueness.
      */
@@ -242,6 +253,7 @@ export class SnapshotIndex {
         // built eagerly, so a malformed path or type throws at the declaration site; and built once,
         // so the expression the index is created from is the same one handed back for predicates
         next._expressionsByPath.set(trimmedPath, SnapshotIndex._createExpression(trimmedPath, type));
+        next._castsByPath.set(trimmedPath, type);
         return next;
     }
     /**
@@ -355,6 +367,7 @@ export class SnapshotIndex {
     _clone() {
         const next = new SnapshotIndex();
         this._expressionsByPath.forEach((v, k) => next._expressionsByPath.set(k, v));
+        this._castsByPath.forEach((v, k) => next._castsByPath.set(k, v));
         next._isUnique = this._isUnique;
         next._name = this._name;
         return next;
