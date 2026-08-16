@@ -46,8 +46,10 @@ included) — with `forRawPath` as the deliberate door. Several errors are phras
 the *property name* in the error text tells you the fix. **Trust the compiler here instead of
 guessing**, and read the error rather than working around it.
 
-One declaration serves as both the migration's index spec and the query-time predicate factory, so
-a queried index is necessarily a created one. Do not hand-write the extraction expressions.
+One declaration serves as the migration's index spec, the query-time predicate factory, and the
+baseline `DbTableCreator.verifySnapshotTableForAggregate` compares the database against — so a
+queried index is necessarily a created one, and a drifted one is a detectable one. Do not
+hand-write the extraction expressions.
 
 The stored document has a type of its own: `SnapshotDocumentOf<TState>` (built from n-domain's
 `SerializedValue`, no top-level `$typename`), with `toSnapshotDocument(aggregate)` as the one
@@ -95,6 +97,16 @@ Ordered roughly by how expensive they are to get wrong.
   uniqueness but *not* `JsonValueType`. So adding a numeric cast to an already-indexed path silently
   keeps the old uncast index, and dropping `.asUnique()` never drops the `_uq` index. Nothing here
   alters or drops — that takes a hand-written migration.
+- **Adding a path to a query set needs a *new* migration.** Migrations are versioned by class name
+  and never re-run, so a path added after the table's migration ran compiles, queries, and
+  sequential-scans forever. The re-run is cheap — `if not exists` creates only what is missing.
+- **Drift never fails on its own — detect it.** `DbTableCreator.verifySnapshotTableForAggregate`
+  (org and event-stream variants exist) takes the same arguments as the create call, touches
+  nothing, and returns every declaration-vs-database divergence as `SnapshotDriftIssue`s — missing
+  table/index (the message carries the fix DDL), cast/uniqueness/method/column mismatches (`fatal`,
+  a migration is needed), orphan indexes (`advisory`, possibly deliberate). Run it at the tail of a
+  migration run and throw on `fatal`, or assert it empty in an integration test — the same idiom as
+  `verifyDocument`.
 - **Expression indexes match textually.** A near-miss expression silently sequential-scans with no
   error. This is why expressions must come from the declaration.
 - **`@inject` keys are fixed strings.** `"DbConnectionFactory"`, `"ReadDbConnectionFactory"`,

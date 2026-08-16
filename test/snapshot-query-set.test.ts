@@ -4,7 +4,7 @@ import { Logger } from "@nivinjoseph/n-log";
 import { serialize } from "@nivinjoseph/n-util";
 import assert from "node:assert";
 import test, { after, before, describe } from "node:test";
-import { Db, DbConnectionConfig, DbConnectionFactory, DbTableCreator, DeclaredSnapshotQuerySet, JsonValueType, KnexPgDb, KnexPgDbConnectionFactory, OrgEventStreamBaseRepository, OrgSnapshotBaseRepository, SnapshotArrayIndex, SnapshotIndex, SnapshotQuerySet } from "../src/index.js";
+import { Db, DbConnectionConfig, DbConnectionFactory, DbTableCreator, DeclaredSnapshotQuerySet, JsonValueType, KnexPgDb, KnexPgDbConnectionFactory, OrgEventStreamBaseRepository, OrgSnapshotBaseRepository, SnapshotArrayIndex, SnapshotArrayPath, SnapshotIndex, SnapshotPath, SnapshotPathSpec, SnapshotQuerySet } from "../src/index.js";
 
 
 class SilentLogger implements Logger
@@ -294,6 +294,48 @@ await describe("SnapshotQuerySet tests", async () =>
             };
 
             assert.strictEqual(typeof rejected, "function");
+        });
+
+        // the one silent downgrade that used to be prose only: a variable-typed argument widens the
+        // path type parameter to the whole union, so TIndexed gains every state path with no cast and
+        // all path/cast checking evaporates while the runtime set holds only the one path
+        await test("a widened (non-literal) path argument is rejected at declaration", async () =>
+        {
+            // parameters, not consts: a const initialized with a literal is narrowed back to that
+            // literal at the use site, so it never widened anything - the hazard is a path that
+            // arrives through an opaque source, which is exactly what a parameter is
+            const rejected = (
+                somePath: SnapshotPath<TicketState>,
+                someArrayPath: SnapshotArrayPath<TicketState>,
+                someSpecs: ReadonlyArray<SnapshotPathSpec<TicketState>>,
+                someSpec: SnapshotPathSpec<TicketState>): void =>
+            {
+                // @ts-expect-error - a union-typed variable is not an inline literal
+                SnapshotQuerySet.for<TicketState>().withPath(somePath);
+
+                // @ts-expect-error - same for an array path
+                SnapshotQuerySet.for<TicketState>().withArrayPath(someArrayPath);
+
+                // @ts-expect-error - a widened spec array is not an inline tuple
+                SnapshotQuerySet.for<TicketState>().withComposite(someSpecs);
+
+                // @ts-expect-error - a widened member inside an inline tuple is caught too
+                SnapshotQuerySet.for<TicketState>().withComposite([someSpec]);
+            };
+
+            assert.strictEqual(typeof rejected, "function");
+
+            // inline literals are unaffected, and the declarations still accumulate: the declared
+            // paths remain queryable with their casts remembered
+            const literal = SnapshotQuerySet.for<TicketState>()
+                .withPath("status")
+                .withComposite(["series", { path: "revision", type: JsonValueType.integer }])
+                .withArrayPath("labels");
+
+            assert.ok(literal.eq("status", "sent").sql.contains("data->>'status'"));
+            assert.ok(literal.gte("revision", 2).sql.contains("::integer"));
+            assert.ok(literal.orderBy("series").sql.length > 0);
+            assert.ok(literal.contains("labels", "urgent").sql.contains("@>"));
         });
     });
 

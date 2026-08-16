@@ -2,7 +2,7 @@ import { OrgConfigurableDomainContext } from "@nivinjoseph/n-domain";
 import { Container, Scope } from "@nivinjoseph/n-ject";
 import assert from "node:assert";
 import test, { after, before, describe } from "node:test";
-import { Db, DbException, DbMigrator, KnexPgDbConnectionFactory, KnexPgUnitOfWork, UnitOfWork } from "../../src/index.js";
+import { Db, DbException, DbMigrator, DbTableCreator, KnexPgDbConnectionFactory, KnexPgUnitOfWork, UnitOfWork } from "../../src/index.js";
 import { ExampleLogger } from "../common/example-logger.js";
 import { CommonInstaller } from "../common/ioc/common-installer.js";
 import { CreatorFactory } from "../creator/factories/creator-factory.js";
@@ -20,6 +20,7 @@ import { StudioDomainInstaller } from "../studio/ioc/studio-domain-installer.js"
 import { EventStreamStudioRepository } from "../studio/repositories/event-stream-studio-repository.js";
 import { StudioRepository } from "../studio/repositories/studio-repository.js";
 import { StudioPlan } from "../studio/value-objects/studio-plan.js";
+import { Studio } from "../studio/studio.js";
 
 /**
  * The end-to-end driver: migrations, then the two aggregates through their real repositories against a real
@@ -164,6 +165,23 @@ await describe("The example application", async () =>
             assert.ok(names.contains("idx_creator_snaps_email_uq"), names.join(", "));
             assert.ok(names.contains("idx_creator_snaps_role_displayname"), names.join(", "));
             assert.ok(names.contains("idx_creator_snaps_skills_gin"), names.join(", "));
+        });
+
+        // the drift detector in its assert-empty idiom, against the same declarations the migrations
+        // created from. This is the check to keep as the schema evolves: a path added to a query set
+        // without a new migration, or a changed cast, fails here rather than sequential-scanning in
+        // production while looking indexed.
+        await test("verify clean against the declarations they were created from", async () =>
+        {
+            const tableCreator = new DbTableCreator(db, logger);
+
+            assert.deepStrictEqual(await tableCreator.verifyEventStreamTableForAggregate(Studio), []);
+            assert.deepStrictEqual(
+                await tableCreator.verifySnapshotTableForAggregate(Studio, SnapshotStudioRepository.indexes), []);
+
+            assert.deepStrictEqual(await tableCreator.verifyEventStreamTableForOrgAggregate(Creator), []);
+            assert.deepStrictEqual(
+                await tableCreator.verifySnapshotTableForOrgAggregate(Creator, SnapshotCreatorRepository.indexes), []);
         });
 
         await test("are idempotent - a second run reports nothing to do", async () =>

@@ -1,6 +1,6 @@
 import { given } from "@nivinjoseph/n-defensive";
 import { validateBooleanFragment } from "../repository/sql-fragment.js";
-import { IsAnyOrUnknown, JsonValueType, SerializedShapeOf, SnapshotIndex, SnapshotPath } from "./snapshot-index.js";
+import { IsAnyOrUnknown, IsUnion, JsonValueType, SerializedShapeOf, SnapshotIndex, SnapshotPath } from "./snapshot-index.js";
 import { SnapshotArrayContainment, SnapshotArrayElement, SnapshotArrayIndex, SnapshotArrayPath, SnapshotElementMatch } from "./snapshot-array-index.js";
 import type { SnapshotDocumentOf } from "./snapshot-document.js";
 
@@ -110,6 +110,44 @@ export type SnapshotComparable<TState, TP extends string, TCast> =
 export type SnapshotCastRequired<TP extends string> = {
     readonly [K in `path '${TP}' is a number indexed as text; declare a numeric JsonValueType for it to compare it as a number`]: never
 };
+
+/**
+ * A type nothing can be assigned to, intersected into a declaration parameter when the argument's
+ * type shows it was not an inline literal. Same idiom as {@link SnapshotCastRequired}: the property
+ * name is the diagnostic the compiler prints.
+ */
+export type SnapshotInlineLiteralRequired = {
+    readonly [K in "pass the path as an inline string literal - a variable-typed path arrives as the whole path union, which would silently widen the declared paths and discard path and cast checking"]: never
+};
+
+/**
+ * The composite counterpart of {@link SnapshotInlineLiteralRequired}.
+ */
+export type SnapshotInlineTupleRequired = {
+    readonly [K in "pass the specs as an inline tuple literal - a variable-typed array or member arrives as the whole spec union, which would silently widen the declared paths and discard path and cast checking"]: never
+};
+
+/**
+ * The path a spec names, distributing over a union spec so a widened member yields a union of paths.
+ */
+type SpecPath<K> = K extends string ? K : K extends { readonly path: infer TP extends string; } ? TP : never;
+
+/**
+ * Resolves to `unknown` (a no-op under intersection) when `TSpecs` is an inline tuple of
+ * single-path specs, and to the diagnostic type otherwise.
+ *
+ * Two ways a composite declaration loses its literal-ness, checked in order: the array itself is a
+ * variable (its `length` is `number`, where a tuple's is a literal - the `const` type parameter on
+ * {@link SnapshotQuerySet.withComposite} is what makes an inline literal infer as a tuple), or a
+ * member inside an inline tuple is a union-typed variable. Either would widen `TIndexed` to every
+ * state path with no cast. Exported because it appears in a public signature; absent from the barrel.
+ */
+export type SnapshotSpecsAreLiteral<TSpecs extends ReadonlyArray<any>> =
+    number extends TSpecs["length"]
+        ? SnapshotInlineTupleRequired
+        : true extends { [I in keyof TSpecs]: IsUnion<SpecPath<TSpecs[I]>> }[number]
+            ? SnapshotInlineTupleRequired
+            : unknown;
 
 /**
  * The casts legal for the leaf `TP` names: numeric types for a number, text or uuid for a string,
@@ -275,6 +313,9 @@ export interface DeclaredSnapshotQuerySet<TState>
  *
  * // in the migration - the same object
  * await tableCreator.createSnapshotTableForAggregate(Order, OrderRepository.indexes);
+ *
+ * // and in an integration test - the same object again, so drift has a detector
+ * assert.deepStrictEqual(await tableCreator.verifySnapshotTableForAggregate(Order, OrderRepository.indexes), []);
  * ```
  *
  * @class SnapshotQuerySet
@@ -375,11 +416,13 @@ export class SnapshotQuerySet<TState, TIndexed extends SnapshotCasts = NoDeclare
     /**
      * Declares a btree index over one leaf scalar inside `data`, and makes that path queryable.
      *
-     * **Pass the path as an inline literal.** A `string`-typed variable widens `TP` to the whole
-     * path union, so `TIndexed` gains *every* state path with no cast - after which `eq`/`orderBy`
-     * accept any state path and the cast checks silently vanish, while the runtime set still holds
-     * only the one path. A computed key belongs to `SnapshotIndex.forRawPath`, where owning that is
-     * explicit.
+     * Pass the path as an inline literal: a variable typed as the path union arrives as the whole
+     * union, which would make `TIndexed` gain *every* state path with no cast - so the signature
+     * rejects a union-typed argument outright ({@link SnapshotInlineLiteralRequired} is the
+     * diagnostic). A computed key belongs to `SnapshotIndex.forRawPath`, where owning that is
+     * explicit. The one shape the guard cannot see: a state with exactly one declarable path has a
+     * one-member "union", indistinguishable from a literal - and harmless, since widening to one
+     * path declares that path.
      *
      * @param {TP} path - The key to index, dot delimited to reach a nested one. Checked against the state shape.
      * @param {object} [options] - `type` to cast the extracted text, checked against the leaf ({@link SnapshotCastFor}: numeric types for a number, text/uuid for a string, boolean for a boolean - a mismatch is a compile error rather than an insert-time failure); `unique` to enforce a natural key; `name` to override the derived index name.
@@ -387,7 +430,8 @@ export class SnapshotQuerySet<TState, TIndexed extends SnapshotCasts = NoDeclare
      * @throws {ArgumentException} If the path is already declared by this set, malformed, or the type is not a JsonValueType.
      */
     public withPath<TP extends SnapshotPath<TState>, TCast extends SnapshotCastFor<TState, TP> | undefined = undefined>(
-        path: TP, options?: { readonly type?: TCast; readonly unique?: boolean; readonly name?: string; }
+        path: TP & (IsUnion<TP> extends true ? SnapshotInlineLiteralRequired : unknown),
+        options?: { readonly type?: TCast; readonly unique?: boolean; readonly name?: string; }
     ): SnapshotQuerySet<TState, TIndexed & Record<TP, TCast>, TArrays>
     {
         const next = this._withComposite([options?.type != null ? { path, type: options.type } : path], options);
@@ -406,19 +450,20 @@ export class SnapshotQuerySet<TState, TIndexed extends SnapshotCasts = NoDeclare
      * property of the plan, not of the types, so it is not expressible here - read `info.createdIndexes`
      * from the create call for the column order.
      *
-     * **Pass the specs as an inline tuple literal.** A variable typed
-     * `ReadonlyArray<SnapshotPathSpec<TState>>` widens `TSpecs[number]` to the whole union, so
-     * `TIndexed` gains *every* state path with no cast - after which `eq`/`orderBy` accept any state
-     * path and the cast checks silently vanish, while the runtime set still holds only the declared
-     * paths.
+     * Pass the specs as an inline tuple literal: a variable typed
+     * `ReadonlyArray<SnapshotPathSpec<TState>>` - or a union-typed member inside an inline tuple -
+     * would widen `TIndexed` to *every* state path with no cast, so the signature rejects both
+     * ({@link SnapshotSpecsAreLiteral} is the guard; the `const` type parameter is what makes an
+     * inline literal infer as a tuple for it).
      *
      * @param {TSpecs} paths - The keys to index, in index order; each a path or a `{ path, type }` pair whose `type` is checked against that path's leaf ({@link SnapshotCastFor}), so a mismatched cast is a compile error.
      * @param {object} [options] - `unique` to enforce the tuple as a natural key; `name` to override the derived index name.
      * @returns {SnapshotQuerySet} A set that also knows these paths.
      * @throws {ArgumentException} If paths is empty, any path is already declared by this set, or any path is malformed.
      */
-    public withComposite<TSpecs extends ReadonlyArray<SnapshotPathSpec<TState>>>(
-        paths: TSpecs, options?: { readonly unique?: boolean; readonly name?: string; }
+    public withComposite<const TSpecs extends ReadonlyArray<SnapshotPathSpec<TState>>>(
+        paths: TSpecs & SnapshotSpecsAreLiteral<TSpecs>,
+        options?: { readonly unique?: boolean; readonly name?: string; }
     ): SnapshotQuerySet<TState, TIndexed & SpecsToCasts<TSpecs>, TArrays>
     {
         given(paths, "paths").ensureHasValue().ensureIsArray().ensureIsNotEmpty();
@@ -433,13 +478,17 @@ export class SnapshotQuerySet<TState, TIndexed extends SnapshotCasts = NoDeclare
      * On an org-scoped table this also causes a standalone `(organization_id)` btree to be created,
      * because a GIN index cannot lead with that column - see `SnapshotTableIndexInfo.leadingColumn`.
      *
+     * Pass the path as an inline literal - a union-typed variable is rejected for the same reason as
+     * in {@link withPath}.
+     *
      * @param {TP} path - The array key to index. Checked against the state shape.
      * @param {object} [options] - `name` to override the derived index name.
      * @returns {SnapshotQuerySet} A set that also knows this array path.
      * @throws {ArgumentException} If the path is already declared by this set, or is malformed.
      */
     public withArrayPath<TP extends SnapshotArrayPath<TState>>(
-        path: TP, options?: { readonly name?: string; }
+        path: TP & (IsUnion<TP> extends true ? SnapshotInlineLiteralRequired : unknown),
+        options?: { readonly name?: string; }
     ): SnapshotQuerySet<TState, TIndexed, TArrays | TP>
     {
         const next = this._clone();

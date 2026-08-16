@@ -88,6 +88,18 @@ export type JsonScalar = string | number | boolean;
 export type IsAnyOrUnknown<T> = unknown extends T ? true : false;
 
 /**
+ * True exactly when `T` is a union of two or more members.
+ *
+ * The standard distribution trick: the naked `T` distributes, so each member is asked whether the
+ * *whole* union fits back inside it - which fails for every member of a genuine union and holds for
+ * a lone type. What it exists to catch: a path argument typed as `SnapshotPath<TState>` (a variable
+ * rather than an inline literal) arrives as the whole union, and accepting it would silently widen
+ * the declared-path record to every state path. Exported for the query set's declaration guards;
+ * deliberately absent from the barrel, like {@link IsAnyOrUnknown}.
+ */
+export type IsUnion<T, U = T> = T extends unknown ? ([U] extends [T] ? false : true) : never;
+
+/**
  * Containers `JSON.stringify` renders as `{}`: any path into one indexes an always-null expression,
  * and as an array-index leaf one would never satisfy a containment query.
  *
@@ -310,6 +322,7 @@ export class SnapshotIndex<T>
     private static readonly _jsonPathSegmentRegex = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
     private readonly _expressionsByPath = new Map<string, string>();
+    private readonly _castsByPath = new Map<string, JsonValueType | undefined>();
     private _isUnique = false;
     private _name: string | null = null;
 
@@ -327,6 +340,16 @@ export class SnapshotIndex<T>
      * position - and which fails loudly on a path this index does not cover.
      */
     public get expressions(): ReadonlyArray<string> { return [...this._expressionsByPath.values()]; }
+
+    /**
+     * The declared casts, positionally matching {@link paths} and {@link expressions}; `undefined`
+     * where a path was declared without one.
+     *
+     * Public for the same reason as {@link expressions}: `DbTableCreator` reads them across a module
+     * boundary - drift verification compares each declared cast against the type Postgres actually
+     * indexed, which the expression string also encodes but would have to be parsed back out of.
+     */
+    public get casts(): ReadonlyArray<JsonValueType | undefined> { return [...this._castsByPath.values()]; }
 
     /**
      * Whether this index enforces uniqueness.
@@ -476,6 +499,7 @@ export class SnapshotIndex<T>
         // built eagerly, so a malformed path or type throws at the declaration site; and built once,
         // so the expression the index is created from is the same one handed back for predicates
         next._expressionsByPath.set(trimmedPath, SnapshotIndex._createExpression(trimmedPath, type));
+        next._castsByPath.set(trimmedPath, type);
 
         return next;
     }
@@ -610,6 +634,7 @@ export class SnapshotIndex<T>
         const next = new SnapshotIndex<T>();
 
         this._expressionsByPath.forEach((v, k) => next._expressionsByPath.set(k, v));
+        this._castsByPath.forEach((v, k) => next._castsByPath.set(k, v));
         next._isUnique = this._isUnique;
         next._name = this._name;
 
