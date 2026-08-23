@@ -364,8 +364,9 @@ export class SnapshotQuerySet {
     raw(sql, ...params) {
         // validated *before* the parentheses go on, which is the whole point of the shared function:
         // both of its regexes are anchored, so `(select 1 from t)` would sail past checks that
-        // `select 1 from t` fails. This is now the library's only door for a hand-written fragment,
-        // so it is the only place that ordering has to be right.
+        // `select 1 from t` fails. This is the only door a *consumer* hands a fragment to, but not
+        // the only place the ordering matters: `RepositoryQueryBuilder.idPredicate` splices a
+        // predicate behind `id in (?) and (`, and validates before splicing for exactly this reason.
         const validated = validateBooleanFragment(sql, "sql");
         given(params, "params").ensureHasValue().ensureIsArray();
         return { sql: `(${validated})`, params: [...params] };

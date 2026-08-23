@@ -40,7 +40,7 @@ export interface RepositoryQuery {
      *
      * A {@link SnapshotPredicate} always carries its own parameters, so there is nothing to pass
      * positionally alongside it and no way to mis-order the binding. A hand-written fragment reaches
-     * this through `SnapshotQuerySet.raw`, which is the library's only door for one and validates it
+     * this through `SnapshotQuerySet.raw`, the only door a consumer has for one, which validates it
      * on the way in; there is deliberately no bare-string form here, because the two differed in what
      * they accepted and in where their values came from.
      *
@@ -84,12 +84,17 @@ export interface BuiltRepositoryQuery {
  * difference between them, whether an organization filter leads the predicate, is a parameter here
  * rather than an override somewhere.
  *
- * The snapshot repositories expose it through their `query`. The event stream repositories use it
- * privately, for the two id-shaped reads `get` and `getAll` perform - they offer no query surface of their
- * own, deliberately, so this is the one place their statement shape is assembled.
+ * The snapshot repositories expose it through their `query`, and reach {@link idPredicate} a second
+ * way through `queryById`/`queryByIds` - the id-shaped reads that also take a predicate, which is the
+ * one composition a `SnapshotQuerySet` cannot express on its own. The event stream repositories use
+ * it privately, for the two reads that build a statement - `getByIds` and `getAll`, with `get`
+ * delegating to the former - and they offer no query surface of their own, deliberately, so this is
+ * the one place their statement shape is assembled.
  *
- * Deliberately absent from the barrel: it is how `query` is implemented, not part of the surface a
- * subclass uses. {@link RepositoryQuery} is what consumers name.
+ * Deliberately absent from the barrel: it is how those methods are implemented, not something a
+ * subclass names. {@link RepositoryQuery} is what consumers name. A subclass does still meet its
+ * validation transitively - a bad predicate handed to `queryById` surfaces as the `ArgumentException`
+ * {@link idPredicate} raises.
  *
  * @class RepositoryQueryBuilder
  */
@@ -121,7 +126,8 @@ export declare class RepositoryQueryBuilder {
      */
     static build(table: string, whereOrQuery: string | SnapshotPredicate | RepositoryQuery, params: ReadonlyArray<any>, organizationId?: string): BuiltRepositoryQuery;
     /**
-     * Builds `<column> in (?, ?, ...)` over a set of ids, as a predicate carrying its own values.
+     * Builds `<column> in (?, ?, ...)` over a set of ids, as a predicate carrying its own values -
+     * optionally conjoined with a further predicate.
      *
      * The one fragment the library assembles for itself. All four repositories look up by id - `id`
      * on a snapshot table, `aggregate_id` on an event stream - and none of them can express it
@@ -129,12 +135,19 @@ export declare class RepositoryQueryBuilder {
      * the subclass. Building it here keeps the placeholder count and the value order derived from one
      * array in one place; positional binding gives no second chance at getting that pairing right.
      *
+     * The optional `predicate` is what lets an id lookup be filtered - "this id, but only if it is
+     * not archived" - which is otherwise inexpressible: the id column is not a query set path, so the
+     * two halves come from different places and have to meet somewhere. They meet here, and only
+     * here, because the snapshot repositories are siblings rather than a hierarchy and
+     * `DeclaredSnapshotQuerySet` offers them no `and` of its own.
+     *
      * @param {string} column - The id column to match against.
      * @param {ReadonlyArray<string>} values - The ids; must be non-empty, since `in ()` is not valid SQL.
-     * @returns {SnapshotPredicate} The fragment and its values, positionally matched.
-     * @throws {ArgumentException} If column is empty, or values is empty.
+     * @param {SnapshotPredicate} [predicate] - A further condition every matched row must also satisfy.
+     * @returns {SnapshotPredicate} The fragment and its values, positionally matched - the ids first, then the predicate's own.
+     * @throws {ArgumentException} If column is empty, values is empty, the predicate's params are not an array, or its sql is a whole statement, keeps the `where` keyword, is empty, or contains a ';'.
      */
-    static idPredicate(column: string, values: ReadonlyArray<string>): SnapshotPredicate;
+    static idPredicate(column: string, values: ReadonlyArray<string>, predicate?: SnapshotPredicate): SnapshotPredicate;
     /**
      * Builds `select 1 from <table> [where ...] limit 1;` - the statement behind a repository's `exists`.
      *
@@ -199,8 +212,9 @@ export declare class RepositoryQueryBuilder {
      *
      * Both guards below are now internal invariants rather than consumer-facing errors - a consumer
      * cannot reach either, since `where` is a `SnapshotPredicate` on the public type and `query`
-     * takes no positional params at all. They stay because the string branch is still live for
-     * `_load`, and a mis-bound `in (?, ?)` would be silent.
+     * takes no positional params at all. They stay to keep the string branch honest if an internal
+     * caller reaches for it again (see {@link NormalizedQuery}: none does today), because a mis-bound
+     * `in (?, ?)` would be silent.
      *
      * @returns The trimmed predicate and its parameters; `sql` is null when there is no predicate.
      */

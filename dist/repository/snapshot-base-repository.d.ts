@@ -11,15 +11,25 @@ import type { DeclaredSnapshotQuerySet, SnapshotPredicate } from "../migration/s
  * both the snapshot and the underlying event stream on save.
  *
  * The snapshot table holds one row per aggregate: `id` (the primary key) and `data` (the
- * serialized state as jsonb). {@link get} and {@link getByIds} cover lookup by id, which the
- * primary key already indexes, and {@link getAll} takes the whole table. Any other read -
- * filtering or sorting on a field *inside* `data` - needs a method on the concrete subclass
- * built over {@link query}.
+ * serialized state as jsonb). Publicly, {@link get} and {@link getByIds} cover lookup by id, which
+ * the primary key already indexes, and {@link getAll} takes the whole table. Any other read is a
+ * method the concrete subclass names for itself, built over one of the `protected` doors below.
  *
- * {@link query} owns the statement it runs - `select data from <table> where (<your predicate>)` - so
- * a subclass supplies the predicate and nothing else, with `order by`, `limit` and `offset` available
- * through the `RepositoryQuery` object form. {@link queryStatement} is the escape hatch for a read
- * that shape cannot express.
+ * Which door depends on what the read is shaped like:
+ *
+ * - **Filtering or sorting on a field *inside* `data`** - {@link query}. It owns the statement it
+ *   runs - `select data from <table> where (<your predicate>)` - so a subclass supplies the predicate
+ *   and nothing else, with `order by`, `limit` and `offset` available through the `RepositoryQuery`
+ *   object form.
+ * - **By id, *and* on a field inside `data`** - {@link queryById} or {@link queryByIds}. This one
+ *   cannot be built over `query`: `id` is a column beside `data`, so a `SnapshotQuerySet` cannot
+ *   reach it, and `query` takes nothing but a predicate from one. The pair is where the two halves
+ *   meet, and it returns null rather than throwing.
+ * - **A shape none of those can express** - a join, a union, a CTE - {@link queryStatement}, where
+ *   everything `query` guarantees becomes the caller's to get right.
+ * - **A read that does not map onto the aggregate at all** - a count, a group-by, a projection -
+ *   {@link queryRaw}, which performs no deserialization. {@link exists} and {@link count} answer the
+ *   two commonest of those without a statement to write.
  *
  * **Declare what is queryable with a `SnapshotQuerySet`, exposed by overriding {@link querySet}.**
  * That one object is both what the migration creates the table's indexes from and
@@ -101,6 +111,14 @@ import type { DeclaredSnapshotQuerySet, SnapshotPredicate } from "../migration/s
  *         // ordering and paging go on the object form; there is no predicate here
  *         return this.query({ orderBy: this.querySet.orderBy("total", "desc"), limit: count });
  *     }
+ *
+ *     public getOpen(id: string): Promise<Order | null>
+ *     {
+ *         // by id AND on a declared path - `query` cannot express this, because `id` is a column
+ *         // beside `data` and no query set predicate can reach it. Returns null rather than
+ *         // throwing, for a missing id and an excluded one alike
+ *         return this.queryById(id, this.querySet.eq("status", "open"));
+ *     }
  * }
  *
  * // in the migration - the same object, so a queried index is necessarily a created one
@@ -157,6 +175,9 @@ export declare abstract class SnapshotBaseRepository<T extends AggregateRoot<TSt
      * array. It was not always: as `getAll(...ids)` this shared a signature with {@link getAll}, so
      * the empty case had to stand for either everything or nothing and could not be read off the call.
      *
+     * To load only the ids that also satisfy a condition, a subclass builds its own method over
+     * {@link queryByIds} - the predicate belongs inside the class, not on this signature.
+     *
      * @param {ReadonlyArray<string>} ids - The aggregate ids to load.
      * @returns {Promise<Array<T>>} The aggregates found; empty when none of the ids matched, or when no usable id was given.
      */
@@ -166,11 +187,22 @@ export declare abstract class SnapshotBaseRepository<T extends AggregateRoot<TSt
      *
      * **Unbounded, and takes no arguments so that it can only be called on purpose.** It is
      * {@link query} with no predicate; for anything narrower, or for ordering and paging, build a
-     * method on the subclass over `query` instead.
+     * method on the subclass over `query` - or over {@link queryByIds}, when the narrowing is by id
+     * as well.
      *
      * @returns {Promise<Array<T>>} Every aggregate, deserialized.
      */
     getAll(): Promise<Array<T>>;
+    /**
+     * The aggregate with this id.
+     *
+     * To load it only if it also satisfies a condition, a subclass builds its own method over
+     * {@link queryById} - the predicate belongs inside the class, not on this signature.
+     *
+     * @param {string} id - The aggregate id to load.
+     * @returns {Promise<T>} The aggregate.
+     * @throws {AggregateNotFoundException} If no row carries the id.
+     */
     get(id: string): Promise<T>;
     /**
      * Saves the snapshot and the underlying event stream in a transaction this repository owns, and
@@ -186,10 +218,28 @@ export declare abstract class SnapshotBaseRepository<T extends AggregateRoot<TSt
      * throws before anything is queued, and ambiguous findings log one warning. One `WeakSet` lookup
      * per save after that.
      *
-     * @param {T} value - The aggregate to save. A no-op when it is neither new nor changed.
+     * **`force` re-writes the row for an aggregate that has not changed**, which is what a data
+     * migration needs when the stored *shape* moved rather than the state: a newly `@serialize`d
+     * computed field on a value object, declared on {@link querySet} and indexed by a migration, is
+     * absent from every row written before it existed. Load each aggregate and save it back with
+     * `force`, and `data` is re-serialized from the current code.
+     *
+     * It bypasses this repository's change check and nothing else. The event stream keeps its own, so
+     * an unchanged aggregate appends no events and fires no `onSave` - a re-save does not republish
+     * history - and the write is the same `on conflict (id) do update` upsert an ordinary update
+     * takes. Prefer {@link saveWithin} with `force` across a migration, so a batch lands as one
+     * transaction rather than one per aggregate.
+     *
+     * `force` lives here and not on {@link Repository}, whose `save` the event stream repositories
+     * also implement and could not honor - an unchanged aggregate has no events to append. So it is
+     * reachable through a snapshot repository's own type; a caller holding the `Repository<T>`
+     * interface, or a domain interface extending it, does not see it.
+     *
+     * @param {T} value - The aggregate to save. A no-op when it is neither new nor changed, unless `force`.
+     * @param {boolean} [force=false] - Writes the snapshot row even when the aggregate is neither new nor changed. For a data migration that re-serializes stored state; see above.
      * @throws {ApplicationException} If a declared index path has a fatal shape issue against the document being saved.
      */
-    save(value: T): Promise<void>;
+    save(value: T, force?: boolean): Promise<void>;
     /**
      * Saves the snapshot and the underlying event stream into a transaction the caller owns, and
      * **does not commit**.
@@ -197,11 +247,16 @@ export declare abstract class SnapshotBaseRepository<T extends AggregateRoot<TSt
      * Shape-verified exactly as {@link save} is - a fatal issue throws before anything is queued on
      * the caller's transaction.
      *
-     * @param {T} value - The aggregate to save. A no-op when it is neither new nor changed.
+     * This is the door a data migration wants: `force` here re-writes each unchanged row into the
+     * caller's transaction, so a batch commits once rather than once per aggregate. See {@link save}
+     * for what forcing does and does not touch.
+     *
+     * @param {T} value - The aggregate to save. A no-op when it is neither new nor changed, unless `force`.
      * @param {UnitOfWork} unitOfWork - The caller's transaction. Required; committing it is theirs to do.
+     * @param {boolean} [force=false] - Writes the snapshot row even when the aggregate is neither new nor changed.
      * @throws {ApplicationException} If a declared index path has a fatal shape issue against the document being saved.
      */
-    saveWithin(value: T, unitOfWork: UnitOfWork): Promise<void>;
+    saveWithin(value: T, unitOfWork: UnitOfWork, force?: boolean): Promise<void>;
     /**
      * Runs a query and deserializes each row into an aggregate.
      *
@@ -214,16 +269,53 @@ export declare abstract class SnapshotBaseRepository<T extends AggregateRoot<TSt
      * binding, which is why this takes no parameters beyond the predicate itself.
      *
      * Pass a {@link RepositoryQuery} instead of a bare predicate to add `order by`, `limit` or
-     * `offset`, or to run with no predicate at all (`{}`). For a read the built statement cannot
-     * express - a join, a union, a CTE - use {@link queryStatement}. For reads whose shape does not
-     * map onto the aggregate - counts, group-bys, projections - use {@link queryRaw}, which performs
-     * no deserialization.
+     * `offset`, or to run with no predicate at all (`{}`). To constrain the id as well as the
+     * predicate, use {@link queryById} or {@link queryByIds} - `id` is a column beside `data`, so no
+     * predicate this takes can reach it. For a read the built statement cannot express - a join, a
+     * union, a CTE - use {@link queryStatement}. For reads whose shape does not map onto the
+     * aggregate - counts, group-bys, projections - use {@link queryRaw}, which performs no
+     * deserialization.
      *
      * @param {SnapshotPredicate | RepositoryQuery} whereOrQuery - A predicate from {@link querySet}, or the predicate and the clauses that follow it.
      * @returns {Promise<Array<T>>} The deserialized aggregates; empty when nothing matched.
      * @throws {ArgumentException} If the predicate is a whole statement, keeps the `where` keyword, is empty, or contains a ';'; if orderBy is empty or contains a ';'; or if limit or offset is not a non-negative integer.
      */
     protected query(whereOrQuery: SnapshotPredicate | RepositoryQuery): Promise<Array<T>>;
+    /**
+     * The aggregate with this id, if it also satisfies `predicate`.
+     *
+     * The id column is the one thing a {@link querySet} cannot reach - its paths read inside `data`,
+     * and the primary key is a column beside it - so an id lookup and a declared-path condition come
+     * from different places and cannot be composed by the caller. This is where they meet: the
+     * statement is `where (id in (?) and (<your predicate>))`, with the predicate parenthesized
+     * inside the whole so a top-level `or` in it cannot escape the id filter.
+     *
+     * **Returns null rather than throwing**, unlike {@link get}, and does so for both misses alike -
+     * no such id, and an id whose row the predicate excluded. The two are not distinguished here on
+     * purpose: only the subclass knows what its predicate meant, so only the subclass can say whether
+     * an excluded row is exceptional. Throwing, if that is the answer, is three lines at the call
+     * site; unthrowing is not.
+     *
+     * @param {string} id - The aggregate id to load.
+     * @param {SnapshotPredicate} [predicate] - A further condition the row must satisfy; omitted loads by id alone.
+     * @returns {Promise<T | null>} The aggregate, or null when nothing matched.
+     * @throws {ArgumentException} If the predicate is a whole statement, keeps the `where` keyword, is empty, or contains a ';'.
+     */
+    protected queryById(id: string, predicate?: SnapshotPredicate): Promise<T | null>;
+    /**
+     * The aggregates with these ids that also satisfy `predicate`, in whatever order the table
+     * returns them.
+     *
+     * The set-shaped counterpart to {@link queryById}, and the read {@link getByIds} is built from -
+     * so the id hygiene is the same one: ids that are blank once trimmed are dropped, and if that
+     * leaves none the result is empty without a statement being run at all.
+     *
+     * @param {ReadonlyArray<string>} ids - The aggregate ids to load.
+     * @param {SnapshotPredicate} [predicate] - A further condition each row must satisfy; omitted loads by id alone.
+     * @returns {Promise<Array<T>>} The aggregates found; empty when nothing matched, or when no usable id was given.
+     * @throws {ArgumentException} If the predicate is a whole statement, keeps the `where` keyword, is empty, or contains a ';'.
+     */
+    protected queryByIds(ids: ReadonlyArray<string>, predicate?: SnapshotPredicate): Promise<Array<T>>;
     /**
      * Whether anything matches - without deserializing it.
      *
@@ -283,7 +375,8 @@ export declare abstract class SnapshotBaseRepository<T extends AggregateRoot<TSt
      */
     protected queryStatement(sql: string, ...params: ReadonlyArray<any>): Promise<Array<T>>;
     /**
-     * The body both save doors share; `owned` is the whole of what separates them.
+     * The body both save doors share; `owned` is who commits and `force` is whether the change check
+     * applies, and between them they are the whole of what separates one call from another.
      */
     private _save;
     private _deserialize;

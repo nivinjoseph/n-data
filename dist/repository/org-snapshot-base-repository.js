@@ -12,14 +12,18 @@ import { snapshotDocumentToState, toSnapshotDocument } from "../migration/snapsh
  * The organization-scoped counterpart to `SnapshotBaseRepository`.
  *
  * The snapshot table holds `id` (the primary key), `organization_id`, and `data` (the
- * serialized state as jsonb). {@link get} and {@link getByIds} cover lookup by id, {@link getAll}
- * takes every row this organization has, and all three scope themselves to the current
- * organization automatically.
+ * serialized state as jsonb). Publicly, {@link get} and {@link getByIds} cover lookup by id and
+ * {@link getAll} takes every row this organization has. Any other read is a method the concrete
+ * subclass names for itself, built over one of the `protected` doors: {@link query} for a condition
+ * on a field inside `data`, {@link queryById} or {@link queryByIds} for one that also constrains the
+ * id, {@link exists} and {@link count} for a yes-or-no or a number.
  *
- * **{@link query} scopes itself to the current organization too, so a subclass never writes that
- * filter.** It owns the statement - `select data from <table> where organization_id = ? and (<your
- * predicate>)` - so a subclass supplies only the predicate, and the filter lands ahead of it, which
- * is both the tenant isolation and the leading index column. There is no way to forget it.
+ * **Every one of those scopes itself to the current organization, so a subclass never writes that
+ * filter.** `query` owns the statement - `select data from <table> where organization_id = ? and
+ * (<your predicate>)` - so a subclass supplies only the predicate, and the filter lands ahead of it,
+ * which is both the tenant isolation and the leading index column; the id-shaped pair goes through
+ * `query`, so it inherits the same guarantee, and an id belonging to another organization reads
+ * exactly as one that does not exist. There is no way to forget it.
  * {@link queryAcrossOrganizations} is the deliberate exception, named for its consequence, for a read
  * that is genuinely meant to span tenants.
  *
@@ -103,6 +107,15 @@ import { snapshotDocumentToState, toSnapshotDocument } from "../migration/snapsh
  *             limit: 20
  *         });
  *     }
+ *
+ *     public getOpen(id: string): Promise<Invoice | null>
+ *     {
+ *         // by id AND on a declared path - `query` cannot express this, because `id` is a column
+ *         // beside `data` and no query set predicate can reach it. The organization filter still
+ *         // leads, so an id in another organization reads as a miss, exactly as a missing one does
+ *         // -> where organization_id = ? and (id in (?) and (((data->>'status') = ?)))
+ *         return this.queryById(id, this.querySet.eq("status", "open"));
+ *     }
  * }
  *
  * // in the migration - the same object
@@ -149,15 +162,14 @@ export class OrgSnapshotBaseRepository extends BaseRepository {
      * array. It was not always: as `getAll(...ids)` this shared a signature with {@link getAll}, so
      * the empty case had to stand for either everything or nothing and could not be read off the call.
      *
+     * To load only the ids that also satisfy a condition, a subclass builds its own method over
+     * {@link queryByIds} - the predicate belongs inside the class, not on this signature.
+     *
      * @param {ReadonlyArray<string>} ids - The aggregate ids to load.
      * @returns {Promise<Array<T>>} The aggregates found; empty when none of the ids matched, or when no usable id was given.
      */
-    async getByIds(ids) {
-        given(ids, "ids").ensureHasValue().ensureIsArray();
-        const trimmed = ids.map(t => t.trim()).where(t => t.isNotEmptyOrWhiteSpace());
-        if (trimmed.isEmpty)
-            return [];
-        return this.query(RepositoryQueryBuilder.idPredicate("id", trimmed));
+    getByIds(ids) {
+        return this.queryByIds(ids);
     }
     /**
      * Every row in the snapshot table **for the current organization**.
@@ -172,13 +184,26 @@ export class OrgSnapshotBaseRepository extends BaseRepository {
     getAll() {
         return this.query({});
     }
+    /**
+     * The aggregate with this id, **within the current organization**.
+     *
+     * An id belonging to another organization reads exactly as one that does not exist - the tenant
+     * filter is part of the statement, not a check applied afterwards.
+     *
+     * To load it only if it also satisfies a condition, a subclass builds its own method over
+     * {@link queryById} - the predicate belongs inside the class, not on this signature.
+     *
+     * @param {string} id - The aggregate id to load.
+     * @returns {Promise<T>} The aggregate.
+     * @throws {AggregateNotFoundException} If the current organization carries no row with the id.
+     */
     async get(id) {
         given(id, "id").ensureHasValue().ensureIsString();
         id = id.trim();
-        const result = await this.query(RepositoryQueryBuilder.idPredicate("id", [id]));
-        if (result.length !== 1)
+        const result = await this.queryById(id);
+        if (result == null)
             throw new AggregateNotFoundException(this._eventStreamRepository.aggregateType, id);
-        return result[0];
+        return result;
     }
     /**
      * Saves the snapshot and the underlying event stream in a transaction this repository owns, and
@@ -194,11 +219,35 @@ export class OrgSnapshotBaseRepository extends BaseRepository {
      * throws before anything is queued, and ambiguous findings log one warning. One `WeakSet` lookup
      * per save after that.
      *
-     * @param {T} value - The aggregate to save. A no-op when it is neither new nor changed.
+     * **`force` re-writes the row for an aggregate that has not changed**, which is what a data
+     * migration needs when the stored *shape* moved rather than the state: a newly `@serialize`d
+     * computed field on a value object, declared on {@link querySet} and indexed by a migration, is
+     * absent from every row written before it existed. Load each aggregate and save it back with
+     * `force`, and `data` is re-serialized from the current code.
+     *
+     * It bypasses this repository's change check and nothing else. The event stream keeps its own, so
+     * an unchanged aggregate appends no events and fires no `onSave` - a re-save does not republish
+     * history - and the write is the same `on conflict (id) do update` upsert an ordinary update
+     * takes. Prefer {@link saveWithin} with `force` across a migration, so a batch lands as one
+     * transaction rather than one per aggregate.
+     *
+     * **Forcing does not step outside the organization**, because nothing about the tenant check
+     * moves: an aggregate belonging to another organization is rejected here exactly as it always
+     * was. So a migration that has to cover every tenant runs once per organization's
+     * {@link BaseRepository.domainContext}, and {@link queryAcrossOrganizations} cannot feed what it
+     * read straight back into this door.
+     *
+     * `force` lives here and not on {@link Repository}, whose `save` the event stream repositories
+     * also implement and could not honor - an unchanged aggregate has no events to append. So it is
+     * reachable through a snapshot repository's own type; a caller holding the `Repository<T>`
+     * interface, or a domain interface extending it, does not see it.
+     *
+     * @param {T} value - The aggregate to save. A no-op when it is neither new nor changed, unless `force`.
+     * @param {boolean} [force=false] - Writes the snapshot row even when the aggregate is neither new nor changed. For a data migration that re-serializes stored state; see above.
      * @throws {ApplicationException} If a declared index path has a fatal shape issue against the document being saved.
      */
-    save(value) {
-        return this._save(value, this.unitOfWork, true);
+    save(value, force = false) {
+        return this._save(value, this.unitOfWork, true, force);
     }
     /**
      * Saves the snapshot and the underlying event stream into a transaction the caller owns, and
@@ -207,13 +256,18 @@ export class OrgSnapshotBaseRepository extends BaseRepository {
      * Shape-verified exactly as {@link save} is - a fatal issue throws before anything is queued on
      * the caller's transaction.
      *
-     * @param {T} value - The aggregate to save. A no-op when it is neither new nor changed.
+     * This is the door a data migration wants: `force` here re-writes each unchanged row into the
+     * caller's transaction, so one organization's batch commits once rather than once per aggregate.
+     * See {@link save} for what forcing does and does not touch.
+     *
+     * @param {T} value - The aggregate to save. A no-op when it is neither new nor changed, unless `force`.
      * @param {UnitOfWork} unitOfWork - The caller's transaction. Required; committing it is theirs to do.
+     * @param {boolean} [force=false] - Writes the snapshot row even when the aggregate is neither new nor changed.
      * @throws {ApplicationException} If a declared index path has a fatal shape issue against the document being saved.
      */
-    saveWithin(value, unitOfWork) {
+    saveWithin(value, unitOfWork, force = false) {
         given(unitOfWork, "unitOfWork").ensureHasValue().ensureIsObject();
-        return this._save(value, unitOfWork, false);
+        return this._save(value, unitOfWork, false, force);
     }
     /**
      * Runs a query **scoped to the current organization** and deserializes each row into an
@@ -234,11 +288,12 @@ export class OrgSnapshotBaseRepository extends BaseRepository {
      * the organization filter.
      *
      * Pass a {@link RepositoryQuery} instead of a bare predicate to add `order by`, `limit` or
-     * `offset`, or to run with no predicate at all (`{}`). For a read that genuinely spans
-     * organizations, and only then, use {@link queryAcrossOrganizations}. For reads whose shape does
-     * not map onto the aggregate - counts, group-bys, projections - use
-     * {@link queryRawAcrossOrganizations}, which performs no deserialization and, as its name says,
-     * adds no organization filter either.
+     * `offset`, or to run with no predicate at all (`{}`). To constrain the id as well as the
+     * predicate, use {@link queryById} or {@link queryByIds} - `id` is a column beside `data`, so no
+     * predicate this takes can reach it. For a read that genuinely spans organizations, and only
+     * then, use {@link queryAcrossOrganizations}. For reads whose shape does not map onto the
+     * aggregate - counts, group-bys, projections - use {@link queryRawAcrossOrganizations}, which
+     * performs no deserialization and, as its name says, adds no organization filter either.
      *
      * @param {SnapshotPredicate | RepositoryQuery} whereOrQuery - A predicate from {@link querySet}, or the predicate and the clauses that follow it.
      * @returns {Promise<Array<T>>} The deserialized aggregates; empty when nothing matched.
@@ -247,6 +302,51 @@ export class OrgSnapshotBaseRepository extends BaseRepository {
     async query(whereOrQuery) {
         const built = RepositoryQueryBuilder.build(this.table, whereOrQuery, [], this.domainContext.organizationId);
         return this._deserialize(await this.queryRawAcrossOrganizations(built.sql, ...built.params));
+    }
+    /**
+     * The aggregate with this id, within the current organization, if it also satisfies `predicate`.
+     *
+     * The id column is the one thing a {@link querySet} cannot reach - its paths read inside `data`,
+     * and the primary key is a column beside it - so an id lookup and a declared-path condition come
+     * from different places and cannot be composed by the caller. This is where they meet: the
+     * statement is `where organization_id = ? and (id in (?) and (<your predicate>))`, with the
+     * organization filter leading as always and the predicate parenthesized so a top-level `or`
+     * inside it can escape neither the id filter nor the tenant one.
+     *
+     * **Returns null rather than throwing**, unlike {@link get}, and does so for every miss alike -
+     * no such id, an id in another organization, and an id whose row the predicate excluded. They are
+     * not distinguished here on purpose: only the subclass knows what its predicate meant, so only
+     * the subclass can say whether an excluded row is exceptional.
+     *
+     * @param {string} id - The aggregate id to load.
+     * @param {SnapshotPredicate} [predicate] - A further condition the row must satisfy; omitted loads by id alone.
+     * @returns {Promise<T | null>} The aggregate, or null when nothing matched.
+     * @throws {ArgumentException} If the predicate is a whole statement, keeps the `where` keyword, is empty, or contains a ';'.
+     */
+    async queryById(id, predicate) {
+        given(id, "id").ensureHasValue().ensureIsString();
+        const result = await this.queryByIds([id], predicate);
+        // at most one, because id is the primary key
+        return result.isEmpty ? null : result[0];
+    }
+    /**
+     * The aggregates with these ids that also satisfy `predicate`, within the current organization.
+     *
+     * The set-shaped counterpart to {@link queryById}, and the read {@link getByIds} is built from -
+     * so the id hygiene is the same one: ids that are blank once trimmed are dropped, and if that
+     * leaves none the result is empty without a statement being run at all.
+     *
+     * @param {ReadonlyArray<string>} ids - The aggregate ids to load.
+     * @param {SnapshotPredicate} [predicate] - A further condition each row must satisfy; omitted loads by id alone.
+     * @returns {Promise<Array<T>>} The aggregates found in the current organization; empty when nothing matched, or when no usable id was given.
+     * @throws {ArgumentException} If the predicate is a whole statement, keeps the `where` keyword, is empty, or contains a ';'.
+     */
+    queryByIds(ids, predicate) {
+        given(ids, "ids").ensureHasValue().ensureIsArray();
+        const trimmed = ids.map(t => t.trim()).where(t => t.isNotEmptyOrWhiteSpace());
+        if (trimmed.isEmpty)
+            return Promise.resolve([]);
+        return this.query(RepositoryQueryBuilder.idPredicate("id", trimmed, predicate));
     }
     /**
      * Whether anything matches - without deserializing it.
@@ -331,12 +431,15 @@ export class OrgSnapshotBaseRepository extends BaseRepository {
         return this._deserialize(await this.queryRawAcrossOrganizations(sql, ...params));
     }
     /**
-     * The body both save doors share; `owned` is the whole of what separates them.
+     * The body both save doors share; `owned` is who commits and `force` is whether the change check
+     * applies, and between them they are the whole of what separates one call from another. The
+     * organization check is not one of them - it runs before either.
      */
-    async _save(value, unitOfWork, owned) {
+    async _save(value, unitOfWork, owned, force) {
         given(value, "value").ensureHasValue().ensureIsObject().ensureIsType(this._eventStreamRepository.aggregateType)
             .ensure(t => t.organizationId === this.domainContext.organizationId);
-        if (!value.isNew && !value.hasChanges)
+        given(force, "force").ensureHasValue().ensureIsBoolean();
+        if (!force && !value.isNew && !value.hasChanges)
             return;
         try {
             // shape-checked against the declared paths before anything is queued on the unit of
@@ -345,7 +448,11 @@ export class OrgSnapshotBaseRepository extends BaseRepository {
             const snapshot = toSnapshotDocument(value);
             await SnapshotShapeGuard.verify(this.table, this.querySet, snapshot, this.logger);
             // always the non-committing door: this repository decides whether the transaction gets
-            // committed, and the event stream write has to land or not land with the snapshot write
+            // committed, and the event stream write has to land or not land with the snapshot write.
+            // It keeps its own change check, and `force` deliberately does not reach it: a forced
+            // re-save of an unchanged aggregate appends no events and registers no onSave, which is
+            // both what a migration wants and what keeps an empty `values ;` list - a syntax error -
+            // out of the statement it would otherwise build
             await this._eventStreamRepository.saveWithin(value, unitOfWork);
             // both branches write the same row from the same values; the conflict clause is the only
             // difference, and it is what makes a second save of a known aggregate an update rather

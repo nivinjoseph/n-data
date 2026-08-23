@@ -299,7 +299,8 @@ export class DbTableCreator {
      *
      * Like {@link createSnapshotTableForAggregate} but adds a non-null `organization_id`
      * column, and every index leads with it because `OrgSnapshotBaseRepository` requires every query
-     * to constrain it - `get` and `getAll` do so themselves, and `query` obliges the caller to.
+     * to constrain it - `get`, `getByIds` and `getAll` do so themselves, `queryById`/`queryByIds`
+     * inherit it by routing through `query`, and `query` adds it ahead of the caller's predicate.
      *
      * When no btree `indexes` are given, an index over `(organization_id)` is created to support
      * org-scoped scans. When there are, each of them already leads with `organization_id`,

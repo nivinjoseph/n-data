@@ -9,9 +9,10 @@ import type { SnapshotDocumentOf } from "./snapshot-document.js";
  * `SnapshotArrayPredicate` extends this, narrowing `params` to the jsonb documents a containment
  * fragment binds, so a containment fragment composes with the rest with no adaptation.
  *
- * **This is the only shape a repository's `query` accepts as a predicate.** Every one comes from a
- * `SnapshotQuerySet` - a typed comparison, a combinator, or {@link SnapshotQuerySet.raw} - and each
- * carries its own values, so there is nothing to pass positionally and no binding order to get wrong.
+ * **This is the only shape a repository accepts as a predicate**, everywhere one is taken: `query`,
+ * `queryById`/`queryByIds`, `exists` and `count`. Every one comes from a `SnapshotQuerySet` - a typed
+ * comparison, a combinator, or {@link SnapshotQuerySet.raw} - and each carries its own values, so
+ * there is nothing to pass positionally and no binding order to get wrong.
  */
 export interface SnapshotPredicate {
     readonly sql: string;

@@ -130,9 +130,9 @@ export type SnapshotElementMatch<TElement> = [
  *
  * A {@link SnapshotPredicate} whose parameters are known to be jsonb documents - which is the whole
  * of the difference, and why this is a subtype rather than an alias. Being narrower, it goes
- * anywhere a `SnapshotPredicate` goes: straight to a repository's `query`, or into
- * `SnapshotQuerySet.and`/`or` alongside the scalar predicates, with no adaptation and nothing to
- * splice by hand.
+ * anywhere a `SnapshotPredicate` goes: straight to a repository's `query`, `exists` or `count`, as
+ * the predicate of a `queryById`/`queryByIds` id lookup, or into `SnapshotQuerySet.and`/`or`
+ * alongside the scalar predicates - with no adaptation and nothing to splice by hand.
  *
  * The two halves are produced by one call and never separately, because for a variadic predicate the
  * placeholder count is not fixed - {@link SnapshotArrayContainment.containsAny} over three matches

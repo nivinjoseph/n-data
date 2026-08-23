@@ -11,12 +11,16 @@ const whereKeywordRegex = /^\s*where\b/i;
 /**
  * The rules every hand-written boolean fragment obeys, wherever it enters the library.
  *
- * There are two doors a raw fragment can come through - `SnapshotQuerySet.raw`, and the predicate a
- * `RepositoryQuery` carries - and they enforced different rules until this existed. The gap was not
- * merely untidy: `raw` parenthesizes what it is given, and both regexes here are anchored, so a
- * fragment that went through `raw` arrived downstream as `"(select 1 from t)"` and passed guards that
- * would have rejected `"select 1 from t"`. Validating here, and in `raw`'s case **before** the
- * parentheses go on, is what closes it.
+ * Three places call this: `SnapshotQuerySet.raw`, the predicate a `RepositoryQuery` carries
+ * (`RepositoryQueryBuilder._resolveWhere`), and `RepositoryQueryBuilder.idPredicate`. The first two
+ * enforced different rules until this existed, and the gap was not merely untidy: `raw` parenthesizes
+ * what it is given, and both regexes here are anchored, so a fragment that went through `raw` arrived
+ * downstream as `"(select 1 from t)"` and passed guards that would have rejected
+ * `"select 1 from t"`.
+ *
+ * So the rule is: validate here, and **before** the fragment is given any prefix. Two callers have
+ * one to give - `raw` wraps in parentheses, `idPredicate` splices behind `id in (?) and (` - and both
+ * call this first for that reason.
  *
  * @param {string} sql - The fragment to check.
  * @param {string} name - The argument name to report failures against.
