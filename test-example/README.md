@@ -69,7 +69,7 @@ name — exactly one underscore, integer suffix greater than zero — so `ExDbMi
 | --- | --- | --- |
 | `studio.test.ts` | no | Studio's behavior and invariants, through the factory and an in-memory repository |
 | `creator.test.ts` | no | the same for Creator, including that a natural key is per-tenant |
-| `serialization.test.ts` | no | every `@serialize`d class round-trips, through events *and* through a snapshot — and every declared index path resolves in a real snapshot (`verifyDocument`) |
+| `serialization.test.ts` | no | every `@serialize`d class round-trips, through events *and* through a snapshot; every declared index path resolves in a real snapshot (`verifyDocument`); and a materialized derived value is recomputed on read rather than trusted, so a stale stored count cannot reach the object |
 | `example.test.ts` | **yes** | migrations, the DDL and indexes, drift verification (`verifySnapshotTableForAggregate` asserts empty against the same declarations), the organization filter, the unique constraints, an id lookup composed with a declared path (`queryById`/`queryByIds`, including that an archived studio is excluded while `get` still returns it), and the unit of work |
 
 The split matters. `serialization.test.ts` is the one that catches the most damaging class of mistake: a
@@ -79,7 +79,7 @@ time, long after the write that caused it. It costs nothing to run and it is whe
 `example.test.ts` runs its blocks in order and shares state deliberately — it is one application session, not
 a set of isolated units.
 
-## Three things worth knowing before reading the code
+## Four things worth knowing before reading the code
 
 **A scope is a write boundary.** A repository is registered `scoped` and takes its unit of work by injection,
 so one repository instance holds exactly one; `save` with no explicit unit of work commits it, and a committed
@@ -104,3 +104,28 @@ which stores under the custom key while the type offers the getter name — is c
 repositories verify the declared paths against the first document each process saves, and
 `serialization.test.ts` asserts `SnapshotStudioRepository.indexes.verifyDocument(toSnapshotDocument(studio))`
 is empty, which also catches a rename hiding inside an optional member production might not store for a while.
+
+**A derived getter is a storage decision.** `StudioPlan` carries one of each kind, and the difference is not
+about the domain. `isUnlimited` is undecorated: absent from storage, recomputed on every read, so the rule
+behind it can change without rewriting history — and it is unqueryable, because there is nothing stored to
+index. `featureCount` is `@serialize`d: written into the jsonb as its own leaf, so it can be indexed and
+compared. That buys the one question the GIN index over `plan.features` cannot answer — containment tests
+membership and carries nothing about length — which is why `getByMinPlanFeatures` exists alongside
+`getByPlanFeature`.
+
+Materializing one has a rule and a cost. The rule: it must appear in the class's `TDataKeys`. A decorated
+getter left out is written to every row regardless, because the runtime serializer walks decorators while the
+path types walk `DomainObjectSerialized` over `TDataKeys` alone — so the value is stored, `withPath` on it is
+a compile error, and `verifyDocument` cannot flag it either, since it checks that declared paths resolve and
+never that stored keys are declared. `StudioPlan` keeps the constructor honest anyway by deriving the value at
+its `super()` call, because listing a key makes it *required* input and no caller should be passing a count it
+cannot get wrong. The cost: a stored derivation is a fact about when it was written. Rows older than the getter
+carry no key at all, so the index reads null for them until each aggregate is saved again; and a row written
+under an older rule keeps that rule's number while the object rebuilt from it recomputes and is correct — so
+the index and the object disagree until a re-save. `serialization.test.ts` pins that last property directly,
+by tampering with a stored count and asserting the reconstructed plan ignores it.
+
+Adding the path also needed `ExDbMigration_3`. A migration never re-runs, so a path declared after the
+table's migration has run compiles, builds a predicate, and sequential-scans forever — which is why the third
+migration simply re-calls `createSnapshotTableForAggregate` with the current declaration and lets
+`if not exists` create only what is missing.

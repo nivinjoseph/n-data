@@ -55,7 +55,13 @@ export class SnapshotStudioRepository
         // an array that lives INSIDE the plan value object's serialized record, not beside it: the
         // path walk reaches it through DomainObjectSerialized, and the DDL is the same #> GIN index
         // a top-level array gets. Writable only as of n-domain 4.0.3 - see StudioPlan.
-        .withArrayPath("plan.features");
+        .withArrayPath("plan.features")
+        // the count of that same array, materialized as its own leaf. A GIN containment index cannot
+        // count, so this is the only way `plan.features` becomes comparable rather than merely
+        // searchable - and the integer cast is what makes `gt` below compile at all. It is offered as
+        // a path solely because StudioPlan lists `featureCount` in its TDataKeys; a @serialize getter
+        // left out of that union is stored anyway and silently undeclarable - see StudioPlan.
+        .withPath("plan.featureCount", { type: JsonValueType.integer });
 
     protected override get querySet(): typeof SnapshotStudioRepository.indexes
     {
@@ -156,6 +162,24 @@ export class SnapshotStudioRepository
         given(feature, "feature").ensureHasValue().ensureIsString();
 
         return this.query(this.querySet.contains("plan.features", feature));
+    }
+
+    /**
+     * Studios whose plan bought more than `min` features.
+     *
+     * The question `getByPlanFeature` cannot ask. Containment tests membership - is `4k-export` in
+     * there - and a GIN index over the array carries nothing about its length, so a count has to be
+     * a leaf of its own to be compared at all. That is the whole reason `StudioPlan.featureCount` is
+     * serialized rather than left recomputed like `isUnlimited`.
+     *
+     * Declared on the concrete repository rather than on `StudioRepository`, like `getByPlanFeature`
+     * and `getCountByPlanTier`: it only means anything where there is a snapshot table to index.
+     */
+    public getByMinPlanFeatures(min: number): Promise<Array<Studio>>
+    {
+        given(min, "min").ensureHasValue().ensureIsNumber().ensure(t => t >= 0);
+
+        return this.query(this.querySet.gt("plan.featureCount", min));
     }
 
     public getLargest(count: number): Promise<Array<Studio>>

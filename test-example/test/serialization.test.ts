@@ -117,6 +117,11 @@ await describe("Serialization", async () =>
         assert.ok(restored.plan instanceof StudioPlan);
         assert.strictEqual(restored.plan.seatLimit, studio.plan.seatLimit);
 
+        // the materialized derived value is stored, so it is in the document as its own key rather
+        // than only on the reconstructed object - which is what makes it indexable at all
+        assert.strictEqual(stored.plan.featureCount, 2);
+        assert.strictEqual(restored.plan.featureCount, 2);
+
         // reconstructed from state, so there are no events to replay and nothing pending
         assert.strictEqual(restored.hasChanges, false);
     });
@@ -207,6 +212,42 @@ await describe("Serialization", async () =>
         assert.strictEqual(restored.seatLimit, 25);
         // an array data key survives the round trip as an array, not as a stringified one
         assert.deepStrictEqual([...restored.features], ["beta"]);
+        // the materialized count comes back too - and `equals` compares serialized state, so it is
+        // part of what equality means now rather than an incidental extra key
+        assert.strictEqual(restored.featureCount, 1);
         assert.ok(restored.equals(plan));
+    });
+
+    /**
+     * The boundary of materializing a derived value, and the reason this is worth a test of its own.
+     *
+     * `plan.featureCount` is stored so it can be indexed, which means a row is a record of what the
+     * derivation produced *when it was written*. The object is not: the constructor recomputes from
+     * `features` every time, so a row whose count disagrees - written before the getter existed, or
+     * under an older rule - yields a correct object anyway.
+     *
+     * The consequence is the honest cost. Until that aggregate is saved again, the index and the
+     * object disagree: `gt("plan.featureCount", 50)` would match the tampered row below while the
+     * studio it deserializes to reports 2. A recomputed-only value like `isUnlimited` cannot drift
+     * this way, because there is nothing stored to drift from - and cannot be queried either.
+     */
+    await test("a materialized derived value is recomputed, not read back", async () =>
+    {
+        const studio = await createStudio();
+        const stored = JSON.parse(JSON.stringify(studio.snapshot()));
+
+        // stand in for a row written under an older rule: the array and its count disagree
+        assert.strictEqual(stored.plan.featureCount, 2);
+        stored.plan.featureCount = 99;
+
+        const restored = AggregateRoot.deserializeFromSnapshot<Studio, any, any>(
+            domainContext, Studio, new StudioStateFactory(), stored);
+
+        // derived from `features` at construction, so the stale number never reaches the object
+        assert.strictEqual(restored.plan.featureCount, 2);
+        assert.deepStrictEqual([...restored.plan.features], ["4k-export", "priority-support"]);
+
+        // and re-saving is what closes the gap - the next document carries the recomputed value
+        assert.strictEqual(toSnapshotDocument(restored).plan.featureCount, 2);
     });
 });

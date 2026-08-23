@@ -24,10 +24,39 @@ import { serialize } from "@nivinjoseph/n-util";
  * nested **array** path - `withArrayPath("plan.features")`, indexed with GIN and read with
  * `contains` - and *not* a scalar one, because a container is never a leaf.
  *
+ * ## The two kinds of derived getter
+ *
+ * This class carries one of each, and the difference is a storage decision rather than a domain one.
+ *
+ * `featureCount` is **materialized**: `@serialize`d, so it lands in the jsonb, so it can be indexed
+ * and compared as a number. That buys the one question containment cannot ask - `plan.features` is a
+ * GIN array index, which answers "does it hold '4k-export'" and nothing about *how many* - so
+ * `gt("plan.featureCount", 1)` exists precisely because `contains` has no way to count.
+ *
+ * `isUnlimited` is **recomputed-only**: undecorated, absent from storage, re-derived on every read,
+ * and therefore not queryable at all. That is the trade. A recomputed value is always current, so the
+ * rule behind it can change without rewriting history; a materialized one is a fact about the moment
+ * it was written.
+ *
+ * A materialized derived value must be listed in `TDataKeys`, and leaving it out fails **silently**.
+ * The runtime serializer walks `@serialize` decorators, so a decorated getter is stored whether or
+ * not the type mentions it - but the path types walk `DomainObjectSerialized`, which maps over
+ * `TDataKeys` alone. So a decorated getter left out of that union is written to every row and yet
+ * `withPath("plan.featureCount")` is a compile error, and `verifyDocument` cannot catch it either: it
+ * checks that declared paths resolve, never that stored keys are declared. Stored, unqueryable, and
+ * nothing fails. Note this is the *inverse* of the case the design guards - an **un**decorated getter
+ * is absent from storage and rejected as a path, which is the pairing that holds.
+ *
+ * Two costs come with materializing, and neither has a fix here. Rows written before this getter
+ * existed carry no `plan.featureCount`, so the index reads null for them until each aggregate is
+ * saved again. And a row written under an older rule holds whatever that rule produced - the object
+ * reconstructed from it recomputes and is correct, while the index still holds the old number, so the
+ * two can disagree until a re-save.
+ *
  * @class StudioPlan
  */
 @serialize
-export class StudioPlan extends DomainObject<StudioPlan, "tier" | "seatLimit" | "features">
+export class StudioPlan extends DomainObject<StudioPlan, "tier" | "seatLimit" | "features" | "featureCount">
 {
     private readonly _tier: string;
     private readonly _seatLimit: number;
@@ -45,14 +74,34 @@ export class StudioPlan extends DomainObject<StudioPlan, "tier" | "seatLimit" | 
     public get features(): ReadonlyArray<string> { return this._features; }
 
     /**
+     * Derived, and deliberately **serialized** - the count is stored so it can be indexed and
+     * compared as a number, which is the one question the GIN index over `features` cannot answer.
+     * Recomputed on every construction, so a stale value in a row cannot reach the object.
+     */
+    @serialize
+    public get featureCount(): number { return this._features.length; }
+
+    /**
      * Derived, and deliberately **not** serialized - it is recomputed on every read, so the rule behind
      * it can change without rewriting history.
      */
     public get isUnlimited(): boolean { return this._seatLimit === 0; }
 
-    public constructor(data: DomainObjectData<StudioPlan>)
+    /**
+     * Takes every data key **except** the materialized one. `Schema<T, K>` makes each key in
+     * `TDataKeys` required, so accepting `DomainObjectData<StudioPlan>` whole would oblige every
+     * caller to pass a `featureCount` this constructor ignores and that could disagree with
+     * `features`. Deriving it at the `super()` call keeps the input honest without giving up a
+     * single compile-time check - and the base is content, since it rejects only data keys that are
+     * *not* `@serialize` decorated getters, never ones that are merely absent.
+     *
+     * The `Deserializer` path arrives here too, with the stored `featureCount` and a `$typename`
+     * alongside it. The spread recomputes over the former and preserves the latter, so a row written
+     * under an older rule yields a correct object - see the note on staleness in the class doc.
+     */
+    public constructor(data: Omit<DomainObjectData<StudioPlan>, "featureCount">)
     {
-        super(data);
+        super({ ...data, featureCount: data.features.length });
 
         const { tier, seatLimit, features } = data;
 

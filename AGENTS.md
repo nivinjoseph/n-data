@@ -39,12 +39,20 @@ a numeric comparison or an `orderBy` on a path declared without a cast, a cast t
 leaf type, and an array operator on a scalar path are all compile errors. Paths follow the *stored*
 shape — a nested n-domain 4.0.2 `DomainObject` is walked through its serialized record
 (`DomainObjectSerialized`), and *only* real `DomainObject` members get that treatment: any other
-`serialize()`-bearer, even one with a structurally typed return, fails closed. So does everything
-else the compiler cannot verify — no paths at all rather than unchecked ones (index signatures,
+`serialize()`-bearer, even one with a structurally typed return, fails closed. So does
+everything else the compiler cannot verify — no paths at all rather than unchecked ones (index signatures,
 `any`/`unknown`, Map/Set, partially-serializable unions, and every `$`-prefixed key, `$typename`
 included) — with `forRawPath` as the deliberate door. Several errors are phrased as instructions —
 the *property name* in the error text tells you the fix. **Trust the compiler here instead of
 guessing**, and read the error rather than working around it.
+
+**One caveat, and it is the exception to "fails closed".** `DomainObjectSerialized` maps over the
+class's declared `TDataKeys`, not over its `@serialize` decorators, and the runtime serializer walks
+the decorators. So the two sets can differ, and when they do the extra keys are *written to every row*
+while offering no path — closed on the path side, open on the storage side. No runtime check closes
+it either: `verifyDocument` verifies that declared paths resolve, never that stored keys are declared.
+Decorating a getter is therefore **not** sufficient to make its path declarable; listing it in
+`TDataKeys` is what does that. See the trap below.
 
 One declaration serves as the migration's index spec, the query-time predicate factory, and the
 baseline `DbTableCreator.verifySnapshotTableForAggregate` compares the database against — so a
@@ -104,6 +112,21 @@ Ordered roughly by how expensive they are to get wrong.
   uniqueness but *not* `JsonValueType`. So adding a numeric cast to an already-indexed path silently
   keeps the old uncast index, and dropping `.asUnique()` never drops the `_uq` index. Nothing here
   alters or drops — that takes a hand-written migration.
+- **A `@serialize`d getter left out of `TDataKeys` is stored but undeclarable, and nothing tells
+  you.** The serializer walks decorators, so the key is in every row; the path types walk
+  `DomainObjectSerialized` over `TDataKeys`, so `withPath` on it is a compile error; and
+  `verifyDocument` only checks declared→resolves, never stored→declared. This is how a *materialized*
+  derived value — one deliberately stored so it can be indexed and compared, which is the only way to
+  ask how many elements an array holds, since GIN containment answers membership and carries nothing
+  about length — silently becomes dead weight. List it in `TDataKeys`, and derive it at the `super()`
+  call rather than accepting it: `Schema<T, K>` makes every data key required, so taking
+  `DomainObjectData<T>` whole would oblige callers to pass a value the constructor ignores and that
+  can disagree with what it is derived from. Two costs are inherent: rows written before the getter
+  existed carry no key, so the index reads null for them until each aggregate is saved again; and a
+  row written under an older rule keeps that rule's value while the object rebuilt from it recomputes,
+  so index and object disagree until a re-save. `StudioPlan` and `ExDbMigration_3` in `test-example/`
+  are the worked pair — and note it compounds with the next trap, since the new path also needs a
+  migration.
 - **Adding a path to a query set needs a *new* migration.** Migrations are versioned by class name
   and never re-run, so a path added after the table's migration ran compiles, queries, and
   sequential-scans forever. The re-run is cheap — `if not exists` creates only what is missing.

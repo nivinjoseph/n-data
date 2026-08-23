@@ -183,9 +183,11 @@ await describe("Studio", async () =>
 
         assert.strictEqual(
             fingerprint,
-            // re-pinned when StudioPlan gained `features`: the default plan now serializes an empty
-            // array, so the frozen default state changed shape. No history to migrate - the example's
-            // tables are dropped and recreated per run.
-            "52CDEE3F36E0C76EE965122086019352FA0E197445DDD7954D9D72E9FAB6CBF94DBE0519131981BE0063CF7BFED6E752CCA1D21F977AEE65BFAB18E19FD2A428");
+            // re-pinned twice now, both times because StudioPlan's serialized shape grew: first when it
+            // gained `features` (the default plan serializes an empty array), then when it gained the
+            // materialized `featureCount` (which serializes 0 alongside it). Materializing a derived
+            // value is a storage change, so it lands here - this is the test that makes that visible.
+            // No history to migrate - the example's tables are dropped and recreated per run.
+            "CF51E39FF7615A3416FF4500A8ED2FB9E7F723565DFCB59EE162C7570EB323D151C4E6B839D56EB782D5DC88B24C2F7045B0156224D67518285D092D81C37DCE");
     });
 });

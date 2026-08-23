@@ -140,12 +140,12 @@ await describe("The example application", async () =>
             assert.ok(names.contains("ex_db_system"), names.join(", "));
         });
 
-        await test("record version 2, one per migration", async () =>
+        await test("record version 3, one per migration", async () =>
         {
             const result = await db.executeQuery<{ data: { version: number; }; }>(
                 `select data from ex_db_system where key = 'db_info';`);
 
-            assert.strictEqual(result.rows[0].data.version, 2);
+            assert.strictEqual(result.rows[0].data.version, 3);
         });
 
         await test("create every index the repositories declared", async () =>
@@ -162,6 +162,9 @@ await describe("The example application", async () =>
             assert.ok(names.contains("idx_studio_snaps_tags_gin"), names.join(", "));
             // the GIN array nested inside the plan value object's serialized record
             assert.ok(names.contains("idx_studio_snaps_plan_features_gin"), names.join(", "));
+            // and the materialized count beside it, which is the whole point of ExDbMigration_3: the
+            // path was added to the query set after _1 ran, so only a new migration could create it
+            assert.ok(names.contains("idx_studio_snaps_plan_featurecount"), names.join(", "));
 
             // and the creator side, whose btree indexes all lead with organization_id
             assert.ok(names.contains("idx_creator_snaps_email_uq"), names.join(", "));
@@ -201,7 +204,7 @@ await describe("The example application", async () =>
 
             const result = await db.executeQuery<{ data: { version: number; }; }>(
                 `select data from ex_db_system where key = 'db_info';`);
-            assert.strictEqual(result.rows[0].data.version, 2);
+            assert.strictEqual(result.rows[0].data.version, 3);
         });
     });
 
@@ -368,6 +371,17 @@ await describe("The example application", async () =>
                 const byFeature = await snapshotRepository.getByPlanFeature("4k-export");
                 assert.deepStrictEqual(byFeature.map(t => t.id), [studioAId]);
                 assert.strictEqual((await snapshotRepository.getByPlanFeature("nope")).length, 0);
+
+                // the question containment cannot ask of that same array: how many. It reads the
+                // materialized `plan.featureCount` leaf, so this is a range comparison rather than a
+                // membership test - studio A bought two features, studio B is on the free plan with
+                // none. The integer cast this needs is enforced at compile time, not here: `gt` on a
+                // path declared without one does not compile. (These counts are single-digit, so no
+                // runtime assertion could tell integer ordering from text ordering anyway - the
+                // '9' > '100' hazard is demonstrated on creatorCount, where the values are bigger.)
+                assert.deepStrictEqual(
+                    (await snapshotRepository.getByMinPlanFeatures(1)).map(t => t.id), [studioAId]);
+                assert.strictEqual((await snapshotRepository.getByMinPlanFeatures(2)).length, 0);
             }
             finally
             {
