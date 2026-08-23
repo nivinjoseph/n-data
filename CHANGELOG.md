@@ -43,6 +43,18 @@ is byte-identical to v7's.
 
 ### Added
 
+- **`force` on the snapshot repositories' save doors.** `save(value, force)` and
+  `saveWithin(value, unitOfWork, force)` on `SnapshotBaseRepository` and `OrgSnapshotBaseRepository`
+  take an optional `force` (default `false`) that writes the snapshot row even when the aggregate is
+  neither new nor changed. This is the data-migration case: a newly `@serialize`d computed field,
+  declared on the query set and indexed by a migration, is absent from every row written before it
+  existed, and an aggregate loaded and saved back untouched would otherwise be a no-op. It bypasses
+  that one check and nothing else - the event stream keeps its own, so no events are appended and no
+  `onSave` fires, and the write is the same `on conflict (id) do update` upsert an ordinary update
+  takes. On an org repository the tenant check is unmoved, so a migration covering every tenant runs
+  once per organization's domain context. Deliberately **not** on `Repository<T>`: the event stream
+  repositories implement that interface and an unchanged aggregate gives them no events to append, so
+  `force` is reachable only through a snapshot repository's own type.
 - `id` is queryable.
 - **Documentation: the materialized-derived-value rule.** A `@serialize`d getter left out of a
   `DomainObject`'s `TDataKeys` is written to every row — the runtime serializer walks decorators —

@@ -47,11 +47,17 @@ import { serialize } from "@nivinjoseph/n-util";
  * nothing fails. Note this is the *inverse* of the case the design guards - an **un**decorated getter
  * is absent from storage and rejected as a path, which is the pairing that holds.
  *
- * Two costs come with materializing, and neither has a fix here. Rows written before this getter
- * existed carry no `plan.featureCount`, so the index reads null for them until each aggregate is
- * saved again. And a row written under an older rule holds whatever that rule produced - the object
- * reconstructed from it recomputes and is correct, while the index still holds the old number, so the
- * two can disagree until a re-save.
+ * Two costs come with materializing, and neither has a fix in this class. Rows written before this
+ * getter existed carry no `plan.featureCount`, so the index reads null for them until each aggregate
+ * is saved again. And a row written under an older rule holds whatever that rule produced - the
+ * object reconstructed from it recomputes and is correct, while the index still holds the old number,
+ * so the two can disagree until a re-save.
+ *
+ * Both are paid the same way, in a migration: load each aggregate and save it back. An aggregate
+ * loaded and not touched is neither new nor changed, so an ordinary save would return having done
+ * nothing - which is why the snapshot repositories' `save` and `saveWithin` take `force`. It rewrites
+ * `data` from the current code and touches nothing else; the event stream keeps its own change check,
+ * so no events are appended and no history is republished.
  *
  * @class StudioPlan
  */

@@ -275,12 +275,36 @@ export abstract class OrgSnapshotBaseRepository<T extends OrgAggregateRoot<TStat
      * throws before anything is queued, and ambiguous findings log one warning. One `WeakSet` lookup
      * per save after that.
      *
-     * @param {T} value - The aggregate to save. A no-op when it is neither new nor changed.
+     * **`force` re-writes the row for an aggregate that has not changed**, which is what a data
+     * migration needs when the stored *shape* moved rather than the state: a newly `@serialize`d
+     * computed field on a value object, declared on {@link querySet} and indexed by a migration, is
+     * absent from every row written before it existed. Load each aggregate and save it back with
+     * `force`, and `data` is re-serialized from the current code.
+     *
+     * It bypasses this repository's change check and nothing else. The event stream keeps its own, so
+     * an unchanged aggregate appends no events and fires no `onSave` - a re-save does not republish
+     * history - and the write is the same `on conflict (id) do update` upsert an ordinary update
+     * takes. Prefer {@link saveWithin} with `force` across a migration, so a batch lands as one
+     * transaction rather than one per aggregate.
+     *
+     * **Forcing does not step outside the organization**, because nothing about the tenant check
+     * moves: an aggregate belonging to another organization is rejected here exactly as it always
+     * was. So a migration that has to cover every tenant runs once per organization's
+     * {@link BaseRepository.domainContext}, and {@link queryAcrossOrganizations} cannot feed what it
+     * read straight back into this door.
+     *
+     * `force` lives here and not on {@link Repository}, whose `save` the event stream repositories
+     * also implement and could not honor - an unchanged aggregate has no events to append. So it is
+     * reachable through a snapshot repository's own type; a caller holding the `Repository<T>`
+     * interface, or a domain interface extending it, does not see it.
+     *
+     * @param {T} value - The aggregate to save. A no-op when it is neither new nor changed, unless `force`.
+     * @param {boolean} [force=false] - Writes the snapshot row even when the aggregate is neither new nor changed. For a data migration that re-serializes stored state; see above.
      * @throws {ApplicationException} If a declared index path has a fatal shape issue against the document being saved.
      */
-    public save(value: T): Promise<void>
+    public save(value: T, force = false): Promise<void>
     {
-        return this._save(value, this.unitOfWork, true);
+        return this._save(value, this.unitOfWork, true, force);
     }
 
     /**
@@ -290,15 +314,20 @@ export abstract class OrgSnapshotBaseRepository<T extends OrgAggregateRoot<TStat
      * Shape-verified exactly as {@link save} is - a fatal issue throws before anything is queued on
      * the caller's transaction.
      *
-     * @param {T} value - The aggregate to save. A no-op when it is neither new nor changed.
+     * This is the door a data migration wants: `force` here re-writes each unchanged row into the
+     * caller's transaction, so one organization's batch commits once rather than once per aggregate.
+     * See {@link save} for what forcing does and does not touch.
+     *
+     * @param {T} value - The aggregate to save. A no-op when it is neither new nor changed, unless `force`.
      * @param {UnitOfWork} unitOfWork - The caller's transaction. Required; committing it is theirs to do.
+     * @param {boolean} [force=false] - Writes the snapshot row even when the aggregate is neither new nor changed.
      * @throws {ApplicationException} If a declared index path has a fatal shape issue against the document being saved.
      */
-    public saveWithin(value: T, unitOfWork: UnitOfWork): Promise<void>
+    public saveWithin(value: T, unitOfWork: UnitOfWork, force = false): Promise<void>
     {
         given(unitOfWork, "unitOfWork").ensureHasValue().ensureIsObject();
 
-        return this._save(value, unitOfWork, false);
+        return this._save(value, unitOfWork, false, force);
     }
 
     /**
@@ -485,14 +514,17 @@ export abstract class OrgSnapshotBaseRepository<T extends OrgAggregateRoot<TStat
     }
 
     /**
-     * The body both save doors share; `owned` is the whole of what separates them.
+     * The body both save doors share; `owned` is who commits and `force` is whether the change check
+     * applies, and between them they are the whole of what separates one call from another. The
+     * organization check is not one of them - it runs before either.
      */
-    private async _save(value: T, unitOfWork: UnitOfWork, owned: boolean): Promise<void>
+    private async _save(value: T, unitOfWork: UnitOfWork, owned: boolean, force: boolean): Promise<void>
     {
         given(value, "value").ensureHasValue().ensureIsObject().ensureIsType(this._eventStreamRepository.aggregateType)
             .ensure(t => t.organizationId === this.domainContext.organizationId);
+        given(force, "force").ensureHasValue().ensureIsBoolean();
 
-        if (!value.isNew && !value.hasChanges)
+        if (!force && !value.isNew && !value.hasChanges)
             return;
 
         try
@@ -504,7 +536,11 @@ export abstract class OrgSnapshotBaseRepository<T extends OrgAggregateRoot<TStat
             await SnapshotShapeGuard.verify(this.table, this.querySet, snapshot, this.logger);
 
             // always the non-committing door: this repository decides whether the transaction gets
-            // committed, and the event stream write has to land or not land with the snapshot write
+            // committed, and the event stream write has to land or not land with the snapshot write.
+            // It keeps its own change check, and `force` deliberately does not reach it: a forced
+            // re-save of an unchanged aggregate appends no events and registers no onSave, which is
+            // both what a migration wants and what keeps an empty `values ;` list - a syntax error -
+            // out of the statement it would otherwise build
             await this._eventStreamRepository.saveWithin(value, unitOfWork);
 
             // both branches write the same row from the same values; the conflict clause is the only

@@ -91,6 +91,15 @@ Ordered roughly by how expensive they are to get wrong.
   transient, repositories scoped.
 - **`save` commits, `saveWithin` does not** — and `save` commits the shared unit of work *whole*,
   including anything another repository queued on it.
+- **A save of an unchanged aggregate does nothing; `force` is the migration door.** The **snapshot**
+  repositories' `save(value, force)` / `saveWithin(value, unitOfWork, force)` skip the
+  `!isNew && !hasChanges` check so a row can be re-serialized — the case being a newly `@serialize`d
+  computed field that rows written earlier do not carry. It skips that check and nothing else: the
+  event stream keeps its own, so no events are appended and no `onSave` fires, and forcing it there
+  instead would build an empty `values ;` list. Not on `Repository<T>` (the event stream repositories
+  implement it and cannot honor it), so it is unreachable through a domain interface — resolve the
+  concrete snapshot repository. On an org repository the tenant check still applies: one pass per
+  organization's domain context.
 - **`getAll()` takes no arguments and reads everything.** It is not `getByIds([])`, which takes an
   array and returns nothing. Do not translate a v5 `getAll(...ids)` into `getAll(ids)`.
 - **`get`/`getByIds` take no predicate; `queryById`/`queryByIds` do.** An id lookup filtered by a

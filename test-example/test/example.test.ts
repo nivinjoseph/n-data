@@ -389,6 +389,81 @@ await describe("The example application", async () =>
             }
         });
 
+        /**
+         * The cost `StudioPlan` names and cannot fix from inside the domain: a materialized derived
+         * value is a fact about the moment it was written, so a row written before the getter existed
+         * - or under an older rule - holds a number the current code would not produce. The object
+         * rebuilt from that row recomputes and is correct; the index still holds the old value, and
+         * the two disagree until the row is written again.
+         *
+         * Writing it again is what `force` is for. The aggregate is loaded and left untouched, so it
+         * is neither new nor changed and an ordinary `save` returns having done nothing - which is
+         * right for application code and exactly wrong for a migration.
+         *
+         * Note the door is `SnapshotStudioRepository`, not `StudioRepository`: `force` is not on
+         * `Repository<T>`, because the event stream repositories implement that interface and an
+         * unchanged aggregate gives them no events to append.
+         */
+        await test("a forced save re-serializes an unchanged snapshot, and appends no events", async () =>
+        {
+            const eventCount = async (): Promise<number> =>
+                (await db.executeQuery<{ count: number; }>(
+                    `select cast(count(*) as int) as count from studio_events where aggregate_id = ?;`,
+                    studioAId)).rows[0].count;
+
+            const before = await eventCount();
+
+            // stand in for a row written under an older rule: the stored count disagrees with the
+            // features stored beside it
+            await db.executeCommand(
+                `update studio_snaps set data = jsonb_set(data, '{plan,featureCount}', '99') where id = ?;`,
+                studioAId);
+
+            await inScope(async scope =>
+            {
+                const repository = scope.resolve<SnapshotStudioRepository>("SnapshotStudioRepository");
+
+                // the disagreement, both halves of it - the index answers from the stale number...
+                assert.deepStrictEqual(
+                    (await repository.getByMinPlanFeatures(50)).map(t => t.id), [studioAId]);
+
+                // ...while the object rebuilt from that same row recomputes and is correct
+                const studio = await repository.get(studioAId);
+                assert.strictEqual(studio.plan.featureCount, 2);
+
+                // an ordinary save cannot be the migration's tool. It also leaves the scope's unit of
+                // work uncommitted and therefore still usable, because the change check returns before
+                // anything is queued on it
+                await repository.save(studio);
+            });
+
+            await inScope(async scope =>
+            {
+                const repository = scope.resolve<SnapshotStudioRepository>("SnapshotStudioRepository");
+                const eventStreamRepository = scope.resolve<EventStreamStudioRepository>(
+                    "EventStreamStudioRepository");
+
+                // still stale, so the save above really did nothing
+                assert.deepStrictEqual(
+                    (await repository.getByMinPlanFeatures(50)).map(t => t.id), [studioAId]);
+
+                const studio = await repository.get(studioAId);
+                await repository.save(studio, true);
+
+                // the row now holds what the current code produces, so index and object agree again
+                assert.strictEqual((await repository.getByMinPlanFeatures(50)).length, 0);
+                assert.deepStrictEqual(
+                    (await repository.getByMinPlanFeatures(1)).map(t => t.id), [studioAId]);
+
+                // and the point of leaving the event stream's own change check alone: `save` commits,
+                // so onSave would have fired by now had anything been appended
+                assert.strictEqual(eventStreamRepository.savedEvents.length, 0);
+            });
+
+            // the stream itself is untouched - a re-save rewrites storage, it does not rewrite history
+            assert.strictEqual(await eventCount(), before);
+        });
+
         await test("the query set's predicate uses the index it declared", async () =>
         {
             const predicate = SnapshotStudioRepository.indexes.eq("plan.tier", "enterprise");
@@ -801,7 +876,8 @@ await describe("The example application", async () =>
         // being checked is that the call does not typecheck, not what it would do.
         await test("which door commits is a compile-time choice, not an argument", () =>
         {
-            const rejected = async (repository: CreatorRepository, creator: Creator,
+            const rejected = async (repository: CreatorRepository,
+                snapshotRepository: SnapshotCreatorRepository, creator: Creator,
                 unitOfWork: UnitOfWork): Promise<void> =>
             {
                 // `save` owns its transaction and takes nothing else. Passing a unit of work used to
@@ -814,6 +890,13 @@ await describe("The example application", async () =>
                 // of work is required, so a forgotten argument is an error rather than a mode switch
                 // @ts-expect-error - saveWithin requires the unit of work
                 await repository.saveWithin(creator);
+
+                // `force` does not reopen that door. It exists only on the snapshot repository's own
+                // type - `Repository<T>` does not declare it, which is why the value-alone call above
+                // is still the whole of what this domain interface offers - and it is a boolean, so a
+                // unit of work does not fit through it either
+                // @ts-expect-error - save's second parameter is `force`, not a unit of work
+                await snapshotRepository.save(creator, unitOfWork);
             };
 
             assert.strictEqual(typeof rejected, "function");
