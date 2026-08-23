@@ -253,6 +253,111 @@ await describe("RepositoryQueryBuilder tests", async () =>
         });
     });
 
+    // `idPredicate` is the one fragment the library assembles for itself, and the only place an id
+    // lookup meets a query set predicate - the id column is not a query set path, so the two halves
+    // cannot be composed anywhere else. What is pinned here is that pairing and its parameter order.
+    await describe("Id predicates", async () =>
+    {
+        const querySet = SnapshotQuerySet.for<ReceiptState>()
+            .withPath("status")
+            .withPath("total", { type: JsonValueType.numeric });
+
+        // the regression that matters most: get/getByIds now route through the same call, so an
+        // omitted predicate has to emit exactly what it emitted before
+        await test("an omitted predicate emits what it always did", async () =>
+        {
+            assert.deepStrictEqual(
+                RepositoryQueryBuilder.idPredicate("id", ["rec_1"]),
+                { sql: "id in (?)", params: ["rec_1"] });
+
+            assert.deepStrictEqual(
+                RepositoryQueryBuilder.idPredicate("id", ["rec_1", "rec_2"]),
+                { sql: "id in (?,?)", params: ["rec_1", "rec_2"] });
+
+            assert.deepStrictEqual(
+                RepositoryQueryBuilder.idPredicate("aggregate_id", ["o1"]),
+                { sql: "aggregate_id in (?)", params: ["o1"] });
+        });
+
+        await test("a predicate is conjoined to the ids, whose values bind first", async () =>
+        {
+            const predicate = RepositoryQueryBuilder.idPredicate("id", ["rec_1"],
+                querySet.eq("status", "sent"));
+
+            assert.strictEqual(predicate.sql, "id in (?) and (((data->>'status') = ?))");
+            assert.deepStrictEqual(predicate.params, ["rec_1", "sent"]);
+        });
+
+        await test("the statements queryById and queryByIds build are pinned", async () =>
+        {
+            // non-org
+            assert.deepStrictEqual(
+                RepositoryQueryBuilder.build("order_snaps",
+                    RepositoryQueryBuilder.idPredicate("id", ["ord_1"], querySet.eq("status", "open")), []),
+                {
+                    sql: `select data from order_snaps where (id in (?) and (((data->>'status') = ?)));`,
+                    params: ["ord_1", "open"]
+                });
+
+            // org-scoped: the tenant filter still leads, and its value still binds first
+            assert.deepStrictEqual(
+                RepositoryQueryBuilder.build("receipt_snaps",
+                    RepositoryQueryBuilder.idPredicate("id", ["rec_1", "rec_2"], querySet.eq("status", "open")),
+                    [], ORG),
+                {
+                    sql: `select data from receipt_snaps where organization_id = ? `
+                        + `and (id in (?,?) and (((data->>'status') = ?)));`,
+                    params: [ORG, "rec_1", "rec_2", "open"]
+                });
+        });
+
+        // the same hazard the org filter is parenthesized against, one level in: `and` binds tighter
+        // than `or`, so an unparenthesized predicate would let a row that matches neither id through
+        await test("a top-level or in the predicate escapes neither the ids nor the organization", async () =>
+        {
+            const built = RepositoryQueryBuilder.build("receipt_snaps",
+                RepositoryQueryBuilder.idPredicate("id", ["rec_1"],
+                    { sql: "a = ? or b = ?", params: [1, 2] }),
+                [], ORG);
+
+            assert.strictEqual(built.sql,
+                `select data from receipt_snaps where organization_id = ? and (id in (?) and (a = ? or b = ?));`);
+            assert.deepStrictEqual(built.params, [ORG, "rec_1", 1, 2]);
+        });
+
+        // the anchored-regex trap: once a fragment sits behind `id in (?) and (`, validateBooleanFragment
+        // would no longer recognize it - so it has to be validated before it is spliced, not after
+        await test("a fragment that is really a statement is rejected before it is spliced", async () =>
+        {
+            for (const sql of ["select data from x", "with t as (select 1) select * from t",
+                "where a = ?", "a = ?; drop table x", "   "])
+            {
+                assert.throws(
+                    () => RepositoryQueryBuilder.idPredicate("id", ["rec_1"], { sql, params: [] }),
+                    (e: any) => e instanceof ArgumentException || e instanceof ArgumentNullException,
+                    `expected '${sql}' to be rejected`);
+            }
+        });
+
+        await test("a predicate whose params are not an array is rejected", async () =>
+        {
+            assert.throws(
+                () => RepositoryQueryBuilder.idPredicate("id", ["rec_1"], <any>{ sql: "a = ?", params: "nope" }),
+                (e: any) => e instanceof ArgumentException && e.message.contains("params must be an array"));
+        });
+
+        await test("the id guards still apply with a predicate present", async () =>
+        {
+            assert.throws(
+                () => RepositoryQueryBuilder.idPredicate("id", [], querySet.eq("status", "sent")),
+                ArgumentException);
+
+            assert.throws(
+                () => RepositoryQueryBuilder.idPredicate("  ", ["rec_1"], querySet.eq("status", "sent")),
+                ArgumentException);
+        });
+    });
+
     // `exists` and `count` share the where-clause assembly with `build`, so what is asserted here is the two
     // things that differ: the select list, and where `id <> ?` lands relative to the organization filter.
     await describe("Existence and count statements", async () =>

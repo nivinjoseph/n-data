@@ -85,6 +85,13 @@ Ordered roughly by how expensive they are to get wrong.
   including anything another repository queued on it.
 - **`getAll()` takes no arguments and reads everything.** It is not `getByIds([])`, which takes an
   array and returns nothing. Do not translate a v5 `getAll(...ids)` into `getAll(ids)`.
+- **`get`/`getByIds` take no predicate; `queryById`/`queryByIds` do.** An id lookup filtered by a
+  declared path is the one composition a `SnapshotQuerySet` cannot express — `id` is a column beside
+  `data`, so no predicate reaches it. That pair is where the two meet, and it is `protected` on
+  purpose: a predicate is publicly constructible (the migration consumes the same `indexes` static a
+  repository exposes), so an optional predicate on the public `get` would let any caller filter these
+  reads. Note `queryById` returns `null` rather than throwing, for a missing id and an excluded one
+  alike — unlike `get`, which throws `AggregateNotFoundException`.
 - **`DbMigrator` has a required call order.** Configure, then `await bootstrap()`, then
   `await runMigrations()` — the latter throws if bootstrap has not run. Supply *exactly one* of
   `useSystemTable(name)` or `registerDbVersionProvider(cls)`; both or neither throws.

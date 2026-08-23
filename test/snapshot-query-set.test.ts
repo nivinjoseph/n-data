@@ -567,6 +567,47 @@ await describe("SnapshotQuerySet tests", async () =>
                     await this.getByIds(["tkt_1", "tkt_2"]);
                 }
 
+                // an id lookup filtered by a declared path - the one composition the query set cannot
+                // express on its own, because `id` is a column beside `data` rather than a path inside
+                // it. The predicate is checked exactly as it is anywhere else
+                public acceptedFilteredById(): Promise<Ticket | null>
+                {
+                    return this.queryById("tkt_1", this.querySet.eq("status", "open"));
+                }
+
+                public acceptedFilteredByIds(): Promise<Array<Ticket>>
+                {
+                    return this.queryByIds(["tkt_1", "tkt_2"], this.querySet.gt("total", 10));
+                }
+
+                public rejectedFilteredByUndeclaredPath(): Promise<Ticket | null>
+                {
+                    // @ts-expect-error - the narrow type reaches the new door too: 'unindexed' was never declared
+                    return this.queryById("tkt_1", this.querySet.eq("unindexed", "x"));
+                }
+
+                public rejectedFilteredByWrongValue(): Promise<Array<Ticket>>
+                {
+                    // @ts-expect-error - and so does the value check
+                    return this.queryByIds(["tkt_1"], this.querySet.eq("total", "100"));
+                }
+
+                // the public reads stay one-argument. A predicate is publicly constructible - the
+                // migration consumes the very same static a repository exposes - so an optional
+                // predicate on `get` would have made every repository filterable from outside its own
+                // class, which is the surface `query`, `exists` and `count` all withhold
+                public async rejectedFilteredGet(): Promise<void>
+                {
+                    // @ts-expect-error - get takes the id alone; queryById is where a predicate goes
+                    await this.get("tkt_1", this.querySet.eq("status", "open"));
+                }
+
+                public async rejectedFilteredGetByIds(): Promise<void>
+                {
+                    // @ts-expect-error - and getByIds likewise
+                    await this.getByIds(["tkt_1"], this.querySet.eq("status", "open"));
+                }
+
                 // An org repository gets exactly one raw door, and it is named for the fact that
                 // nothing scopes it. Both of the rejections below have been real at some point:
                 // `queryRaw` was the inherited name before it was moved off the base, and
@@ -598,7 +639,27 @@ await describe("SnapshotQuerySet tests", async () =>
                 }
             }
 
+            // From outside the class the filtered reads are not doors at all, and that is the whole
+            // reason the predicate lives on them rather than as a second argument to `get`. A
+            // SnapshotPredicate is publicly constructible by necessity - the migration consumes the
+            // very same `indexes` static the repository exposes - so an optional predicate on a public
+            // method would have been publicly *usable*, making every repository filterable by its
+            // callers. `query`, `exists` and `count` all withhold that surface; these now do too.
+            const fromOutside = async (repository: TicketRepository): Promise<void> =>
+            {
+                // @ts-expect-error - protected: a filtered read is composed inside the class
+                await repository.queryById("tkt_1", TicketRepository.indexes.eq("status", "open"));
+
+                // @ts-expect-error - and likewise the set-shaped one
+                await repository.queryByIds(["tkt_1"], TicketRepository.indexes.eq("status", "open"));
+
+                // what a caller does get is the unfiltered pair, unchanged
+                await repository.get("tkt_1");
+                await repository.getByIds(["tkt_1"]);
+            };
+
             assert.strictEqual(typeof TicketRepository, "function");
+            assert.strictEqual(typeof fromOutside, "function");
         });
 
         // the shape that used to compile, create every btree index, and silently omit every GIN one

@@ -18,15 +18,25 @@ import { snapshotDocumentToState, toSnapshotDocument, type SnapshotDocumentOf } 
  * both the snapshot and the underlying event stream on save.
  *
  * The snapshot table holds one row per aggregate: `id` (the primary key) and `data` (the
- * serialized state as jsonb). {@link get} and {@link getByIds} cover lookup by id, which the
- * primary key already indexes, and {@link getAll} takes the whole table. Any other read -
- * filtering or sorting on a field *inside* `data` - needs a method on the concrete subclass
- * built over {@link query}.
+ * serialized state as jsonb). Publicly, {@link get} and {@link getByIds} cover lookup by id, which
+ * the primary key already indexes, and {@link getAll} takes the whole table. Any other read is a
+ * method the concrete subclass names for itself, built over one of the `protected` doors below.
  *
- * {@link query} owns the statement it runs - `select data from <table> where (<your predicate>)` - so
- * a subclass supplies the predicate and nothing else, with `order by`, `limit` and `offset` available
- * through the `RepositoryQuery` object form. {@link queryStatement} is the escape hatch for a read
- * that shape cannot express.
+ * Which door depends on what the read is shaped like:
+ *
+ * - **Filtering or sorting on a field *inside* `data`** - {@link query}. It owns the statement it
+ *   runs - `select data from <table> where (<your predicate>)` - so a subclass supplies the predicate
+ *   and nothing else, with `order by`, `limit` and `offset` available through the `RepositoryQuery`
+ *   object form.
+ * - **By id, *and* on a field inside `data`** - {@link queryById} or {@link queryByIds}. This one
+ *   cannot be built over `query`: `id` is a column beside `data`, so a `SnapshotQuerySet` cannot
+ *   reach it, and `query` takes nothing but a predicate from one. The pair is where the two halves
+ *   meet, and it returns null rather than throwing.
+ * - **A shape none of those can express** - a join, a union, a CTE - {@link queryStatement}, where
+ *   everything `query` guarantees becomes the caller's to get right.
+ * - **A read that does not map onto the aggregate at all** - a count, a group-by, a projection -
+ *   {@link queryRaw}, which performs no deserialization. {@link exists} and {@link count} answer the
+ *   two commonest of those without a statement to write.
  *
  * **Declare what is queryable with a `SnapshotQuerySet`, exposed by overriding {@link querySet}.**
  * That one object is both what the migration creates the table's indexes from and
@@ -108,6 +118,14 @@ import { snapshotDocumentToState, toSnapshotDocument, type SnapshotDocumentOf } 
  *         // ordering and paging go on the object form; there is no predicate here
  *         return this.query({ orderBy: this.querySet.orderBy("total", "desc"), limit: count });
  *     }
+ *
+ *     public getOpen(id: string): Promise<Order | null>
+ *     {
+ *         // by id AND on a declared path - `query` cannot express this, because `id` is a column
+ *         // beside `data` and no query set predicate can reach it. Returns null rather than
+ *         // throwing, for a missing id and an excluded one alike
+ *         return this.queryById(id, this.querySet.eq("status", "open"));
+ *     }
  * }
  *
  * // in the migration - the same object, so a queried index is necessarily a created one
@@ -178,18 +196,15 @@ export abstract class SnapshotBaseRepository<T extends AggregateRoot<TState, TDo
      * array. It was not always: as `getAll(...ids)` this shared a signature with {@link getAll}, so
      * the empty case had to stand for either everything or nothing and could not be read off the call.
      *
+     * To load only the ids that also satisfy a condition, a subclass builds its own method over
+     * {@link queryByIds} - the predicate belongs inside the class, not on this signature.
+     *
      * @param {ReadonlyArray<string>} ids - The aggregate ids to load.
      * @returns {Promise<Array<T>>} The aggregates found; empty when none of the ids matched, or when no usable id was given.
      */
-    public async getByIds(ids: ReadonlyArray<string>): Promise<Array<T>>
+    public getByIds(ids: ReadonlyArray<string>): Promise<Array<T>>
     {
-        given(ids, "ids").ensureHasValue().ensureIsArray();
-
-        const trimmed = ids.map(t => t.trim()).where(t => t.isNotEmptyOrWhiteSpace());
-        if (trimmed.isEmpty)
-            return [];
-
-        return this.query(RepositoryQueryBuilder.idPredicate("id", trimmed));
+        return this.queryByIds(ids);
     }
 
     /**
@@ -197,7 +212,8 @@ export abstract class SnapshotBaseRepository<T extends AggregateRoot<TState, TDo
      *
      * **Unbounded, and takes no arguments so that it can only be called on purpose.** It is
      * {@link query} with no predicate; for anything narrower, or for ordering and paging, build a
-     * method on the subclass over `query` instead.
+     * method on the subclass over `query` - or over {@link queryByIds}, when the narrowing is by id
+     * as well.
      *
      * @returns {Promise<Array<T>>} Every aggregate, deserialized.
      */
@@ -206,17 +222,27 @@ export abstract class SnapshotBaseRepository<T extends AggregateRoot<TState, TDo
         return this.query({});
     }
 
+    /**
+     * The aggregate with this id.
+     *
+     * To load it only if it also satisfies a condition, a subclass builds its own method over
+     * {@link queryById} - the predicate belongs inside the class, not on this signature.
+     *
+     * @param {string} id - The aggregate id to load.
+     * @returns {Promise<T>} The aggregate.
+     * @throws {AggregateNotFoundException} If no row carries the id.
+     */
     public async get(id: string): Promise<T>
     {
         given(id, "id").ensureHasValue().ensureIsString();
         id = id.trim();
 
-        const result = await this.query(RepositoryQueryBuilder.idPredicate("id", [id]));
+        const result = await this.queryById(id);
 
-        if (result.length !== 1)
+        if (result == null)
             throw new AggregateNotFoundException(this._eventStreamRepository.aggregateType, id);
 
-        return result[0];
+        return result;
     }
 
     /**
@@ -272,10 +298,12 @@ export abstract class SnapshotBaseRepository<T extends AggregateRoot<TState, TDo
      * binding, which is why this takes no parameters beyond the predicate itself.
      *
      * Pass a {@link RepositoryQuery} instead of a bare predicate to add `order by`, `limit` or
-     * `offset`, or to run with no predicate at all (`{}`). For a read the built statement cannot
-     * express - a join, a union, a CTE - use {@link queryStatement}. For reads whose shape does not
-     * map onto the aggregate - counts, group-bys, projections - use {@link queryRaw}, which performs
-     * no deserialization.
+     * `offset`, or to run with no predicate at all (`{}`). To constrain the id as well as the
+     * predicate, use {@link queryById} or {@link queryByIds} - `id` is a column beside `data`, so no
+     * predicate this takes can reach it. For a read the built statement cannot express - a join, a
+     * union, a CTE - use {@link queryStatement}. For reads whose shape does not map onto the
+     * aggregate - counts, group-bys, projections - use {@link queryRaw}, which performs no
+     * deserialization.
      *
      * @param {SnapshotPredicate | RepositoryQuery} whereOrQuery - A predicate from {@link querySet}, or the predicate and the clauses that follow it.
      * @returns {Promise<Array<T>>} The deserialized aggregates; empty when nothing matched.
@@ -286,6 +314,60 @@ export abstract class SnapshotBaseRepository<T extends AggregateRoot<TState, TDo
         const built = RepositoryQueryBuilder.build(this.table, whereOrQuery, []);
 
         return this._deserialize(await this.queryRaw<any>(built.sql, ...built.params));
+    }
+
+    /**
+     * The aggregate with this id, if it also satisfies `predicate`.
+     *
+     * The id column is the one thing a {@link querySet} cannot reach - its paths read inside `data`,
+     * and the primary key is a column beside it - so an id lookup and a declared-path condition come
+     * from different places and cannot be composed by the caller. This is where they meet: the
+     * statement is `where (id in (?) and (<your predicate>))`, with the predicate parenthesized
+     * inside the whole so a top-level `or` in it cannot escape the id filter.
+     *
+     * **Returns null rather than throwing**, unlike {@link get}, and does so for both misses alike -
+     * no such id, and an id whose row the predicate excluded. The two are not distinguished here on
+     * purpose: only the subclass knows what its predicate meant, so only the subclass can say whether
+     * an excluded row is exceptional. Throwing, if that is the answer, is three lines at the call
+     * site; unthrowing is not.
+     *
+     * @param {string} id - The aggregate id to load.
+     * @param {SnapshotPredicate} [predicate] - A further condition the row must satisfy; omitted loads by id alone.
+     * @returns {Promise<T | null>} The aggregate, or null when nothing matched.
+     * @throws {ArgumentException} If the predicate is a whole statement, keeps the `where` keyword, is empty, or contains a ';'.
+     */
+    protected async queryById(id: string, predicate?: SnapshotPredicate): Promise<T | null>
+    {
+        given(id, "id").ensureHasValue().ensureIsString();
+
+        const result = await this.queryByIds([id], predicate);
+
+        // at most one, because id is the primary key
+        return result.isEmpty ? null : result[0];
+    }
+
+    /**
+     * The aggregates with these ids that also satisfy `predicate`, in whatever order the table
+     * returns them.
+     *
+     * The set-shaped counterpart to {@link queryById}, and the read {@link getByIds} is built from -
+     * so the id hygiene is the same one: ids that are blank once trimmed are dropped, and if that
+     * leaves none the result is empty without a statement being run at all.
+     *
+     * @param {ReadonlyArray<string>} ids - The aggregate ids to load.
+     * @param {SnapshotPredicate} [predicate] - A further condition each row must satisfy; omitted loads by id alone.
+     * @returns {Promise<Array<T>>} The aggregates found; empty when nothing matched, or when no usable id was given.
+     * @throws {ArgumentException} If the predicate is a whole statement, keeps the `where` keyword, is empty, or contains a ';'.
+     */
+    protected queryByIds(ids: ReadonlyArray<string>, predicate?: SnapshotPredicate): Promise<Array<T>>
+    {
+        given(ids, "ids").ensureHasValue().ensureIsArray();
+
+        const trimmed = ids.map(t => t.trim()).where(t => t.isNotEmptyOrWhiteSpace());
+        if (trimmed.isEmpty)
+            return Promise.resolve([]);
+
+        return this.query(RepositoryQueryBuilder.idPredicate("id", trimmed, predicate));
     }
 
     /**

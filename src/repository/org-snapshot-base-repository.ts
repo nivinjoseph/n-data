@@ -17,14 +17,18 @@ import { snapshotDocumentToState, toSnapshotDocument, type SnapshotDocumentOf } 
  * The organization-scoped counterpart to `SnapshotBaseRepository`.
  *
  * The snapshot table holds `id` (the primary key), `organization_id`, and `data` (the
- * serialized state as jsonb). {@link get} and {@link getByIds} cover lookup by id, {@link getAll}
- * takes every row this organization has, and all three scope themselves to the current
- * organization automatically.
+ * serialized state as jsonb). Publicly, {@link get} and {@link getByIds} cover lookup by id and
+ * {@link getAll} takes every row this organization has. Any other read is a method the concrete
+ * subclass names for itself, built over one of the `protected` doors: {@link query} for a condition
+ * on a field inside `data`, {@link queryById} or {@link queryByIds} for one that also constrains the
+ * id, {@link exists} and {@link count} for a yes-or-no or a number.
  *
- * **{@link query} scopes itself to the current organization too, so a subclass never writes that
- * filter.** It owns the statement - `select data from <table> where organization_id = ? and (<your
- * predicate>)` - so a subclass supplies only the predicate, and the filter lands ahead of it, which
- * is both the tenant isolation and the leading index column. There is no way to forget it.
+ * **Every one of those scopes itself to the current organization, so a subclass never writes that
+ * filter.** `query` owns the statement - `select data from <table> where organization_id = ? and
+ * (<your predicate>)` - so a subclass supplies only the predicate, and the filter lands ahead of it,
+ * which is both the tenant isolation and the leading index column; the id-shaped pair goes through
+ * `query`, so it inherits the same guarantee, and an id belonging to another organization reads
+ * exactly as one that does not exist. There is no way to forget it.
  * {@link queryAcrossOrganizations} is the deliberate exception, named for its consequence, for a read
  * that is genuinely meant to span tenants.
  *
@@ -107,6 +111,15 @@ import { snapshotDocumentToState, toSnapshotDocument, type SnapshotDocumentOf } 
  *             orderBy: this.querySet.orderBy("issuedAt", "desc"),
  *             limit: 20
  *         });
+ *     }
+ *
+ *     public getOpen(id: string): Promise<Invoice | null>
+ *     {
+ *         // by id AND on a declared path - `query` cannot express this, because `id` is a column
+ *         // beside `data` and no query set predicate can reach it. The organization filter still
+ *         // leads, so an id in another organization reads as a miss, exactly as a missing one does
+ *         // -> where organization_id = ? and (id in (?) and (((data->>'status') = ?)))
+ *         return this.queryById(id, this.querySet.eq("status", "open"));
  *     }
  * }
  *
@@ -196,18 +209,15 @@ export abstract class OrgSnapshotBaseRepository<T extends OrgAggregateRoot<TStat
      * array. It was not always: as `getAll(...ids)` this shared a signature with {@link getAll}, so
      * the empty case had to stand for either everything or nothing and could not be read off the call.
      *
+     * To load only the ids that also satisfy a condition, a subclass builds its own method over
+     * {@link queryByIds} - the predicate belongs inside the class, not on this signature.
+     *
      * @param {ReadonlyArray<string>} ids - The aggregate ids to load.
      * @returns {Promise<Array<T>>} The aggregates found; empty when none of the ids matched, or when no usable id was given.
      */
-    public async getByIds(ids: ReadonlyArray<string>): Promise<Array<T>>
+    public getByIds(ids: ReadonlyArray<string>): Promise<Array<T>>
     {
-        given(ids, "ids").ensureHasValue().ensureIsArray();
-
-        const trimmed = ids.map(t => t.trim()).where(t => t.isNotEmptyOrWhiteSpace());
-        if (trimmed.isEmpty)
-            return [];
-
-        return this.query(RepositoryQueryBuilder.idPredicate("id", trimmed));
+        return this.queryByIds(ids);
     }
 
     /**
@@ -225,17 +235,30 @@ export abstract class OrgSnapshotBaseRepository<T extends OrgAggregateRoot<TStat
         return this.query({});
     }
 
+    /**
+     * The aggregate with this id, **within the current organization**.
+     *
+     * An id belonging to another organization reads exactly as one that does not exist - the tenant
+     * filter is part of the statement, not a check applied afterwards.
+     *
+     * To load it only if it also satisfies a condition, a subclass builds its own method over
+     * {@link queryById} - the predicate belongs inside the class, not on this signature.
+     *
+     * @param {string} id - The aggregate id to load.
+     * @returns {Promise<T>} The aggregate.
+     * @throws {AggregateNotFoundException} If the current organization carries no row with the id.
+     */
     public async get(id: string): Promise<T>
     {
         given(id, "id").ensureHasValue().ensureIsString();
         id = id.trim();
 
-        const result = await this.query(RepositoryQueryBuilder.idPredicate("id", [id]));
+        const result = await this.queryById(id);
 
-        if (result.length !== 1)
+        if (result == null)
             throw new AggregateNotFoundException(this._eventStreamRepository.aggregateType, id);
 
-        return result[0];
+        return result;
     }
 
     /**
@@ -297,11 +320,12 @@ export abstract class OrgSnapshotBaseRepository<T extends OrgAggregateRoot<TStat
      * the organization filter.
      *
      * Pass a {@link RepositoryQuery} instead of a bare predicate to add `order by`, `limit` or
-     * `offset`, or to run with no predicate at all (`{}`). For a read that genuinely spans
-     * organizations, and only then, use {@link queryAcrossOrganizations}. For reads whose shape does
-     * not map onto the aggregate - counts, group-bys, projections - use
-     * {@link queryRawAcrossOrganizations}, which performs no deserialization and, as its name says,
-     * adds no organization filter either.
+     * `offset`, or to run with no predicate at all (`{}`). To constrain the id as well as the
+     * predicate, use {@link queryById} or {@link queryByIds} - `id` is a column beside `data`, so no
+     * predicate this takes can reach it. For a read that genuinely spans organizations, and only
+     * then, use {@link queryAcrossOrganizations}. For reads whose shape does not map onto the
+     * aggregate - counts, group-bys, projections - use {@link queryRawAcrossOrganizations}, which
+     * performs no deserialization and, as its name says, adds no organization filter either.
      *
      * @param {SnapshotPredicate | RepositoryQuery} whereOrQuery - A predicate from {@link querySet}, or the predicate and the clauses that follow it.
      * @returns {Promise<Array<T>>} The deserialized aggregates; empty when nothing matched.
@@ -313,6 +337,59 @@ export abstract class OrgSnapshotBaseRepository<T extends OrgAggregateRoot<TStat
             this.domainContext.organizationId);
 
         return this._deserialize(await this.queryRawAcrossOrganizations<any>(built.sql, ...built.params));
+    }
+
+    /**
+     * The aggregate with this id, within the current organization, if it also satisfies `predicate`.
+     *
+     * The id column is the one thing a {@link querySet} cannot reach - its paths read inside `data`,
+     * and the primary key is a column beside it - so an id lookup and a declared-path condition come
+     * from different places and cannot be composed by the caller. This is where they meet: the
+     * statement is `where organization_id = ? and (id in (?) and (<your predicate>))`, with the
+     * organization filter leading as always and the predicate parenthesized so a top-level `or`
+     * inside it can escape neither the id filter nor the tenant one.
+     *
+     * **Returns null rather than throwing**, unlike {@link get}, and does so for every miss alike -
+     * no such id, an id in another organization, and an id whose row the predicate excluded. They are
+     * not distinguished here on purpose: only the subclass knows what its predicate meant, so only
+     * the subclass can say whether an excluded row is exceptional.
+     *
+     * @param {string} id - The aggregate id to load.
+     * @param {SnapshotPredicate} [predicate] - A further condition the row must satisfy; omitted loads by id alone.
+     * @returns {Promise<T | null>} The aggregate, or null when nothing matched.
+     * @throws {ArgumentException} If the predicate is a whole statement, keeps the `where` keyword, is empty, or contains a ';'.
+     */
+    protected async queryById(id: string, predicate?: SnapshotPredicate): Promise<T | null>
+    {
+        given(id, "id").ensureHasValue().ensureIsString();
+
+        const result = await this.queryByIds([id], predicate);
+
+        // at most one, because id is the primary key
+        return result.isEmpty ? null : result[0];
+    }
+
+    /**
+     * The aggregates with these ids that also satisfy `predicate`, within the current organization.
+     *
+     * The set-shaped counterpart to {@link queryById}, and the read {@link getByIds} is built from -
+     * so the id hygiene is the same one: ids that are blank once trimmed are dropped, and if that
+     * leaves none the result is empty without a statement being run at all.
+     *
+     * @param {ReadonlyArray<string>} ids - The aggregate ids to load.
+     * @param {SnapshotPredicate} [predicate] - A further condition each row must satisfy; omitted loads by id alone.
+     * @returns {Promise<Array<T>>} The aggregates found in the current organization; empty when nothing matched, or when no usable id was given.
+     * @throws {ArgumentException} If the predicate is a whole statement, keeps the `where` keyword, is empty, or contains a ';'.
+     */
+    protected queryByIds(ids: ReadonlyArray<string>, predicate?: SnapshotPredicate): Promise<Array<T>>
+    {
+        given(ids, "ids").ensureHasValue().ensureIsArray();
+
+        const trimmed = ids.map(t => t.trim()).where(t => t.isNotEmptyOrWhiteSpace());
+        if (trimmed.isEmpty)
+            return Promise.resolve([]);
+
+        return this.query(RepositoryQueryBuilder.idPredicate("id", trimmed, predicate));
     }
 
     /**

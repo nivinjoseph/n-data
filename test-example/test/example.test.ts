@@ -390,6 +390,65 @@ await describe("The example application", async () =>
             assert.ok(predicate.sql.contains("data->>'tier'") || predicate.sql.contains(`"plan","tier"`),
                 predicate.sql);
         });
+
+        // the one composition neither `get` nor `query` can express on its own: `id` is a column
+        // beside `data`, so it is unreachable from a query set, and a query set predicate is the only
+        // thing `query` takes. They meet on the protected `queryById`/`queryByIds`, which is what
+        // `getActive` and `getOnTierByIds` are built from.
+        await test("an id lookup composes with a declared path", async () =>
+        {
+            // one save per scope, so the create and the archive each get their own
+            await inScope(async scope =>
+            {
+                const repository = scope.resolve<SnapshotStudioRepository>("SnapshotStudioRepository");
+                const studios = scope.resolve<StudioRepository>("StudioRepository");
+
+                // neither studio is archived yet, so both reads agree
+                assert.strictEqual((await repository.getActive(studioAId))?.id, studioAId);
+                assert.strictEqual((await studios.get(studioAId)).id, studioAId);
+
+                // the predicate narrows a multi-id read rather than the ids narrowing the predicate
+                assert.deepStrictEqual(
+                    (await repository.getOnTierByIds([studioAId, studioBId], "enterprise")).map(t => t.id),
+                    [studioAId]);
+
+                assert.deepStrictEqual(
+                    (await repository.getOnTierByIds([studioAId, studioBId], "free")).map(t => t.id),
+                    [studioBId]);
+
+                // an id that does not exist is a miss, exactly as a filtered-out one is
+                assert.strictEqual(await repository.getActive("std_260810notarealstudioatallxx"), null);
+                assert.deepStrictEqual(await repository.getOnTierByIds([], "free"), []);
+            });
+
+            // a studio of its own to archive, so nothing asserted earlier is disturbed
+            const throwawayId = await inScope(scope =>
+                scope.resolve<StudioFactory>("StudioFactory").create("Shuttered Pictures", "free", 1));
+
+            await inScope(async scope =>
+            {
+                const studios = scope.resolve<StudioRepository>("StudioRepository");
+
+                const throwaway = await studios.get(throwawayId);
+                throwaway.archive();
+
+                await studios.save(throwaway);
+            });
+
+            await inScope(async scope =>
+            {
+                const repository = scope.resolve<SnapshotStudioRepository>("SnapshotStudioRepository");
+                const studios = scope.resolve<StudioRepository>("StudioRepository");
+
+                // the filter is the whole of what makes these two differ - same id, same table, same
+                // primary key scan, one predicate
+                assert.strictEqual(await repository.getActive(throwawayId), null);
+                assert.strictEqual((await studios.get(throwawayId)).id, throwawayId);
+
+                // and it is genuinely the stored row being excluded, not the read failing
+                assert.strictEqual((await studios.get(throwawayId)).isArchived, true);
+            });
+        });
     });
 
     await describe("Creator, and the tenant boundary", async () =>

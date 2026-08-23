@@ -106,6 +106,47 @@ export class SnapshotStudioRepository
     }
 
     /**
+     * The studio with this id, unless it has been archived.
+     *
+     * The composition `query` cannot express and `get` will not take: `id` is a column beside `data`,
+     * not a path inside it, so the query set has no way to reach it and the two halves of this
+     * condition come from different places. `queryById` is where they meet - and it is `protected`,
+     * so the choice of which filter a caller gets is made here, in the repository, rather than by the
+     * caller. That is the whole reason the predicate is not a second argument to `get`: a query set is
+     * publicly constructible (the migration consumes this same `indexes` static), so a public
+     * predicate parameter would have handed every caller the ability to filter these reads however it
+     * liked.
+     *
+     * Returns null rather than throwing, and does so for both misses alike - no such studio, and an
+     * archived one. `get` is still there when the archived studio is what you want.
+     *
+     * Like `getByPlanFeature` and `getCountByPlanTier`, this and {@link getOnTierByIds} are declared
+     * on the concrete repository rather than on `StudioRepository`: they only mean anything where
+     * there is a snapshot table to index, so the event-stream implementation owes nothing.
+     */
+    public getActive(id: string): Promise<Studio | null>
+    {
+        given(id, "id").ensureHasValue().ensureIsString().ensure(t => t.startsWith(IdPrefix.studio));
+
+        return this.queryById(id, this.querySet.eq("isArchived", false));
+    }
+
+    /**
+     * Whichever of these studios sit on `tier` - the set-shaped counterpart, over `queryByIds`.
+     *
+     * The ids narrow to a primary key scan and the predicate filters what that returns, so the
+     * `plan.tier` index earns nothing here; it earns its keep on {@link getByPlanTier}, which has no
+     * ids to narrow by.
+     */
+    public getOnTierByIds(ids: ReadonlyArray<string>, tier: string): Promise<Array<Studio>>
+    {
+        given(ids, "ids").ensureHasValue().ensureIsArray();
+        given(tier, "tier").ensureHasValue().ensureIsString();
+
+        return this.queryByIds(ids, this.querySet.eq("plan.tier", tier));
+    }
+
+    /**
      * Containment against an array nested inside a value object. Like `getCountByPlanTier`, this is
      * declared on the concrete repository rather than on `StudioRepository` - it only means anything
      * where there is a snapshot table to index, so the in-memory implementation owes nothing.

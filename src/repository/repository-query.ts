@@ -44,7 +44,7 @@ export interface RepositoryQuery
      *
      * A {@link SnapshotPredicate} always carries its own parameters, so there is nothing to pass
      * positionally alongside it and no way to mis-order the binding. A hand-written fragment reaches
-     * this through `SnapshotQuerySet.raw`, which is the library's only door for one and validates it
+     * this through `SnapshotQuerySet.raw`, the only door a consumer has for one, which validates it
      * on the way in; there is deliberately no bare-string form here, because the two differed in what
      * they accepted and in where their values came from.
      *
@@ -90,11 +90,17 @@ export interface BuiltRepositoryQuery
 /**
  * {@link RepositoryQuery} with the raw-string predicate the public type no longer admits.
  *
- * The string form survives here and only here, because the event stream repositories' `_load` builds
- * `aggregate_id in (?, ?, ...)` - a fragment whose placeholder count is not fixed, assembled inside
- * the library from ids the library itself validated. Nothing a consumer writes reaches it: a
- * hand-written fragment comes in as a `SnapshotPredicate` through `SnapshotQuerySet.raw`, which
- * validates it and owns its parameters.
+ * The string form survives here and only here. It existed for the variable-length
+ * `aggregate_id in (?, ?, ...)` the event stream repositories load by, back when that was assembled
+ * as a bare fragment; it no longer is - {@link RepositoryQueryBuilder.idPredicate} builds it as a
+ * `SnapshotPredicate` that owns its own values, and every call site in `src` now passes a predicate
+ * or `{}`. **So no library caller reaches this branch today**; only the tests do.
+ *
+ * It is kept because {@link RepositoryQueryBuilder.build} is the one place a statement's shape is
+ * assembled for all four repositories, and a string is what an internal caller would most plausibly
+ * reach for again. Nothing a *consumer* writes reaches it either way: a hand-written fragment comes
+ * in as a `SnapshotPredicate` through `SnapshotQuerySet.raw`, which validates it and owns its
+ * parameters.
  */
 interface NormalizedQuery
 {
@@ -111,12 +117,17 @@ interface NormalizedQuery
  * difference between them, whether an organization filter leads the predicate, is a parameter here
  * rather than an override somewhere.
  *
- * The snapshot repositories expose it through their `query`. The event stream repositories use it
- * privately, for the two id-shaped reads `get` and `getAll` perform - they offer no query surface of their
- * own, deliberately, so this is the one place their statement shape is assembled.
+ * The snapshot repositories expose it through their `query`, and reach {@link idPredicate} a second
+ * way through `queryById`/`queryByIds` - the id-shaped reads that also take a predicate, which is the
+ * one composition a `SnapshotQuerySet` cannot express on its own. The event stream repositories use
+ * it privately, for the two reads that build a statement - `getByIds` and `getAll`, with `get`
+ * delegating to the former - and they offer no query surface of their own, deliberately, so this is
+ * the one place their statement shape is assembled.
  *
- * Deliberately absent from the barrel: it is how `query` is implemented, not part of the surface a
- * subclass uses. {@link RepositoryQuery} is what consumers name.
+ * Deliberately absent from the barrel: it is how those methods are implemented, not something a
+ * subclass names. {@link RepositoryQuery} is what consumers name. A subclass does still meet its
+ * validation transitively - a bad predicate handed to `queryById` surfaces as the `ArgumentException`
+ * {@link idPredicate} raises.
  *
  * @class RepositoryQueryBuilder
  */
@@ -191,7 +202,8 @@ export class RepositoryQueryBuilder
     }
 
     /**
-     * Builds `<column> in (?, ?, ...)` over a set of ids, as a predicate carrying its own values.
+     * Builds `<column> in (?, ?, ...)` over a set of ids, as a predicate carrying its own values -
+     * optionally conjoined with a further predicate.
      *
      * The one fragment the library assembles for itself. All four repositories look up by id - `id`
      * on a snapshot table, `aggregate_id` on an event stream - and none of them can express it
@@ -199,20 +211,42 @@ export class RepositoryQueryBuilder
      * the subclass. Building it here keeps the placeholder count and the value order derived from one
      * array in one place; positional binding gives no second chance at getting that pairing right.
      *
+     * The optional `predicate` is what lets an id lookup be filtered - "this id, but only if it is
+     * not archived" - which is otherwise inexpressible: the id column is not a query set path, so the
+     * two halves come from different places and have to meet somewhere. They meet here, and only
+     * here, because the snapshot repositories are siblings rather than a hierarchy and
+     * `DeclaredSnapshotQuerySet` offers them no `and` of its own.
+     *
      * @param {string} column - The id column to match against.
      * @param {ReadonlyArray<string>} values - The ids; must be non-empty, since `in ()` is not valid SQL.
-     * @returns {SnapshotPredicate} The fragment and its values, positionally matched.
-     * @throws {ArgumentException} If column is empty, or values is empty.
+     * @param {SnapshotPredicate} [predicate] - A further condition every matched row must also satisfy.
+     * @returns {SnapshotPredicate} The fragment and its values, positionally matched - the ids first, then the predicate's own.
+     * @throws {ArgumentException} If column is empty, values is empty, the predicate's params are not an array, or its sql is a whole statement, keeps the `where` keyword, is empty, or contains a ';'.
      */
-    public static idPredicate(column: string, values: ReadonlyArray<string>): SnapshotPredicate
+    public static idPredicate(column: string, values: ReadonlyArray<string>,
+        predicate?: SnapshotPredicate): SnapshotPredicate
     {
         given(column, "column").ensureHasValue().ensureIsString()
             .ensure(t => t.isNotEmptyOrWhiteSpace(), "column is empty");
         given(values, "values").ensureHasValue().ensureIsArray().ensureIsNotEmpty();
+        given(predicate, "predicate").ensureIsObject()
+            .ensure(t => Array.isArray(t.params), "a predicate's params must be an array");
+
+        const ids = `${column.trim()} in (${values.map(() => "?").join(",")})`;
+
+        if (predicate == null)
+            return { sql: ids, params: [...values] };
+
+        // validated *before* it is spliced behind `... and (`, for the same reason `raw` validates
+        // before parenthesizing: both regexes in validateBooleanFragment are anchored, so a fragment
+        // that has already been given a prefix sails past checks the bare fragment would fail
+        const validated = validateBooleanFragment(predicate.sql, "predicate");
 
         return {
-            sql: `${column.trim()} in (${values.map(() => "?").join(",")})`,
-            params: [...values]
+            // parenthesized: `and` binds tighter than `or`, so a bare `a = ? or b = ?` would parse as
+            // `(id in (...) and a) or b` and return rows the id filter was supposed to exclude
+            sql: `${ids} and (${validated})`,
+            params: [...values, ...predicate.params]
         };
     }
 
@@ -371,8 +405,9 @@ export class RepositoryQueryBuilder
      *
      * Both guards below are now internal invariants rather than consumer-facing errors - a consumer
      * cannot reach either, since `where` is a `SnapshotPredicate` on the public type and `query`
-     * takes no positional params at all. They stay because the string branch is still live for
-     * `_load`, and a mis-bound `in (?, ?)` would be silent.
+     * takes no positional params at all. They stay to keep the string branch honest if an internal
+     * caller reaches for it again (see {@link NormalizedQuery}: none does today), because a mis-bound
+     * `in (?, ?)` would be silent.
      *
      * @returns The trimmed predicate and its parameters; `sql` is null when there is no predicate.
      */

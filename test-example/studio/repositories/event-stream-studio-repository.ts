@@ -14,7 +14,8 @@ import { StudioRepository } from "./studio-repository.js";
  *
  * It satisfies the same `StudioRepository` the snapshot variant does, and the contrast is the point.
  *
- * The base offers `get`, `getAll` and `save` and no query surface at all - that is its contract, not a gap.
+ * The base offers `get`, `getByIds`, `getAll`, `save` and `saveWithin` - and no query surface at all, not
+ * even the id-plus-predicate pair the snapshot variant has. That is its contract, not a gap.
  * So every domain question below is answered by loading the aggregates and filtering in memory. That is
  * correct, and it is the shape a slice starts in before it needs a snapshot table: this class alone is a
  * working repository. It stops being the right one when the table grows, or when a rule needs the database

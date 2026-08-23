@@ -12,9 +12,10 @@ import type { SnapshotDocumentOf } from "./snapshot-document.js";
  * `SnapshotArrayPredicate` extends this, narrowing `params` to the jsonb documents a containment
  * fragment binds, so a containment fragment composes with the rest with no adaptation.
  *
- * **This is the only shape a repository's `query` accepts as a predicate.** Every one comes from a
- * `SnapshotQuerySet` - a typed comparison, a combinator, or {@link SnapshotQuerySet.raw} - and each
- * carries its own values, so there is nothing to pass positionally and no binding order to get wrong.
+ * **This is the only shape a repository accepts as a predicate**, everywhere one is taken: `query`,
+ * `queryById`/`queryByIds`, `exists` and `count`. Every one comes from a `SnapshotQuerySet` - a typed
+ * comparison, a combinator, or {@link SnapshotQuerySet.raw} - and each carries its own values, so
+ * there is nothing to pass positionally and no binding order to get wrong.
  */
 export interface SnapshotPredicate
 {
@@ -686,8 +687,9 @@ export class SnapshotQuerySet<TState, TIndexed extends SnapshotCasts = NoDeclare
     {
         // validated *before* the parentheses go on, which is the whole point of the shared function:
         // both of its regexes are anchored, so `(select 1 from t)` would sail past checks that
-        // `select 1 from t` fails. This is now the library's only door for a hand-written fragment,
-        // so it is the only place that ordering has to be right.
+        // `select 1 from t` fails. This is the only door a *consumer* hands a fragment to, but not
+        // the only place the ordering matters: `RepositoryQueryBuilder.idPredicate` splices a
+        // predicate behind `id in (?) and (`, and validates before splicing for exactly this reason.
         const validated = validateBooleanFragment(sql, "sql");
 
         given(params, "params").ensureHasValue().ensureIsArray();

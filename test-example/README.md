@@ -70,7 +70,7 @@ name — exactly one underscore, integer suffix greater than zero — so `ExDbMi
 | `studio.test.ts` | no | Studio's behavior and invariants, through the factory and an in-memory repository |
 | `creator.test.ts` | no | the same for Creator, including that a natural key is per-tenant |
 | `serialization.test.ts` | no | every `@serialize`d class round-trips, through events *and* through a snapshot — and every declared index path resolves in a real snapshot (`verifyDocument`) |
-| `example.test.ts` | **yes** | migrations, the DDL and indexes, drift verification (`verifySnapshotTableForAggregate` asserts empty against the same declarations), the organization filter, the unique constraints, and the unit of work |
+| `example.test.ts` | **yes** | migrations, the DDL and indexes, drift verification (`verifySnapshotTableForAggregate` asserts empty against the same declarations), the organization filter, the unique constraints, an id lookup composed with a declared path (`queryById`/`queryByIds`, including that an archived studio is excluded while `get` still returns it), and the unit of work |
 
 The split matters. `serialization.test.ts` is the one that catches the most damaging class of mistake: a
 serialized key that does not match a constructor parameter arrives as `undefined` and trips a guard at *read*
