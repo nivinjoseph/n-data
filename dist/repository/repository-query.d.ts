@@ -9,8 +9,9 @@ import { SnapshotOrderBy, SnapshotPredicate } from "../migration/snapshot-query-
  * predicate at all.
  *
  * On an organization-scoped repository the tenant filter is added ahead of `where` and is not
- * expressible here - that is the whole point of it being automatic. `queryAcrossOrganizations` is the
- * way out.
+ * expressible here - that is the whole point of it being automatic. The ways out are named for that
+ * consequence rather than expressed as a flag here: `queryAcrossOrganizations` for a whole statement,
+ * and `queryByIdAcrossOrganizations`/`queryByIdsAcrossOrganizations` when the read is by id.
  *
  * @example
  * ```typescript

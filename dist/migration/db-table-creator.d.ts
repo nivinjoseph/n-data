@@ -42,11 +42,13 @@ export interface SnapshotTableIndexInfo {
      *
      * `undefined` for a `gin` index **including on an org-scoped table**, which genuinely does not
      * lead with `organization_id`: a multicolumn GIN over a varchar column would need the `btree_gin`
-     * extension, which is not trusted on Postgres 12 and would demand superuser at migration time. An
-     * org-scoped table declaring one therefore always carries a standalone `(organization_id)` btree
-     * index for the planner to BitmapAnd the GIN scan against. `organization_id` is constrained
-     * regardless - `OrgSnapshotBaseRepository.query` adds it either way, because tenant isolation is a
-     * correctness rule independent of the plan.
+     * extension, which is not trusted on Postgres 12 and would demand superuser at migration time. A GIN
+     * declaration therefore never satisfies the leading-column requirement on its own: a table whose
+     * only indexes are array ones gets the standalone `(organization_id)` btree index, for the planner
+     * to BitmapAnd the GIN scan against. A table that also declares btree indexes does **not** get a
+     * standalone one, since each of those leads with `organization_id` and serves it as a leading
+     * prefix. `organization_id` is constrained regardless - `OrgSnapshotBaseRepository.query` adds it
+     * either way, because tenant isolation is a correctness rule independent of the plan.
      */
     readonly leadingColumn?: string;
 }

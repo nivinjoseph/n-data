@@ -14,7 +14,10 @@ import type { DeclaredSnapshotQuerySet, SnapshotPredicate } from "../migration/s
  * {@link getAll} takes every row this organization has. Any other read is a method the concrete
  * subclass names for itself, built over one of the `protected` doors: {@link query} for a condition
  * on a field inside `data`, {@link queryById} or {@link queryByIds} for one that also constrains the
- * id, {@link exists} and {@link count} for a yes-or-no or a number.
+ * id, {@link exists} and {@link count} for a yes-or-no or a number, and - for a read that genuinely
+ * leaves the tenant boundary - {@link queryByIdAcrossOrganizations} and
+ * {@link queryByIdsAcrossOrganizations} by id, {@link queryAcrossOrganizations} for a whole statement,
+ * {@link queryRawAcrossOrganizations} for a projection.
  *
  * **Every one of those scopes itself to the current organization, so a subclass never writes that
  * filter.** `query` owns the statement - `select data from <table> where organization_id = ? and
@@ -23,7 +26,11 @@ import type { DeclaredSnapshotQuerySet, SnapshotPredicate } from "../migration/s
  * `query`, so it inherits the same guarantee, and an id belonging to another organization reads
  * exactly as one that does not exist. There is no way to forget it.
  * {@link queryAcrossOrganizations} is the deliberate exception, named for its consequence, for a read
- * that is genuinely meant to span tenants.
+ * that is genuinely meant to span tenants, and {@link queryByIdAcrossOrganizations} and
+ * {@link queryByIdsAcrossOrganizations} are the id-shaped ones, which need no statement of their own.
+ * Those two are also the only cheap way out: `id` is the primary key, and it is the one index on this
+ * table with no leading `organization_id`, so a cross-tenant lookup by id is an index lookup where a
+ * cross-tenant condition on a declared path is a sequential scan.
  *
  * As with the plain variant, what is queryable is declared with a `SnapshotQuerySet` exposed by
  * overriding {@link querySet} - one object that both the migration creates the
@@ -60,10 +67,13 @@ import type { DeclaredSnapshotQuerySet, SnapshotPredicate } from "../migration/s
  *
  * **An array index is the one exception.** A `SnapshotArrayIndex` builds a GIN index, which *cannot*
  * lead with `organization_id` - a multicolumn GIN over a varchar column needs the `btree_gin`
- * extension, which is not trusted on Postgres 12 and would demand superuser at migration time. So
- * declaring one always creates the standalone `(organization_id)` index too, for the planner to
- * BitmapAnd the GIN scan against, and `info.createdIndexes[i].leadingColumn` is `undefined` for it - read it
- * rather than assuming. The organization filter is still applied either way: tenant isolation is a
+ * extension, which is not trusted on Postgres 12 and would demand superuser at migration time. So a
+ * GIN declaration never satisfies the leading-column requirement on its own: a table whose only
+ * indexes are array ones also gets the standalone `(organization_id)` index, for the planner to
+ * BitmapAnd the GIN scan against, while one that also declares btree paths does not - each of those
+ * already leads with `organization_id` and serves it as a leading prefix.
+ * `info.createdIndexes[i].leadingColumn` is `undefined` for the GIN index either way - read it rather
+ * than assuming. The organization filter is still applied regardless: tenant isolation is a
  * correctness rule independent of the plan.
  *
  * @example
@@ -185,7 +195,8 @@ export declare abstract class OrgSnapshotBaseRepository<T extends OrgAggregateRo
      * the empty case had to stand for either everything or nothing and could not be read off the call.
      *
      * To load only the ids that also satisfy a condition, a subclass builds its own method over
-     * {@link queryByIds} - the predicate belongs inside the class, not on this signature.
+     * {@link queryByIds} - the predicate belongs inside the class, not on this signature. To find
+     * them wherever they live rather than only here, {@link queryByIdsAcrossOrganizations}.
      *
      * @param {ReadonlyArray<string>} ids - The aggregate ids to load.
      * @returns {Promise<Array<T>>} The aggregates found; empty when none of the ids matched, or when no usable id was given.
@@ -209,7 +220,8 @@ export declare abstract class OrgSnapshotBaseRepository<T extends OrgAggregateRo
      * filter is part of the statement, not a check applied afterwards.
      *
      * To load it only if it also satisfies a condition, a subclass builds its own method over
-     * {@link queryById} - the predicate belongs inside the class, not on this signature.
+     * {@link queryById} - the predicate belongs inside the class, not on this signature. To find it in
+     * whatever organization owns it, {@link queryByIdAcrossOrganizations}.
      *
      * @param {string} id - The aggregate id to load.
      * @returns {Promise<T>} The aggregate.
@@ -245,8 +257,10 @@ export declare abstract class OrgSnapshotBaseRepository<T extends OrgAggregateRo
      * **Forcing does not step outside the organization**, because nothing about the tenant check
      * moves: an aggregate belonging to another organization is rejected here exactly as it always
      * was. So a migration that has to cover every tenant runs once per organization's
-     * {@link BaseRepository.domainContext}, and {@link queryAcrossOrganizations} cannot feed what it
-     * read straight back into this door.
+     * {@link BaseRepository.domainContext}, and nothing a cross-organization read returns can be fed
+     * straight back into this door - not {@link queryAcrossOrganizations}, and not
+     * {@link queryByIdAcrossOrganizations} or {@link queryByIdsAcrossOrganizations}, which are the
+     * likelier source of a foreign aggregate.
      *
      * `force` lives here and not on {@link Repository}, whose `save` the event stream repositories
      * also implement and could not honor - an unchanged aggregate has no events to append. So it is
@@ -317,7 +331,9 @@ export declare abstract class OrgSnapshotBaseRepository<T extends OrgAggregateRo
      * inside it can escape neither the id filter nor the tenant one.
      *
      * **Returns null rather than throwing**, unlike {@link get}, and does so for every miss alike -
-     * no such id, an id in another organization, and an id whose row the predicate excluded. They are
+     * no such id, an id in another organization, and an id whose row the predicate excluded. To find
+     * that second case rather than read it as a miss, {@link queryByIdAcrossOrganizations} is this
+     * without the tenant filter. They are
      * not distinguished here on purpose: only the subclass knows what its predicate meant, so only
      * the subclass can say whether an excluded row is exceptional.
      *
@@ -333,6 +349,9 @@ export declare abstract class OrgSnapshotBaseRepository<T extends OrgAggregateRo
      * The set-shaped counterpart to {@link queryById}, and the read {@link getByIds} is built from -
      * so the id hygiene is the same one: ids that are blank once trimmed are dropped, and if that
      * leaves none the result is empty without a statement being run at all.
+     *
+     * {@link queryByIdsAcrossOrganizations} is this without the tenant filter, for ids that may belong
+     * to any organization.
      *
      * @param {ReadonlyArray<string>} ids - The aggregate ids to load.
      * @param {SnapshotPredicate} [predicate] - A further condition each row must satisfy; omitted loads by id alone.
@@ -401,16 +420,72 @@ export declare abstract class OrgSnapshotBaseRepository<T extends OrgAggregateRo
      * the statement {@link query} builds cannot express. It is named for its consequence so that the
      * tenant implication is visible at the call site rather than inferred from a flag.
      *
-     * Everything {@link query} guarantees is yours to get right here: the select list must be `data`,
-     * and if the read is meant to stay within one organization the predicate has to constrain
-     * `organization_id` itself - leading, so the index is used. Prefer {@link query} unless it cannot
-     * express the read.
+     * Everything {@link query} guarantees is yours to get right here:
+     *
+     * - the select list must be `data`, since that is the column each row is deserialized from;
+     * - build any expression over `data` from {@link querySet}'s `expressionFor`, so it still matches
+     *   the index it was created from - Postgres uses an expression index only when the expression
+     *   matches *textually*, and a near-miss silently falls back to a sequential scan;
+     * - if the read is meant to stay within one organization, splice {@link organizationPredicate} in
+     *   leading, so the filter both isolates the tenant and lets the index be used.
+     *
+     * **Know what an index can and cannot serve once the filter is gone.** Every btree expression
+     * index on this table leads with `organization_id`, and btree serves only a leading prefix - so a
+     * cross-organization condition on a declared path cannot use its index and scans the table. The
+     * two reads that survive the boundary intact are containment on an array path, whose GIN index
+     * carries no tenant prefix, and a lookup by `id`, which is the primary key - and the latter has
+     * its own doors, {@link queryByIdAcrossOrganizations} and {@link queryByIdsAcrossOrganizations},
+     * for the same reason {@link queryById} exists beside {@link query}.
+     *
+     * Prefer {@link query} unless it cannot express the read.
      *
      * @param {string} sql - The statement to run. Must select the `data` column.
      * @param {...ReadonlyArray<any>} params - Values bound to the statement's `?` placeholders.
      * @returns {Promise<Array<T>>} The deserialized aggregates; empty when nothing matched.
      */
     protected queryAcrossOrganizations(sql: string, ...params: ReadonlyArray<any>): Promise<Array<T>>;
+    /**
+     * The aggregate with this id, **in whatever organization owns it**, if it also satisfies
+     * `predicate`.
+     *
+     * {@link queryById} without the tenant filter, and named for that consequence. Where the scoped
+     * pair reads an id from another organization as a miss, this finds it - which is what a
+     * platform-wide question ("which organization owns this id?") needs, and why it is a door a
+     * subclass has to name for itself rather than something `get` could do quietly.
+     *
+     * **At most one row, because `id` is the primary key - and globally, not per tenant.** That is
+     * also what makes this cheap: the primary key is the one index on this table with no leading
+     * `organization_id`, so this is an index lookup rather than the sequential scan a cross-organization
+     * condition on a declared path would be (see {@link queryAcrossOrganizations}).
+     *
+     * **The aggregate that comes back is read-only in practice.** It is deserialized against the
+     * *current* {@link BaseRepository.domainContext} while its state carries its own
+     * `organizationId`, and `save` rejects an aggregate whose organization is not this one - so a
+     * cross-organization read cannot be fed back into a write, `force` included.
+     *
+     * @param {string} id - The aggregate id to load.
+     * @param {SnapshotPredicate} [predicate] - A further condition the row must satisfy; omitted loads by id alone.
+     * @returns {Promise<T | null>} The aggregate, in whatever organization holds it, or null when nothing matched.
+     * @throws {ArgumentException} If the predicate is a whole statement, keeps the `where` keyword, is empty, or contains a ';'.
+     */
+    protected queryByIdAcrossOrganizations(id: string, predicate?: SnapshotPredicate): Promise<T | null>;
+    /**
+     * The aggregates with these ids, **across every organization**, that also satisfy `predicate`.
+     *
+     * The set-shaped counterpart to {@link queryByIdAcrossOrganizations}, and {@link queryByIds}
+     * without the tenant filter - so the id hygiene is the same one: ids that are blank once trimmed
+     * are dropped, and if that leaves none the result is empty without a statement being run at all.
+     *
+     * The optional predicate costs nothing here, unlike one handed to {@link queryAcrossOrganizations}:
+     * the ids have already narrowed the read to a primary key lookup, so the predicate filters those
+     * few rows rather than deciding whether an index can be used at all.
+     *
+     * @param {ReadonlyArray<string>} ids - The aggregate ids to load.
+     * @param {SnapshotPredicate} [predicate] - A further condition each row must satisfy; omitted loads by id alone.
+     * @returns {Promise<Array<T>>} The aggregates found, in whatever organizations hold them; empty when nothing matched, or when no usable id was given.
+     * @throws {ArgumentException} If the predicate is a whole statement, keeps the `where` keyword, is empty, or contains a ';'.
+     */
+    protected queryByIdsAcrossOrganizations(ids: ReadonlyArray<string>, predicate?: SnapshotPredicate): Promise<Array<T>>;
     /**
      * The body both save doors share; `owned` is who commits and `force` is whether the change check
      * applies, and between them they are the whole of what separates one call from another. The
