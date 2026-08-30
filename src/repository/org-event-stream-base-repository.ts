@@ -33,6 +33,13 @@ import { executeRawQuery } from "./raw-query.js";
  * the raw event rows use {@link queryRawAcrossOrganizations} - which gets no organization filter, so such a
  * statement must constrain `organization_id` itself.
  *
+ * **There is deliberately no cross-organization lookup by aggregate id here**, though
+ * `OrgSnapshotBaseRepository` has one. That pair is cheap there because a snapshot table's primary key is
+ * `id` alone, with no tenant prefix. Neither index on this table can serve the same question: the unique one
+ * leads with `organization_id`, and btree serves only a leading prefix, so `aggregate_id` is not searchable
+ * without it; and the `id` primary key here identifies an *event row*, not the aggregate. Offering it would
+ * mean a sequential scan dressed as a lookup, so it takes a migration adding an `(aggregate_id)` index first.
+ *
  * @class OrgEventStreamBaseRepository
  */
 export abstract class OrgEventStreamBaseRepository<T extends OrgAggregateRoot<TState, TDomainEvent>, TState extends OrgAggregateState, TDomainEvent extends OrgDomainEvent<TState>> extends BaseRepository implements Repository<T>

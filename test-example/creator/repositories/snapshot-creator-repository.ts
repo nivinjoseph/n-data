@@ -162,4 +162,26 @@ export class SnapshotCreatorRepository
             `select data from ${this.table} where ${this.querySet.expressionFor("email")} = ?;`,
             email);
     }
+
+    /**
+     * The creator with this id, in whatever studio owns it.
+     *
+     * The other way out of the tenant boundary, and the cheap one. `email` above is indexed as
+     * `(organization_id, (data->>'email'))`, so dropping the filter drops the index with it and that
+     * search scans the table - acceptable for a rare platform-wide question, but a real cost. `id` is
+     * the primary key, which carries no organization prefix at all, so this stays an index lookup.
+     *
+     * It also needs no statement of its own: `queryByIdAcrossOrganizations` builds the same one
+     * `queryById` does, minus the filter, so the placeholder run and the binding order are not this
+     * class's to get right.
+     *
+     * What comes back is read-only in practice - `save` rejects a creator belonging to another studio,
+     * so a cross-studio read cannot become a cross-studio write by accident.
+     */
+    public findInAnyStudio(id: string): Promise<Creator | null>
+    {
+        given(id, "id").ensureHasValue().ensureIsString().ensure(t => t.startsWith(IdPrefix.creator));
+
+        return this.queryByIdAcrossOrganizations(id);
+    }
 }

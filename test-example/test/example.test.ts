@@ -2,7 +2,8 @@ import { OrgConfigurableDomainContext } from "@nivinjoseph/n-domain";
 import { Container, Scope } from "@nivinjoseph/n-ject";
 import assert from "node:assert";
 import test, { after, before, describe } from "node:test";
-import { Db, DbException, DbMigrator, DbTableCreator, KnexPgDbConnectionFactory, KnexPgUnitOfWork, UnitOfWork } from "../../src/index.js";
+import { ArgumentException } from "@nivinjoseph/n-exception";
+import { AggregateNotFoundException, Db, DbException, DbMigrator, DbTableCreator, KnexPgDbConnectionFactory, KnexPgUnitOfWork, UnitOfWork } from "../../src/index.js";
 import { ExampleLogger } from "../common/example-logger.js";
 import { CommonInstaller } from "../common/ioc/common-installer.js";
 import { CreatorFactory } from "../creator/factories/creator-factory.js";
@@ -861,6 +862,45 @@ await describe("The example application", async () =>
                 assert.deepStrictEqual(
                     everywhere.map(t => t.organizationId).orderBy(t => t),
                     [studioAId, studioBId].orderBy(t => t));
+            }
+            finally
+            {
+                await scope.dispose();
+            }
+        });
+
+        // the other way out, and the one an index actually serves: `id` is the primary key, which
+        // carries no organization prefix, so this crosses the boundary without the scan the email
+        // search above pays for
+        await test("an id can be found in whatever studio owns it", async () =>
+        {
+            domainContext.organizationId = studioAId;
+
+            const scope = createScope();
+
+            try
+            {
+                const repository = scope.resolve<SnapshotCreatorRepository>("SnapshotCreatorRepository");
+
+                const inStudioB = (await repository.queryAcrossStudiosByEmail("ada@example.com"))
+                    .find(t => t.organizationId === studioBId);
+                assert.ok(inStudioB != null);
+
+                // the scoped door is unmoved: from studio A, an id owned by studio B does not exist
+                await assert.rejects(() => repository.get(inStudioB.id), AggregateNotFoundException);
+
+                const found = await repository.findInAnyStudio(inStudioB.id);
+
+                assert.strictEqual(found?.id, inStudioB.id);
+                assert.strictEqual(found.organizationId, studioBId);
+                assert.strictEqual(found.displayName, "Ada Elsewhere");
+
+                // ...and what came back cannot be written from here, so a cross-studio read does not
+                // become a cross-studio write by accident
+                await assert.rejects(() => repository.save(found), ArgumentException);
+
+                // an id no studio holds is a miss rather than a throw, like queryById
+                assert.strictEqual(await repository.findInAnyStudio("crt_260810nosuchcreatoridatall"), null);
             }
             finally
             {

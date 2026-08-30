@@ -311,6 +311,48 @@ await describe("RepositoryQueryBuilder tests", async () =>
                 });
         });
 
+        // what queryByIdAcrossOrganizations / queryByIdsAcrossOrganizations build: the same statement,
+        // with organizationId omitted. That omission is the whole of what those two mean, so the
+        // absence of the conjunct is the thing to pin - and it is safe only because `id` is the
+        // primary key, the one index on an org snapshot table with no leading organization_id
+        await test("the statements the cross-organization id doors build carry no tenant conjunct", async () =>
+        {
+            assert.deepStrictEqual(
+                RepositoryQueryBuilder.build("receipt_snaps",
+                    RepositoryQueryBuilder.idPredicate("id", ["rec_1", "rec_2"]), []),
+                {
+                    sql: `select data from receipt_snaps where (id in (?,?));`,
+                    params: ["rec_1", "rec_2"]
+                });
+
+            // with a predicate, the ids still bind before the predicate's own values
+            assert.deepStrictEqual(
+                RepositoryQueryBuilder.build("receipt_snaps",
+                    RepositoryQueryBuilder.idPredicate("id", ["rec_1"], querySet.eq("status", "open")), []),
+                {
+                    sql: `select data from receipt_snaps where (id in (?) and (((data->>'status') = ?)));`,
+                    params: ["rec_1", "open"]
+                });
+        });
+
+        // the pair above and the scoped one differ by exactly one conjunct and one bound value -
+        // which is what makes the cross-organization doors a parameter rather than a second statement
+        await test("the scoped and cross-organization id statements differ only by the tenant conjunct", async () =>
+        {
+            const predicate = RepositoryQueryBuilder.idPredicate("id", ["rec_1"]);
+
+            const scoped = RepositoryQueryBuilder.build("receipt_snaps", predicate, [], ORG);
+            const across = RepositoryQueryBuilder.build("receipt_snaps", predicate, []);
+
+            assert.strictEqual(scoped.sql,
+                `select data from receipt_snaps where organization_id = ? and (id in (?));`);
+            assert.strictEqual(across.sql,
+                `select data from receipt_snaps where (id in (?));`);
+
+            assert.deepStrictEqual(scoped.params, [ORG, "rec_1"]);
+            assert.deepStrictEqual(across.params, ["rec_1"]);
+        });
+
         // the same hazard the org filter is parenthesized against, one level in: `and` binds tighter
         // than `or`, so an unparenthesized predicate would let a row that matches neither id through
         await test("a top-level or in the predicate escapes neither the ids nor the organization", async () =>
