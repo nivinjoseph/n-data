@@ -21,7 +21,10 @@ import { snapshotDocumentToState, toSnapshotDocument, type SnapshotDocumentOf } 
  * {@link getAll} takes every row this organization has. Any other read is a method the concrete
  * subclass names for itself, built over one of the `protected` doors: {@link query} for a condition
  * on a field inside `data`, {@link queryById} or {@link queryByIds} for one that also constrains the
- * id, {@link exists} and {@link count} for a yes-or-no or a number.
+ * id, {@link exists} and {@link count} for a yes-or-no or a number, and - for a read that genuinely
+ * leaves the tenant boundary - {@link queryByIdAcrossOrganizations} and
+ * {@link queryByIdsAcrossOrganizations} by id, {@link queryAcrossOrganizations} for a whole statement,
+ * {@link queryRawAcrossOrganizations} for a projection.
  *
  * **Every one of those scopes itself to the current organization, so a subclass never writes that
  * filter.** `query` owns the statement - `select data from <table> where organization_id = ? and
@@ -299,8 +302,10 @@ export abstract class OrgSnapshotBaseRepository<T extends OrgAggregateRoot<TStat
      * **Forcing does not step outside the organization**, because nothing about the tenant check
      * moves: an aggregate belonging to another organization is rejected here exactly as it always
      * was. So a migration that has to cover every tenant runs once per organization's
-     * {@link BaseRepository.domainContext}, and {@link queryAcrossOrganizations} cannot feed what it
-     * read straight back into this door.
+     * {@link BaseRepository.domainContext}, and nothing a cross-organization read returns can be fed
+     * straight back into this door - not {@link queryAcrossOrganizations}, and not
+     * {@link queryByIdAcrossOrganizations} or {@link queryByIdsAcrossOrganizations}, which are the
+     * likelier source of a foreign aggregate.
      *
      * `force` lives here and not on {@link Repository}, whose `save` the event stream repositories
      * also implement and could not honor - an unchanged aggregate has no events to append. So it is
@@ -388,7 +393,9 @@ export abstract class OrgSnapshotBaseRepository<T extends OrgAggregateRoot<TStat
      * inside it can escape neither the id filter nor the tenant one.
      *
      * **Returns null rather than throwing**, unlike {@link get}, and does so for every miss alike -
-     * no such id, an id in another organization, and an id whose row the predicate excluded. They are
+     * no such id, an id in another organization, and an id whose row the predicate excluded. To find
+     * that second case rather than read it as a miss, {@link queryByIdAcrossOrganizations} is this
+     * without the tenant filter. They are
      * not distinguished here on purpose: only the subclass knows what its predicate meant, so only
      * the subclass can say whether an excluded row is exceptional.
      *
@@ -413,6 +420,9 @@ export abstract class OrgSnapshotBaseRepository<T extends OrgAggregateRoot<TStat
      * The set-shaped counterpart to {@link queryById}, and the read {@link getByIds} is built from -
      * so the id hygiene is the same one: ids that are blank once trimmed are dropped, and if that
      * leaves none the result is empty without a statement being run at all.
+     *
+     * {@link queryByIdsAcrossOrganizations} is this without the tenant filter, for ids that may belong
+     * to any organization.
      *
      * @param {ReadonlyArray<string>} ids - The aggregate ids to load.
      * @param {SnapshotPredicate} [predicate] - A further condition each row must satisfy; omitted loads by id alone.

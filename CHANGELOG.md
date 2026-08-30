@@ -56,6 +56,17 @@ is byte-identical to v7's.
   repositories implement that interface and an unchanged aggregate gives them no events to append, so
   `force` is reachable only through a snapshot repository's own type.
 - `id` is queryable.
+- **Cross-organization lookup by id on `OrgSnapshotBaseRepository`.** `queryByIdAcrossOrganizations(id,
+  predicate?)` and `queryByIdsAcrossOrganizations(ids, predicate?)` are `queryById`/`queryByIds` with
+  the organization filter dropped - the read a platform-wide question needs ("which organization owns
+  this id?"), which previously meant hand-writing a statement through `queryAcrossOrganizations` and,
+  for a list, hand-building the `in (?, ?, ...)` placeholder run. They keep the same id hygiene and the
+  same null-on-miss contract, and they are `protected`, so crossing the boundary is still a method a
+  subclass names for itself rather than something the public surface offers. Cheap where a
+  cross-organization condition on a declared path is not: `id` is the primary key, the one index on an
+  org snapshot table with no leading `organization_id`, so this stays an index lookup while a path
+  predicate without the tenant filter cannot use its index at all. What comes back is read-only in
+  practice - `save` still rejects an aggregate belonging to another organization.
 - **Documentation: the materialized-derived-value rule.** A `@serialize`d getter left out of a
   `DomainObject`'s `TDataKeys` is written to every row — the runtime serializer walks decorators —
   while offering no typed path, and `verifyDocument` cannot flag it, since it checks that declared

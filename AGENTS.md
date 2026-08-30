@@ -108,7 +108,19 @@ Ordered roughly by how expensive they are to get wrong.
   purpose: a predicate is publicly constructible (the migration consumes the same `indexes` static a
   repository exposes), so an optional predicate on the public `get` would let any caller filter these
   reads. Note `queryById` returns `null` rather than throwing, for a missing id and an excluded one
-  alike — unlike `get`, which throws `AggregateNotFoundException`.
+  alike — unlike `get`, which throws `AggregateNotFoundException`. On an org repository the pair has
+  cross-tenant counterparts, `queryByIdAcrossOrganizations`/`queryByIdsAcrossOrganizations` — the same
+  statement with the organization filter dropped, also `protected`, also returning `null`/`[]` on a
+  miss. What they return is read-only in practice: `save` rejects an aggregate whose organization is
+  not the current one, so a cross-tenant read cannot become a cross-tenant write.
+- **Crossing the tenant boundary keeps the index only for an id or an array.** Every btree expression
+  index on an org snapshot table leads with `organization_id`, and btree serves only a leading prefix
+  — so a *cross-organization* predicate on a declared path cannot use its index and sequentially
+  scans, however exactly the expression matches. Two reads survive the crossing intact: a lookup by
+  `id`, served by the primary key, which has no tenant prefix; and array containment, served by a GIN
+  index, which cannot have one. This is why the cross-organization surface is an id pair plus a raw
+  statement door, and not a general typed predicate — prefer `queryByIdAcrossOrganizations` and reach
+  for `queryAcrossOrganizations` knowing what it costs.
 - **`DbMigrator` has a required call order.** Configure, then `await bootstrap()`, then
   `await runMigrations()` — the latter throws if bootstrap has not run. Supply *exactly one* of
   `useSystemTable(name)` or `registerDbVersionProvider(cls)`; both or neither throws.

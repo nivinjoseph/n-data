@@ -460,8 +460,11 @@ export abstract class SnapshotBaseRepository<T extends AggregateRoot<TState, TDo
      *
      * The escape hatch from {@link query}, for the joins, unions, CTEs and set operations the statement
      * it builds cannot express. Everything {@link query} guarantees is yours to get right here: the
-     * select list must be `data`, since that is the column each row is deserialized from. Prefer
-     * {@link query} unless it cannot express the read.
+     * select list must be `data`, since that is the column each row is deserialized from, and any
+     * expression over it should come from {@link querySet}'s `expressionFor`, so it still matches the
+     * index it was created from - Postgres uses an expression index only when the expression matches
+     * *textually*, and a near-miss silently falls back to a sequential scan. Prefer {@link query}
+     * unless it cannot express the read.
      *
      * @param {string} sql - The statement to run. Must select the `data` column.
      * @param {...ReadonlyArray<any>} params - Values bound to the statement's `?` placeholders.
