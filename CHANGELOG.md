@@ -53,6 +53,33 @@ per flagged path and needs a migration to do so.
 
 ### Added
 
+- **Read models.** A flat, `DomainEntity`-shaped projection — `ReadModel<TThis, TDataKeys>`, an `id`
+  plus scalar or array-of-scalar properties — stored one row per instance in a table with one real
+  typed column per property, so any analytical SQL runs against it. Declared once by
+  `ReadModelSchema.for(Model, { key: { type: ColumnType.x, index?, unique?, name? } }).withIndex([...])`:
+  an object literal keyed by every data key, so completeness, type fit, flatness and `unique` on an
+  array are compile errors, and every predicate checks its key and value against the declaration;
+  every consumer takes `IntactReadModelSchema<T>`, so a schema widened to `ReadModelSchema<any>` is
+  refused where it is handed over. Consumed by `ReadModelTableCreator` (`createReadModelTable`, `verifyReadModelTable` with
+  `ReadModelDriftIssue`, `reconcileReadModelTable`) and by `ReadModelBaseRepository`
+  (`get`/`getByIds`/`getAll`, the upsert `save`/`saveWithin`, `delete`/`deleteWithin`, and the
+  protected `query`/`queryById`/`queryByIds`/`exists`/`count`/`queryRaw`/`queryStatement` doors, with
+  `ReadModelQuery` for ordering and paging). Predicates: `eq`/`ne`/`gt`/`gte`/`lt`/`lte`/`in`,
+  `isNull`/`isNotNull` on any column, `like`/`ilike` on text, `contains`/`containsAll`/`containsAny`
+  over array columns (GIN-served `@>`/`&&`), `and`/`or`/`not`/`raw`, `orderBy`, `columnFor`.
+  `ColumnType.timestamptz` stores a number of epoch milliseconds as a real timestamp. Every column
+  is nullable, every save is an upsert, and there is no organization-scoped variant — a read model is
+  cross-organization by design. `verifyModel` is `verifyValues` (every value against its column's type and
+  Postgres range, run on every save) plus `verifyShape` (the `undeclared-getter`, `undecorated-getter`
+  and `renamed-getter` advisories, read from the class's metadata and logged once per schema);
+  hydration stamps the class's registered `$typename` as the deserializer does. `verifyReadModelTable`
+  also reports `index-definition-mismatch` for a partial index, opclass or ordering under a declared
+  name. `DataHelper.createReadModelTableName`, present since 7.0 with no callers, now takes a read
+  model class (`ReadModelClass`) and no longer takes a prefix. Internal:
+  `RepositoryQueryBuilder.buildSelect` parameterizes the select list (`build` delegates to it with
+  `data`, byte-identical) and the builders are overloaded per predicate family; the DDL helpers and
+  the index-comparison skeleton both creators share moved to `src/migration/table-ddl.ts`. `test-example/` gains `CreatorActivity`, a cross-studio projection,
+  and `ExDbMigration_5`.
 - **Typed, index-served cross-organization reads.** `withPath`/`withComposite` take
   `acrossOrganizations: true` on an org-scoped state (refused on a plain one, at compile time and at
   plan time). `DbTableCreator.createSnapshotTableForOrgAggregate` then creates the path's

@@ -2,7 +2,7 @@ import { ArgumentException, ArgumentNullException, Exception } from "@nivinjosep
 import { Logger } from "@nivinjoseph/n-log";
 import assert from "node:assert";
 import test, { after, before, describe } from "node:test";
-import { Db, DbConnectionConfig, DbConnectionFactory, DbTableCreator, JsonValueType, KnexPgDb, KnexPgDbConnectionFactory, SnapshotIndex, SnapshotOrderBy, SnapshotQuerySet } from "../src/index.js";
+import { Db, DbConnectionConfig, DbConnectionFactory, DbTableCreator, JsonValueType, KnexPgDb, KnexPgDbConnectionFactory, ReadModelPredicate, SnapshotIndex, SnapshotOrderBy, SnapshotQuerySet } from "../src/index.js";
 import { RepositoryQueryBuilder } from "../src/repository/repository-query.js";
 import { OrgAggregateRoot, OrgAggregateState, OrgDomainEvent } from "@nivinjoseph/n-domain";
 
@@ -161,6 +161,74 @@ await describe("RepositoryQueryBuilder tests", async () =>
 
     // the forms a SnapshotQuerySet hands to `query`: a predicate that owns its params, and order-by
     // terms that own their expressions
+    // The select list is a parameter of the shared body, because the read model repositories select
+    // their real columns where the snapshot and event stream repositories select `data`. `build` is
+    // that body with `data` filled in, so every statement it emitted before is byte-identical.
+    await describe("Select list", async () =>
+    {
+        await test("buildSelect interpolates the select list where build puts data", async () =>
+        {
+            const built = RepositoryQueryBuilder.buildSelect("id, status, total", "order_summary_read_model", "status = ?", ["sent"]);
+
+            assert.strictEqual(built.sql, "select id, status, total from order_summary_read_model where (status = ?);");
+            assert.deepStrictEqual(built.params, ["sent"]);
+        });
+
+        await test("build is buildSelect with data as the select list", async () =>
+        {
+            assert.strictEqual(
+                RepositoryQueryBuilder.build("receipt_snaps", "id = ?", ["rec_1"], ORG).sql,
+                RepositoryQueryBuilder.buildSelect("data", "receipt_snaps", "id = ?", ["rec_1"], ORG).sql);
+            assert.strictEqual(
+                RepositoryQueryBuilder.build("order_snaps", { limit: 5 }, []).sql,
+                "select data from order_snaps limit ?;");
+        });
+
+        await test("a malformed select list throws before any statement is assembled", async () =>
+        {
+            assert.throws(() => RepositoryQueryBuilder.buildSelect("   ", "order_snaps", {}, []), ArgumentException);
+            assert.throws(() => RepositoryQueryBuilder.buildSelect("id; drop table order_snaps", "order_snaps", {}, []), ArgumentException);
+            assert.throws(() => RepositoryQueryBuilder.buildSelect("select id", "order_snaps", {}, []), ArgumentException);
+        });
+    });
+
+    // Nothing runs: the `@ts-expect-error` lines are the assertions. The builder serves both predicate
+    // families through overloads, and a hand-built literal - which nothing branded - fits neither.
+    await describe("Predicate families (compile-time)", async () =>
+    {
+        await test("a bare literal is no predicate at any builder entry, while both families are", async () =>
+        {
+            const rejected = (): void =>
+            {
+                // @ts-expect-error - a bare literal carries no brand
+                RepositoryQueryBuilder.idPredicate("id", ["a"], { sql: "x = ?", params: [1] });
+                // @ts-expect-error - nor for exists
+                RepositoryQueryBuilder.buildExists("t", { sql: "x = ?", params: [1] });
+                // @ts-expect-error - nor for count
+                RepositoryQueryBuilder.buildCount("t", { sql: "x = ?", params: [1] });
+                // @ts-expect-error - nor for the select body
+                RepositoryQueryBuilder.buildSelect("id", "t", { sql: "x = ?", params: [1] }, []);
+            };
+
+            const accepted = (): void =>
+            {
+                const snapshot = SnapshotQuerySet.for<ReceiptState>().withPath("status").eq("status", "sent");
+                const readModel = <ReadModelPredicate>{ sql: "(x = ?)", params: [1], table: "t" };
+
+                RepositoryQueryBuilder.idPredicate("id", ["a"], snapshot);
+                RepositoryQueryBuilder.idPredicate("id", ["a"], readModel);
+                RepositoryQueryBuilder.buildExists("t", snapshot, "a", ORG);
+                RepositoryQueryBuilder.buildExists("t", readModel, "a");
+                RepositoryQueryBuilder.buildCount("t", readModel);
+                RepositoryQueryBuilder.buildSelect("id", "t", readModel, []);
+                RepositoryQueryBuilder.buildSelect("id", "t", { where: readModel, limit: 1 }, []);
+            };
+
+            assert.strictEqual(typeof rejected, "function");
+            assert.strictEqual(typeof accepted, "function");
+        });
+    });
+
     await describe("Predicate and orderBy forms", async () =>
     {
         const querySet = SnapshotQuerySet.for<ReceiptState>()

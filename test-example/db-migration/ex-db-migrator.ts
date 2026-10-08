@@ -9,6 +9,7 @@ import { ExDbMigration_1 } from "./migrations/ex-db-migration_1.js";
 import { ExDbMigration_2 } from "./migrations/ex-db-migration_2.js";
 import { ExDbMigration_3 } from "./migrations/ex-db-migration_3.js";
 import { ExDbMigration_4 } from "./migrations/ex-db-migration_4.js";
+import { ExDbMigration_5 } from "./migrations/ex-db-migration_5.js";
 
 /**
  * The isolated container the migrator runs in.
@@ -42,7 +43,7 @@ class ExDbMigrationInstaller implements ComponentInstaller
 
 // `registerMigrations` takes bare `Function`s - it reads the version off each class name - so a class
 // hierarchy is the closest honest type for the list
-const migrations: ReadonlyArray<ClassHierarchy<DbMigration>> = [ExDbMigration_1, ExDbMigration_2, ExDbMigration_3, ExDbMigration_4];
+const migrations: ReadonlyArray<ClassHierarchy<DbMigration>> = [ExDbMigration_1, ExDbMigration_2, ExDbMigration_3, ExDbMigration_4, ExDbMigration_5];
 
 /**
  * Builds the migrator for the `exdb` database.

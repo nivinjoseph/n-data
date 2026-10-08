@@ -2,7 +2,9 @@ import { AggregateRoot, ConfigurableDomainContext, DomainContext, OrgConfigurabl
 import { Deserializer } from "@nivinjoseph/n-util";
 import assert from "node:assert";
 import test, { describe } from "node:test";
+import { ArgumentNullException } from "@nivinjoseph/n-exception";
 import { toSnapshotDocument } from "../../src/index.js";
+import { CreatorActivity } from "../creator/read-models/creator-activity.js";
 import { Creator } from "../creator/creator.js";
 import { CreatorStateFactory } from "../creator/creator-state.js";
 import { SnapshotCreatorRepository } from "../creator/repositories/snapshot-creator-repository.js";
@@ -249,5 +251,29 @@ await describe("Serialization", async () =>
 
         // and re-saving is what closes the gap - the next document carries the recomputed value
         assert.strictEqual(toSnapshotDocument(restored).plan.featureCount, 2);
+    });
+});
+
+/**
+ * The projection hydrates through its own constructor, so what the README promises for a stale row - a
+ * named guard failure, not a TypeError - is pinned here, with no database.
+ */
+await describe("CreatorActivity hydration", async () =>
+{
+    const data = {
+        id: "crt_260810abcdefghijklmnopqrstuv", studioId, email: "ada@example.com", displayName: "Ada Lovelace",
+        role: "lead", joinedAt: 1700000000000, isDeactivated: false, skills: ["typescript", "postgres"]
+    };
+
+    await test("the materialized skill count is recomputed from the stored skills, never trusted", async () =>
+    {
+        const stored = { ...new CreatorActivity(data).serialize(), skillCount: 99 };
+
+        assert.strictEqual(new CreatorActivity(<any>stored).skillCount, 2);
+    });
+
+    await test("a NULL skills column - a row older than the property - fails by name, not with a TypeError", async () =>
+    {
+        assert.throws(() => new CreatorActivity(<any>{ ...data, skills: null }), (e: Error) => e instanceof ArgumentNullException && e.message.contains("skills"));
     });
 });

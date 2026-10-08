@@ -1,8 +1,8 @@
 # AGENTS.md
 
 Orientation for AI coding agents working in or against `@nivinjoseph/n-data` — a PostgreSQL data
-access layer over Knex, with event-sourcing repositories, caching, file storage and distributed
-locking. Part of the `@nivinjoseph/n-*` family (DI via `n-ject`, domain types via `n-domain`,
+access layer over Knex, with event-sourcing repositories, read models, caching, file storage and
+distributed locking. Part of the `@nivinjoseph/n-*` family (DI via `n-ject`, domain types via `n-domain`,
 guards via `n-defensive`, `Duration` via `n-util`).
 
 ## Ground rules
@@ -26,6 +26,8 @@ guards via `n-defensive`, `Duration` via `n-util`).
    README does not carry.
 3. `src/index.ts` — the full export list.
 4. `test-example/test/example.test.ts` — end-to-end wiring and the scoping pattern.
+5. `src/read-model/read-model-schema.ts` and `src/read-model/read-model-base-repository.ts` — the
+   read model declaration and repository, documented in depth like the snapshot files.
 
 For `DbMigrator`, `KnexPgUnitOfWork`, `S3FileStore` and `StoredFile`, read the source: those files
 carry no doc comments. The snapshot and repository files, by contrast, are documented in depth and
@@ -66,6 +68,25 @@ One declaration serves as the migration's index spec, the query-time predicate f
 baseline `DbTableCreator.verifySnapshotTableForAggregate` compares the database against — so a
 queried index is necessarily a created one, and a drifted one is a detectable one. Do not
 hand-write the extraction expressions.
+
+Read models get the same treatment through `ReadModelSchema.for(Model, { ... })`: an object literal
+keyed by every data key except `id`, so a missing key, an extra key, a type that does not fit the
+property, `unique` on an array column, and a property that is not a scalar or an array of scalars
+(objects, `Date`, mixed unions, `any`, arrays with null elements) are compile errors whose text names
+the fix — and every predicate checks its key and value against that declaration. `ReadModelSchema<T>`
+has one type parameter, fully determined by the model, so `ReadModelBaseRepository` holds it at its
+concrete type: there is no getter to override and the `querySet` trap has no counterpart. Writing
+`ReadModelSchema<any>` is caught where the schema is consumed — the repository constructor and the
+table creator's methods take the `IntactReadModelSchema<T>` brand — not at the annotation, which
+TypeScript's variance rule lets through. A generic layer of your own that forwards a schema must
+take `IntactReadModelSchema<T>` as well; `ReadModelSchema<T>` under an unresolved `T` is refused with
+a diagnostic that says so. The three things the types cannot see are runtime: a
+`@serialize`d getter left out of `TDataKeys`, a declared key whose getter is undecorated, and a
+`@serialize("customKey")` rename; `verifyShape` reports them from the class's metadata and the
+repositories log them once per schema. Storage reads properties directly, and a hydration stamps the
+class's registered `$typename` exactly as the deserializer does, so none of them moves a column.
+`verifyValues` — every value against its column's type and Postgres range — runs on every save and
+throws before anything is queued.
 
 The stored document has a type of its own: `SnapshotDocumentOf<TState>` (built from n-domain's
 `SerializedValue`, no top-level `$typename`), with `toSnapshotDocument(aggregate)` as the one
@@ -108,6 +129,30 @@ Ordered roughly by how expensive they are to get wrong.
   implement it and cannot honor it), so it is unreachable through a domain interface — resolve the
   concrete snapshot repository. On an org repository the tenant check still applies: one pass per
   organization's domain context.
+- **A read model save is always an upsert, and nothing scopes a read model.** `ReadModelBaseRepository`
+  has no change check and no `force`; `save`/`saveWithin` always write the row, `delete` is
+  idempotent, and no organization filter exists — a tenant id is a declared column a method constrains
+  deliberately. The repository takes `DomainContext` for injection-shape consistency only.
+- **Every read model column is nullable, and the TypeScript type is the application's contract.** No
+  `not null` is ever emitted and there is no nullability declaration. A property added later is a
+  column added by re-running the migration (`add column if not exists`); rows older than the property
+  read NULL there until re-projected, and a property typed non-null then throws from the class's own
+  constructor at hydration, naming the property. `verifyReadModelTable` reports the missing column
+  with its add-column fix; `reconcileReadModelTable` runs it, and never alters a type or nullability
+  (a `column-type-mismatch` is fatal with no fix) and never drops a column. A partial index, an
+  opclass or an ordering hiding under a declared index name is `index-definition-mismatch`, fixed by
+  drop and recreate — the per-column catalog form prints only the column, so the full definition is
+  compared too.
+- **`ColumnType.timestamptz` takes epoch milliseconds, and the raw door hands back pg's types.** Writes
+  and comparisons bind `to_timestamp(? / 1000.0)`; hydration reads `Date.valueOf()`. Through
+  `queryRaw`, `bigint`/`numeric` arrive as strings and `timestamptz` as a `Date` — cast in the
+  statement. Hydration normalizes them and throws on a `bigint` beyond the safe integer range; on the write
+  side the integer kinds are range-checked (`smallint` ±32767, `integer` ±2147483647, `bigint` safe
+  integer) before anything is queued.
+- **Read model keys are camelCase and derive snake_case columns; reserved words are refused.** A key
+  deriving `order`, `user`, `left` and the like fails at `ReadModelSchema.for` with "rename the
+  property"; nothing here quotes identifiers. Arrays bind as JS arrays and the indexed operators are
+  `@>` (`contains`/`containsAll`) and `&&` (`containsAny`); `= any` is deliberately absent.
 - **`getAll()` takes no arguments and reads everything.** It is not `getByIds([])`, which takes an
   array and returns nothing. Do not translate a v5 `getAll(...ids)` into `getAll(ids)`.
 - **`get`/`getByIds` take no predicate; `queryById`/`queryByIds` do.** An id lookup filtered by a

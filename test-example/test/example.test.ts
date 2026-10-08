@@ -3,7 +3,7 @@ import { Container, Scope } from "@nivinjoseph/n-ject";
 import assert from "node:assert";
 import test, { after, before, describe } from "node:test";
 import { ArgumentException } from "@nivinjoseph/n-exception";
-import { AggregateNotFoundException, Db, DbException, DbMigrator, DbTableCreator, KnexPgDbConnectionFactory, KnexPgUnitOfWork, UnitOfWork } from "../../src/index.js";
+import { AggregateNotFoundException, Db, DbException, DbMigrator, DbTableCreator, KnexPgDbConnectionFactory, KnexPgUnitOfWork, ReadModelNotFoundException, ReadModelTableCreator, UnitOfWork } from "../../src/index.js";
 import { ExampleLogger } from "../common/example-logger.js";
 import { CommonInstaller } from "../common/ioc/common-installer.js";
 import { CreatorFactory } from "../creator/factories/creator-factory.js";
@@ -13,6 +13,9 @@ import { Creator } from "../creator/creator.js";
 import { CreatorRepository } from "../creator/repositories/creator-repository.js";
 import { EventStreamCreatorRepository } from "../creator/repositories/event-stream-creator-repository.js";
 import { SnapshotCreatorRepository } from "../creator/repositories/snapshot-creator-repository.js";
+import { CreatorActivity } from "../creator/read-models/creator-activity.js";
+import { CreatorActivityRepository } from "../creator/read-models/creator-activity-repository.js";
+import { PgCreatorActivityRepository } from "../creator/read-models/pg-creator-activity-repository.js";
 import { SnapshotStudioRepository } from "../studio/repositories/snapshot-studio-repository.js";
 import { createExDbMigrator } from "../db-migration/ex-db-migrator.js";
 import { StudioFactory } from "../studio/factories/studio-factory.js";
@@ -104,6 +107,7 @@ await describe("The example application", async () =>
         db = container.resolve<Db>("Db");
 
         await db.executeCommand(`
+            drop table if exists creator_activity_read_model;
             drop table if exists creator_snaps;
             drop table if exists creator_events;
             drop table if exists studio_snaps;
@@ -136,17 +140,19 @@ await describe("The example application", async () =>
             assert.ok(names.contains("studio_snaps"), names.join(", "));
             assert.ok(names.contains("creator_events"), names.join(", "));
             assert.ok(names.contains("creator_snaps"), names.join(", "));
+            // the projection's table, one real column per property
+            assert.ok(names.contains("creator_activity_read_model"), names.join(", "));
 
             // useSystemTable opted into the built-in version provider, which created this lazily
             assert.ok(names.contains("ex_db_system"), names.join(", "));
         });
 
-        await test("record version 4, one per migration", async () =>
+        await test("record version 5, one per migration", async () =>
         {
             const result = await db.executeQuery<{ data: { version: number; }; }>(
                 `select data from ex_db_system where key = 'db_info';`);
 
-            assert.strictEqual(result.rows[0].data.version, 4);
+            assert.strictEqual(result.rows[0].data.version, 5);
         });
 
         await test("create every index the repositories declared", async () =>
@@ -176,6 +182,14 @@ await describe("The example application", async () =>
             assert.ok(names.contains("idx_creator_snaps_email_xorg"), names.join(", "));
             // `role` is not declared so, and has no twin
             assert.ok(!names.contains("idx_creator_snaps_role_displayname_xorg"), names.join(", "));
+
+            // and the read model side: real columns, so plain btree indexes with no tenant prefix, a GIN
+            // over the array column, and a composite - all from ExDbMigration_5
+            assert.ok(names.contains("idx_creator_activity_read_model_email"), names.join(", "));
+            assert.ok(names.contains("idx_creator_activity_read_model_role"), names.join(", "));
+            assert.ok(names.contains("idx_creator_activity_read_model_joined_at"), names.join(", "));
+            assert.ok(names.contains("idx_creator_activity_read_model_skills_gin"), names.join(", "));
+            assert.ok(names.contains("idx_creator_activity_read_model_studio_id_role"), names.join(", "));
         });
 
         // the drift detector in its assert-empty idiom, against the same declarations the migrations
@@ -193,6 +207,10 @@ await describe("The example application", async () =>
             assert.deepStrictEqual(await tableCreator.verifyEventStreamTableForOrgAggregate(Creator), []);
             assert.deepStrictEqual(
                 await tableCreator.verifySnapshotTableForOrgAggregate(Creator, SnapshotCreatorRepository.indexes), []);
+
+            // the read model has its own creator and its own drift check, against the same `schema` static
+            assert.deepStrictEqual(
+                await new ReadModelTableCreator(db, logger).verifyReadModelTable(PgCreatorActivityRepository.schema), []);
         });
 
         await test("are idempotent - a second run reports nothing to do", async () =>
@@ -210,7 +228,7 @@ await describe("The example application", async () =>
 
             const result = await db.executeQuery<{ data: { version: number; }; }>(
                 `select data from ex_db_system where key = 'db_info';`);
-            assert.strictEqual(result.rows[0].data.version, 4);
+            assert.strictEqual(result.rows[0].data.version, 5);
         });
     });
 
@@ -930,6 +948,172 @@ await describe("The example application", async () =>
             {
                 await scope.dispose();
             }
+        });
+    });
+
+    await describe("Creator activity, the cross-studio read model", async () =>
+    {
+        // Projects every creator of a studio, each in its own scope: a save commits the scope's unit of
+        // work, so one write per scope is the model here as everywhere else
+        const project = async (studioId: string): Promise<number> =>
+        {
+            domainContext.organizationId = studioId;
+
+            const creators = await inScope(s => s.resolve<CreatorRepository>("CreatorRepository").getAll());
+
+            for (const creator of creators)
+                await inScope(s => s.resolve<CreatorActivityRepository>("CreatorActivityRepository")
+                    .save(CreatorActivity.fromCreator(creator)));
+
+            return creators.length;
+        };
+
+        await test("projects every creator of both studios into one table, and reads across them", async () =>
+        {
+            const inA = await project(studioAId);
+            const inB = await project(studioBId);
+
+            await inScope(async s =>
+            {
+                const activity = s.resolve<CreatorActivityRepository>("CreatorActivityRepository");
+
+                // the per-studio question is an argument, not an ambient scope
+                assert.strictEqual((await activity.getByStudio(studioAId)).length, inA);
+                assert.strictEqual((await activity.getByStudio(studioBId)).length, inB);
+
+                // and the platform-wide one needs no door at all
+                const all = await activity.getAll();
+                assert.strictEqual(all.length, inA + inB);
+                assert.ok(all.every(t => t.studioId === studioAId || t.studioId === studioBId));
+
+                // the same email lives in both studios - unique per tenant on the aggregate, two rows here
+                const byEmail = all.where(t => t.email === "ada@example.com");
+                assert.strictEqual(byEmail.length, 2);
+                assert.notStrictEqual(byEmail[0].studioId, byEmail[1].studioId);
+            });
+        });
+
+        await test("a re-projection replaces the row, and the materialized count follows the array", async () =>
+        {
+            domainContext.organizationId = studioAId;
+
+            const before = await inScope(s => s.resolve<CreatorActivityRepository>("CreatorActivityRepository").getAll());
+
+            const adaId = await inScope(async s =>
+            {
+                const repository = s.resolve<CreatorRepository>("CreatorRepository");
+                const ada = await repository.getByEmail("ada@example.com");
+
+                ada!.addSkill("Projection");
+                await repository.save(ada!);
+
+                return ada!.id;
+            });
+
+            await inScope(async s =>
+            {
+                const creator = await s.resolve<CreatorRepository>("CreatorRepository").get(adaId);
+                await s.resolve<CreatorActivityRepository>("CreatorActivityRepository").save(CreatorActivity.fromCreator(creator));
+            });
+
+            await inScope(async s =>
+            {
+                const activity = s.resolve<CreatorActivityRepository>("CreatorActivityRepository");
+                const ada = await activity.get(adaId);
+
+                assert.ok(ada.skills.contains("projection"));
+                assert.strictEqual(ada.skillCount, ada.skills.length);
+                // one row per creator, still: the second save was an upsert
+                assert.strictEqual((await activity.getAll()).length, before.length);
+            });
+        });
+
+        await test("the typed predicates and the analytical door answer platform-wide questions", async () =>
+        {
+            await inScope(async s =>
+            {
+                const activity = s.resolve<CreatorActivityRepository>("CreatorActivityRepository");
+                const all = await activity.getAll();
+
+                // containment over a real array column, GIN-served, across every studio
+                const projectors = await activity.getBySkillAcrossStudios("projection");
+                assert.strictEqual(projectors.length, 1);
+                assert.strictEqual(projectors[0].email, "ada@example.com");
+                assert.strictEqual(projectors[0].studioId, studioAId);
+
+                // a timestamptz comparison, bound as epoch milliseconds, ordered newest first
+                const joined = await activity.getJoinedSince(0);
+                assert.strictEqual(joined.length, all.length);
+                assert.ok(joined.every((t, i) => i === 0 || joined[i - 1].joinedAt >= t.joinedAt));
+                assert.strictEqual((await activity.getJoinedSince(Date.now() + 60000)).length, 0);
+
+                // the composite index's question
+                const leads = await activity.getRoleInStudio(studioAId, "lead");
+                assert.ok(leads.every(t => t.studioId === studioAId && t.role === "lead"));
+
+                // and a group-by through the raw door, which sums to the whole table
+                const byRole = await activity.countByRole();
+                assert.strictEqual(byRole.reduce((total, t) => total + t.count, 0), all.length);
+                assert.ok(byRole.every(t => typeof t.count === "number"));
+            });
+        });
+
+        // A projection should land with the aggregate it mirrors, or not at all. Both repositories are
+        // resolved from one scope and handed one explicit unit of work; neither commits, the caller does.
+        await test("a projection shares the aggregate's transaction through saveWithin", async () =>
+        {
+            domainContext.organizationId = studioAId;
+
+            const scope = createScope();
+            const unitOfWork: UnitOfWork = new KnexPgUnitOfWork(
+                scope.resolve<KnexPgDbConnectionFactory>("DbConnectionFactory"));
+
+            let graceId: string;
+
+            try
+            {
+                const repository = scope.resolve<CreatorRepository>("CreatorRepository");
+                const activity = scope.resolve<CreatorActivityRepository>("CreatorActivityRepository");
+
+                const grace = await repository.getByEmail("grace@example.com");
+                graceId = grace!.id;
+                grace!.updateProfile("Grace Brewster Murray Hopper");
+
+                await repository.saveWithin(grace!, unitOfWork);
+                await activity.saveWithin(CreatorActivity.fromCreator(grace!), unitOfWork);
+
+                await unitOfWork.rollback();
+            }
+            finally
+            {
+                await scope.dispose();
+            }
+
+            // neither landed
+            await inScope(async s =>
+            {
+                assert.strictEqual((await s.resolve<CreatorRepository>("CreatorRepository").get(graceId)).displayName, "Grace Hopper");
+                assert.strictEqual((await s.resolve<CreatorActivityRepository>("CreatorActivityRepository").get(graceId)).displayName, "Grace Hopper");
+            });
+        });
+
+        await test("delete removes the projection, and nothing else", async () =>
+        {
+            await inScope(async s =>
+            {
+                const activity = s.resolve<CreatorActivityRepository>("CreatorActivityRepository");
+                const all = await activity.getAll();
+                const victim = all[0];
+
+                await activity.delete(victim.id);
+
+                await assert.rejects(() => activity.get(victim.id), ReadModelNotFoundException);
+            });
+
+            // the aggregate is untouched: a read model is a projection, never a source
+            domainContext.organizationId = studioAId;
+            const creators = await inScope(s => s.resolve<CreatorRepository>("CreatorRepository").getAll());
+            assert.ok(creators.length > 0);
         });
     });
 

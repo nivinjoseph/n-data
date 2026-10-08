@@ -51,6 +51,7 @@ studio/
   exceptions/                   this aggregate's domain exceptions
   factories/                    the factory interface and its default implementation
   repositories/                 the interface, plus an event-stream and a snapshot implementation
+  read-models/                  (creator only) a flat projection, its interface and its Postgres repository
   ioc/                          the domain installer
 db-migration/
   ex-db-migrator.ts             one migrator, named for the database it owns
@@ -58,6 +59,7 @@ db-migration/
   migrations/ex-db-migration_2.ts
   migrations/ex-db-migration_3.ts
   migrations/ex-db-migration_4.ts
+  migrations/ex-db-migration_5.ts
 test/                           the doubles and the tests
 ```
 
@@ -72,7 +74,7 @@ name — exactly one underscore, integer suffix greater than zero — so `ExDbMi
 | `studio.test.ts` | no | Studio's behavior and invariants, through the factory and an in-memory repository |
 | `creator.test.ts` | no | the same for Creator, including that a natural key is per-tenant |
 | `serialization.test.ts` | no | every `@serialize`d class round-trips, through events *and* through a snapshot; every declared index path resolves in a real snapshot (`verifyDocument`); and a materialized derived value is recomputed on read rather than trusted, so a stale stored count cannot reach the object |
-| `example.test.ts` | **yes** | migrations, the DDL and indexes, drift verification (`verifySnapshotTableForAggregate` asserts empty against the same declarations), the organization filter, the unique constraints, an id lookup composed with a declared path (`queryById`/`queryByIds`, including that an archived studio is excluded while `get` still returns it), both ways out of the tenant boundary (the typed `queryAcrossOrganizations` by `email`, a path declared across organizations - including that an unflagged path such as `role` is a compile error there - and `queryByIdAcrossOrganizations` by id, including that an id owned by another studio is still a miss for `get`, and that what the cross-tenant read returns cannot be saved from the reading studio), and the unit of work |
+| `example.test.ts` | **yes** | migrations, the DDL and indexes, drift verification (`verifySnapshotTableForAggregate` asserts empty against the same declarations), the organization filter, the unique constraints, an id lookup composed with a declared path (`queryById`/`queryByIds`, including that an archived studio is excluded while `get` still returns it), both ways out of the tenant boundary (the typed `queryAcrossOrganizations` by `email`, a path declared across organizations - including that an unflagged path such as `role` is a compile error there - and `queryByIdAcrossOrganizations` by id, including that an id owned by another studio is still a miss for `get`, and that what the cross-tenant read returns cannot be saved from the reading studio), the unit of work, and the cross-studio read model (`CreatorActivity`: projection into real columns, upsert on re-projection, the typed predicates and the analytical door across studios, `verifyReadModelTable` asserting no drift, and a projection sharing the aggregate's transaction through `saveWithin`) |
 
 The split matters. `serialization.test.ts` is the one that catches the most damaging class of mistake: a
 serialized key that does not match a constructor parameter arrives as `undefined` and trips a guard at *read*
@@ -81,7 +83,7 @@ time, long after the write that caused it. It costs nothing to run and it is whe
 `example.test.ts` runs its blocks in order and shares state deliberately — it is one application session, not
 a set of isolated units.
 
-## Four things worth knowing before reading the code
+## Five things worth knowing before reading the code
 
 **A scope is a write boundary.** A repository is registered `scoped` and takes its unit of work by injection,
 so one repository instance holds exactly one; `save` with no explicit unit of work commits it, and a committed
@@ -136,3 +138,23 @@ migration simply re-calls `createSnapshotTableForAggregate` with the current dec
 `_2` had run, and the flag *is* an index — the prefix-free `idx_creator_snaps_email_xorg` twin that the typed
 cross-studio read walks — so it too needs a migration that re-calls the create. Flagging a path is adding an
 index, and the drift check reports the missing twin exactly as it reports a missing path.
+
+**A read model is a projection into real columns.** `CreatorActivity` is the one read the org-scoped
+`CreatorRepository` cannot serve with an index: a question that spans studios. Every btree on `creator_snaps`
+leads with `organization_id`, so a platform-wide read either walks the one flagged path or scans. The read
+model has no tenant at all - `studioId` is a column like any other, indexed like any other - and every
+property is a real typed column, so the analytical door (`countByRole`, through `queryRaw`) can group,
+window and join over them with any SQL. Its `schema` static is the whole declaration, consumed by
+`ExDbMigration_5`, by every predicate in `PgCreatorActivityRepository`, and by `verifyReadModelTable` in
+`example.test.ts`; unlike a `SnapshotQuerySet` it has one type parameter, fully determined by the model, so
+the base repository holds it at its concrete type and there is no getter to override.
+
+Three rules follow from its being a projection. Every save is an upsert - there is no change tracking, and
+re-projecting an unchanged creator costs one statement. Every column is nullable, so a property added later
+is a column added by re-running the migration, identical to one created on day 1; rows older than the
+property read NULL there until re-projected, and the class's own constructor is what refuses that at
+hydration. And when a projection is written from an aggregate's `onSave`, it must resolve its **own**
+transient `UnitOfWork`: `onSave` fires after the scope's unit of work has committed, and a committed unit of
+work is dead. `example.test.ts` shows the other shape instead - the application projecting explicitly, and
+sharing one explicit unit of work between `CreatorRepository.saveWithin` and the projection's, so the row
+lands with the aggregate or not at all.

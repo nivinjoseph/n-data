@@ -11,6 +11,7 @@ A comprehensive data access library for Node.js applications, built on top of Kn
   - Database migrations
   - Connection management
   - Event sourcing repositories, with JSONB expression indexes for querying snapshots
+  - Read models: flat projections in real typed columns, declared once and checked at compile time, open to any analytical SQL
 
 - **Caching**
   - In-memory caching
@@ -495,6 +496,140 @@ No reindexing and no data migration; every index and every emitted statement is 
 7. **`SnapshotTableInfo.createdIndexes` now includes the standalone `(organization_id)` index** the org create adds when no btree declaration covers that column — reported with empty `paths` and the column as `leadingColumn`. It was created but unreported before; a test doing `deepStrictEqual` on `createdIndexes` for such a table will see the extra entry.
 8. **`OrgSnapshotBaseRepository.queryAcrossOrganizations` is the typed cross-organization door, and the raw statement door is `queryStatementAcrossOrganizations`.** `queryAcrossOrganizations(sql, ...params)` becomes `queryStatementAcrossOrganizations(sql, ...params)`, byte-for-byte the same behavior; the old name now takes a `SnapshotPredicate<true>` or `RepositoryQuery<true>` — a predicate over paths declared `{ acrossOrganizations: true }`, each of which gets a prefix-free `_xorg` twin index so the read is an index lookup with the filter dropped. `existsAcrossOrganizations` and `countAcrossOrganizations` are new, typed the same way.
 9. **`SnapshotPredicate` and `SnapshotOrderBy` carry a required `acrossOrganizations` brand.** Both are generic over it (`SnapshotPredicate<TAcross extends boolean = boolean>`), with the default admitting either kind, so an annotation that names no brand keeps compiling; `RepositoryQuery` is generic the same way, and `DeclaredSnapshotQuerySet` gains `acrossOrganizationsPaths`. A hand-built `{ sql, params }` literal no longer satisfies `SnapshotPredicate`: build it through `querySet.raw` or `querySet.rawAcrossOrganizations`.
+
+### Read Models
+
+A read model is a flat projection — an `id` plus properties that are each a scalar (`string`, `number`, `boolean`, optionally `null`) or an array of scalars — stored one row per instance in a table with **one real typed column per property**. Where a snapshot keeps the aggregate's state inside one `data jsonb` column and indexes expressions over it, a read model has nothing to extract: any SQL runs against its columns, which is what makes it the place for analytics — group-bys, window functions, time buckets, joins across projections. It is always cross-organization: if a tenant id belongs in it, it is a column like any other.
+
+The application writes a read model explicitly, as a projection of whatever it is derived from, and every save is an upsert. **One `ReadModelSchema` per repository is the whole declaration**: the migration creates the table from it, the repository writes and reads rows through it, and every predicate is built by it — checked against the model's property types at compile time.
+
+```typescript
+import { ColumnType, ReadModel, ReadModelBaseRepository, ReadModelData, ReadModelSchema, ReadModelTableCreator } from '@nivinjoseph/n-data';
+
+// 1. The model: shaped like a DomainEntity - @serialize on the class and on every data getter, a public constructor
+@serialize
+export class OrderSummary extends ReadModel<OrderSummary, "customerId" | "total" | "placedAt" | "note" | "tags">
+{
+    @serialize public get customerId(): string { return this._customerId; }
+    @serialize public get total(): number { return this._total; }
+    @serialize public get placedAt(): number { return this._placedAt; }      // epoch ms on the object, timestamptz in the table
+    @serialize public get note(): string | null { return this._note; }
+    @serialize public get tags(): ReadonlyArray<string> { return this._tags; }
+
+    public constructor(data: ReadModelData<OrderSummary>)
+    {
+        super(data);
+
+        given(data.customerId, "customerId").ensureHasValue().ensureIsString();
+        this._customerId = data.customerId;
+        // ...
+    }
+}
+
+// 2. The repository: the schema static is the whole declaration
+@inject("DomainContext", "Db", "UnitOfWork", "Logger")
+export class PgOrderSummaryRepository extends ReadModelBaseRepository<OrderSummary> implements OrderSummaryRepository
+{
+    // one entry per data key: a missing key, an extra key, a type that does not fit the property, and
+    // `unique` on an array are compile errors, and the error text names the fix
+    public static readonly schema = ReadModelSchema.for(OrderSummary, {
+        customerId: { type: ColumnType.text, index: true },
+        total: { type: ColumnType.numeric },
+        placedAt: { type: ColumnType.timestamptz, index: true },
+        note: { type: ColumnType.text },                                // string | null declares the same column as string
+        tags: { type: ColumnType.textArray, index: true }               // GIN
+    }).withIndex(["customerId", "placedAt"]);
+
+    // no getter to override: ReadModelSchema<T> is fully determined by the model, so the base holds it
+    // at its concrete type and `this.schema.eq(...)` is checked at every call site
+    public constructor(domainContext: DomainContext, db: Db, unitOfWork: UnitOfWork, logger: Logger)
+    {
+        super(domainContext, db, unitOfWork, logger, PgOrderSummaryRepository.schema);
+    }
+
+    public getByCustomer(customerId: string): Promise<Array<OrderSummary>>
+    {
+        return this.query(this.schema.eq("customerId", customerId));
+    }
+
+    // a number on both sides of the API; the schema converts it on the parameter side of the comparison
+    // (`placed_at >= to_timestamp(? / 1000.0)`), so the column's btree still serves it
+    public getPlacedSince(since: number): Promise<Array<OrderSummary>>
+    {
+        return this.query({ where: this.schema.gte("placedAt", since), orderBy: this.schema.orderBy("placedAt", "desc"), limit: 100 });
+    }
+
+    public getTagged(tag: string): Promise<Array<OrderSummary>>
+    {
+        return this.query(this.schema.contains("tags", tag));          // `tags @> cast(? as text[])`, GIN-served
+    }
+
+    // by id AND on a column - returns null for a missing id and an excluded one alike
+    public getOpen(id: string): Promise<OrderSummary | null>
+    {
+        return this.queryById(id, this.schema.isNotNull("note"));
+    }
+
+    // the analytical door: real columns, any SQL, no hydration
+    public async revenueByCustomer(): Promise<ReadonlyArray<{ customerId: string; revenue: number; }>>
+    {
+        const result = await this.queryRaw<{ customerId: string; revenue: number; }>(
+            `select ${this.schema.columnFor("customerId")} as "customerId",
+                    cast(sum(${this.schema.columnFor("total")}) as double precision) as revenue
+             from ${this.table} group by 1 order by 2 desc;`);
+
+        return result.rows;
+    }
+}
+
+// 3. The migration creates the table from that same object - a sibling of DbTableCreator, because this one alters
+await new ReadModelTableCreator(db, logger).createReadModelTable(PgOrderSummaryRepository.schema);
+
+// and an integration test asserts no drift against it, exactly as for a snapshot table
+assert.deepStrictEqual(await new ReadModelTableCreator(db, logger).verifyReadModelTable(PgOrderSummaryRepository.schema), []);
+```
+
+The DDL this produces, every statement `if not exists`:
+
+```sql
+create table if not exists order_summary_read_model
+(
+    id varchar(40) primary key,
+    customer_id text, total numeric, placed_at timestamptz, note text, tags text[]
+);
+alter table order_summary_read_model add column if not exists customer_id text;   -- one per column, every run
+-- ...
+create index if not exists idx_order_summary_read_model_customer_id on order_summary_read_model(customer_id);
+create index if not exists idx_order_summary_read_model_placed_at on order_summary_read_model(placed_at);
+create index if not exists idx_order_summary_read_model_tags_gin on order_summary_read_model using gin(tags);
+create index if not exists idx_order_summary_read_model_customer_id_placed_at on order_summary_read_model(customer_id, placed_at);
+```
+
+The keys and values a predicate can name are exactly the declaration's:
+
+```typescript
+this.schema.eq("customerId", "cus_1");       // ok
+this.schema.eq("total", "100");              // error: total is a number
+this.schema.eq("nope", 1);                   // error: not a key
+this.schema.eq("id", "ord_1");               // error: id is the primary key, never a column
+this.schema.contains("customerId", "cus");   // error: not an array column
+this.schema.isNull("note");                  // ok on any column - every column is nullable
+```
+
+Things to get right:
+
+- **Every save is an upsert.** A read model carries no change tracking, so `save` always writes the row (`insert ... on conflict (id) do update`), and re-projecting an unchanged model costs one statement. `delete` is idempotent. There is no `force`, because there is nothing to bypass.
+- **No organization filter, ever.** Nothing scopes a read, nothing stamps a write. A tenant id is a column the model declares and a method constrains on purpose; `test-example/`'s `CreatorActivity` is the worked case.
+- **Every column is nullable; the TypeScript property type is the application's contract.** The DDL never emits `not null` and the schema has no nullability declaration — `string | null` and `string` declare the same column. A property added later is a column added by re-running the migration (`add column if not exists`, the same idiom as a new snapshot path), identical to one created on day 1; rows older than the property read NULL there until re-projected, and a property typed non-null then fails in the class's own constructor at hydration. Re-project rather than expecting the repository to invent a value.
+- **`timestamptz` takes epoch milliseconds.** The property is a `number`; the column is a real timestamp. Writes bind `to_timestamp(? / 1000.0)`, comparisons do the same on the parameter side, reads come back through `Date.valueOf()` — millisecond-exact in both directions, and `date_trunc` works in the raw door.
+- **Values are checked before anything is queued.** Every save checks each value against its column's type and Postgres range (`smallint` ±32767, `integer` ±2147483647, `bigint` within the safe integer range); a value that does not fit throws an `ArgumentException` naming the column, rather than a `DbException` after the unit of work has rolled back.
+- **What pg hands back through the raw door.** With no type parsers installed, `bigint` and `numeric` arrive as strings and `timestamptz` as a `Date`; cast in the statement (`cast(count(*) as int)`, `cast(sum(x) as double precision)`) as the snapshot docs already say. Hydration normalizes those for you, and refuses a `bigint` beyond `Number.MAX_SAFE_INTEGER` rather than rounding it.
+- **Arrays bind as arrays, and `@>`/`&&` are the indexed operators.** `contains`/`containsAll` emit `@>` and `containsAny` emits `&&`, both served by the GIN index; `= any(column)` is not offered because it is not. Empty match lists throw.
+- **Keys are camelCase and derive snake_case columns.** `placedAt` is `placed_at`; `id` is implicit; a key deriving a Postgres reserved word (`order`, `user`, `left`, ...) is refused at declaration — rename the property, nothing here quotes identifiers.
+- **`index` and `unique` are performance declarations.** Every column is queryable; a real column has no expression-matching hazard. An index added later needs a migration that re-runs the create, exactly like a snapshot path. A `unique` array is a compile error (GIN cannot be unique).
+- **Drift is detectable, and partly fixable.** `verifyReadModelTable` reports `table-missing`, `column-missing` (fix: the add-column statement), `column-type-mismatch` (fatal, no fix — a type change is a cast decision), `column-not-null` and `orphan-column` (advisories), the index kinds the snapshot side reports, and `index-definition-mismatch` (fatal, fix: drop and recreate) for a partial index, an opclass or an ordering hiding under a declared index name — the per-column catalog form prints only the column, so those live in the full definition alone. `reconcileReadModelTable` runs the column fixes, then the index fixes, and never alters a type or nullability, never drops a column, never touches an advisory.
+- **`queryStatement` must select every declared column** under its column name (`this.selectList`; `select *` satisfies it). A missing column throws naming it; an extra one is ignored.
+- **The class needs `@serialize` and a public constructor.** `@serialize` on the class and on every data getter, as `DomainEntity` subclasses always do, and a public constructor taking `ReadModelData<T>` — the repository hydrates through it, and `ReadModelSchema.for` refuses a protected one at compile time. Three things the types cannot see are reported by `verifyModel` as advisories, read from the class's metadata and logged once per schema on the first save: a decorated getter left out of `TDataKeys` (not a column, cannot be declared), a declared key whose getter is undecorated (stored and hydrated, absent from `serialize()` — and refused by the class on a fresh construction, so such a model only ever arrives through deserialization), and a `@serialize("customKey")` rename. Storage reads properties directly, and hydration stamps the class's registered `$typename` exactly as the deserializer does, so none of them moves a column. A derived value that must be a column goes in `TDataKeys` and is derived at the `super()` call.
 
 ### Caching
 

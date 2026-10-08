@@ -2,6 +2,7 @@ import { given } from "@nivinjoseph/n-defensive";
 import { ComponentInstaller, Registry } from "@nivinjoseph/n-ject";
 import { DefaultCreatorFactory } from "../factories/default-creator-factory.js";
 import { EventStreamCreatorRepository } from "../repositories/event-stream-creator-repository.js";
+import { PgCreatorActivityRepository } from "../read-models/pg-creator-activity-repository.js";
 import { SnapshotCreatorRepository } from "../repositories/snapshot-creator-repository.js";
 
 /**
@@ -22,7 +23,10 @@ export class CreatorDomainInstaller implements ComponentInstaller
         registry
             .registerScoped("CreatorFactory", DefaultCreatorFactory)
             .registerScoped("EventStreamCreatorRepository", EventStreamCreatorRepository)
-            .registerScoped("SnapshotCreatorRepository", SnapshotCreatorRepository, "CreatorRepository");
+            .registerScoped("SnapshotCreatorRepository", SnapshotCreatorRepository, "CreatorRepository")
+            // the projection, under its interface: scoped like the rest, so each scope resolves its own
+            // repository over its own unit of work
+            .registerScoped("PgCreatorActivityRepository", PgCreatorActivityRepository, "CreatorActivityRepository");
 
         return Promise.resolve();
     }

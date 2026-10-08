@@ -2,6 +2,8 @@ import { given } from "@nivinjoseph/n-defensive";
 import { AggregateState, OrgAggregateState } from "@nivinjoseph/n-domain";
 import { Db } from "../db/db.js";
 import { Logger } from "@nivinjoseph/n-log";
+import * as tableDdl from "./table-ddl.js";
+import type { ActualTableIndex, TableIndex } from "./table-ddl.js";
 import { AggregateRootClass, AggregateRootClassOf, DataHelper, OrgAggregateRootClass, OrgAggregateRootClassOf } from "../repository/data-helper.js";
 import { SnapshotArrayIndex } from "./snapshot-array-index.js";
 import { JsonValueType, SnapshotIndex } from "./snapshot-index.js";
@@ -265,25 +267,6 @@ export interface SnapshotReconcileResult
  */
 export class DbTableCreator
 {
-    /**
-     * Maximum identifier length Postgres permits before silently truncating.
-     * Postgres truncates identifiers to NAMEDATALEN - 1 = 63 bytes.
-     */
-    private static readonly _maxIdentifierLength = 63;
-
-    /**
-     * An unquoted Postgres identifier that needs no folding: lowercase, digits, underscores.
-     * Anything else would either be truncated, folded, or change the statement's meaning
-     * once interpolated into DDL.
-     */
-    private static readonly _identifierRegex = /^[a-z_][a-z0-9_]*$/;
-
-    /**
-     * The prefix every index name carries. Its length is the budget a derived table name must leave
-     * free, so an index name composed over it can still fit.
-     */
-    private static readonly _indexNamePrefix = "idx_";
-
     private readonly _db: Db;
     private readonly _logger: Logger;
 
@@ -325,128 +308,26 @@ export class DbTableCreator
      */
     private static _compareIndexes(tableName: string, expected: ReadonlyArray<ExpectedIndex>, actual: ReadonlyArray<ActualTableIndex>): Array<SnapshotDriftIssue>
     {
-        const issues = new Array<SnapshotDriftIssue>();
-        const actualByName = new Map(actual.map(t => [t.indexName, t]));
-        const expectedNames = new Set(expected.map(t => t.name));
-
-        for (const exp of expected)
-        {
-            const act = actualByName.get(exp.name);
-
-            if (act == null)
-            {
-                issues.push({
-                    tableName, indexName: exp.name, kind: "index-missing", severity: "fatal",
-                    message: `index '${exp.name}' does not exist - a declaration with no matching migration run against this database, so queries on [${exp.paths.join(", ")}] sequential-scan while looking indexed; create it with: ${exp.ddl}`,
-                    fix: exp.ddl
-                });
-
-                continue;
-            }
-
-            if (act.method !== exp.method)
-            {
-                issues.push({
-                    tableName, indexName: exp.name, kind: "index-method-mismatch", severity: "fatal",
-                    message: `index '${exp.name}' uses ${act.method} where the declaration produces ${exp.method} - it cannot serve the declared predicates; drop it in a hand-written migration and re-run the create`,
-                    fix: DbTableCreator._createFixDdl(exp)
-                });
-
-                // the shape checks below compare within one access method; against the wrong one
-                // they would only restate this issue in smaller pieces
-                continue;
-            }
-
-            if (act.isUnique !== exp.isUnique)
-                issues.push({
-                    tableName, indexName: exp.name, kind: "index-uniqueness-mismatch", severity: "fatal",
-                    message: exp.isUnique
-                        ? `index '${exp.name}' is not unique where the declaration says unique - the constraint is not being enforced; drop it in a hand-written migration and re-run the create`
-                        : `index '${exp.name}' is unique where the declaration is not - a uniqueness constraint is being enforced that nothing declares; drop it in a hand-written migration and re-run the create`,
-                    fix: DbTableCreator._createFixDdl(exp)
-                });
-
-            const expectedColumnCount = (exp.leadingColumn != null ? 1 : 0) + exp.expressions.length;
-
-            if (act.columnCount !== expectedColumnCount)
-            {
-                issues.push({
-                    tableName, indexName: exp.name, kind: "index-columns-mismatch", severity: "fatal",
-                    message: `index '${exp.name}' has ${act.columnCount} column(s) where the declaration produces ${expectedColumnCount} - drop it in a hand-written migration and re-run the create`,
-                    fix: DbTableCreator._createFixDdl(exp)
-                });
-
-                continue;
-            }
-
-            if (exp.leadingColumn != null && act.columnDefs[0] !== exp.leadingColumn)
-            {
-                issues.push({
-                    tableName, indexName: exp.name, kind: "index-columns-mismatch", severity: "fatal",
-                    message: `index '${exp.name}' does not lead with '${exp.leadingColumn}' - org-scoped predicates constrain that column first and cannot use the index without it; drop it in a hand-written migration and re-run the create`,
-                    fix: DbTableCreator._createFixDdl(exp)
-                });
-
-                continue;
-            }
-
-            const offset = exp.leadingColumn != null ? 1 : 0;
-
-            exp.paths.forEach((path, i) =>
-            {
-                const columnType = act.columnTypes[offset + i];
-                const columnDef = act.columnDefs[offset + i];
-
-                // btree only: a btree attribute carries the indexed expression's result type, which
-                // is what a cast is. A GIN attribute carries the *opclass storage* type instead
-                // (int4 hashes for jsonb_path_ops, text for jsonb_ops - verified against Postgres),
-                // so for GIN the method, opclass and token checks are the whole comparison
-                if (exp.method === "btree")
-                {
-                    const expectedType: string = exp.casts[i] ?? JsonValueType.text;
-
-                    if (columnType !== expectedType)
-                    {
-                        issues.push({
-                            tableName, indexName: exp.name, kind: "index-cast-mismatch", severity: "fatal",
-                            message: `index '${exp.name}' extracts '${path}' as ${columnType} where the declaration casts to ${expectedType} - the predicate expression cannot match the indexed one, so queries on it sequential-scan while looking indexed; drop the index in a hand-written migration and re-run the create`,
-                            fix: DbTableCreator._createFixDdl(exp)
-                        });
-
-                        // a type mismatch usually means a different expression altogether; the token
-                        // check would double-report the same drift
-                        return;
-                    }
-                }
-
-                // the token comes from the path rather than the expression: pg_get_indexdef prints
-                // a single segment as 'segment' and a walked path as '{a,b}' (unquoted, unspaced)
-                const segments = path.split(".");
-                const token = segments.length === 1 ? `'${segments[0]}'` : `{${segments.join(",")}}`;
-
-                if (!columnDef.contains(token))
-                    issues.push({
-                        tableName, indexName: exp.name, kind: "index-expression-mismatch", severity: "fatal",
-                        message: `index '${exp.name}' column ${offset + i + 1} does not read path '${path}' - the indexed expression is not the declared one; drop the index in a hand-written migration and re-run the create`,
-                        fix: DbTableCreator._createFixDdl(exp)
-                    });
-            });
-
-            if (exp.method === "gin" && !act.indexDef.contains(SnapshotArrayIndex.opclass))
-                issues.push({
-                    tableName, indexName: exp.name, kind: "index-opclass-mismatch", severity: "advisory",
-                    message: `index '${exp.name}' is gin but not over ${SnapshotArrayIndex.opclass} - containment still works, but the index is larger and slower than the declared one`
-                });
-        }
-
-        const orphanPrefix = `${DbTableCreator._indexNamePrefix}${tableName}`;
-
-        for (const act of actual)
-        {
-            if (expectedNames.has(act.indexName) || !act.indexName.startsWith(orphanPrefix))
-                continue;
-
-            issues.push({
+        return tableDdl.compareIndexes<ExpectedIndex, SnapshotDriftIssue>(tableName, expected, actual, {
+            missing: exp => ({
+                tableName, indexName: exp.name, kind: "index-missing", severity: "fatal",
+                message: `index '${exp.name}' does not exist - a declaration with no matching migration run against this database, so queries on [${exp.paths.join(", ")}] sequential-scan while looking indexed; create it with: ${exp.ddl}`,
+                fix: exp.ddl
+            }),
+            methodMismatch: (exp, act) => ({
+                tableName, indexName: exp.name, kind: "index-method-mismatch", severity: "fatal",
+                message: `index '${exp.name}' uses ${act.method} where the declaration produces ${exp.method} - it cannot serve the declared predicates; drop it in a hand-written migration and re-run the create`,
+                fix: DbTableCreator._createFixDdl(exp)
+            }),
+            uniquenessMismatch: exp => ({
+                tableName, indexName: exp.name, kind: "index-uniqueness-mismatch", severity: "fatal",
+                message: exp.isUnique
+                    ? `index '${exp.name}' is not unique where the declaration says unique - the constraint is not being enforced; drop it in a hand-written migration and re-run the create`
+                    : `index '${exp.name}' is unique where the declaration is not - a uniqueness constraint is being enforced that nothing declares; drop it in a hand-written migration and re-run the create`,
+                fix: DbTableCreator._createFixDdl(exp)
+            }),
+            columns: (exp, act) => DbTableCreator._compareIndexColumns(tableName, exp, act),
+            orphan: act => ({
                 tableName, indexName: act.indexName, kind: "orphan-index", severity: "advisory",
                 message: act.isUnique
                     ? `index '${act.indexName}' is not produced by these declarations, and it is unique - it still constrains every row written to this table, so if a 'unique' was cleared from a declaration this is the index that keeps enforcing it; nothing here drops - drop it in a hand-written migration, or ignore it if deliberate`
@@ -455,24 +336,92 @@ export class DbTableCreator
                         : act.indexName.endsWith("_gin")
                         ? `index '${act.indexName}' is not produced by these declarations - likely the residue of a path no longer array-indexed; nothing here drops - drop it in a hand-written migration, or ignore it if deliberate`
                         : `index '${act.indexName}' is not produced by these declarations - the residue of a changed declaration, or a hand-built index (a 'text_pattern_ops' index for prefix LIKE is a legitimate one); nothing here drops - drop it in a hand-written migration if unintended`
-            });
-        }
-
-        return issues;
+            })
+        });
     }
 
     /**
-     * The one place an index's DDL is rendered - {@link _createTable} emits it, and the plan carries
-     * it for the `index-missing` message, so the fix a verify issue names is the statement creation
-     * would run.
-     *
-     * @param {string} tableName - The validated table name.
-     * @param {TableIndex} index - The index definition.
-     * @returns {string} The `create index` statement.
+     * The snapshot side's column comparison - the family-specific hook the shared skeleton calls once
+     * name, method and uniqueness have been compared: column count, the leading column on an org
+     * table, each expression's result type against its declared cast, a path token per expression,
+     * and the GIN opclass.
      */
-    private static _createIndexDdl(tableName: string, index: TableIndex): string
+    private static _compareIndexColumns(tableName: string, exp: ExpectedIndex, act: ActualTableIndex): Array<SnapshotDriftIssue>
     {
-        return `create ${index.isUnique === true ? "unique " : ""}index if not exists ${index.name} on ${tableName}${index.method != null ? ` using ${index.method}` : ""}(${index.columns.join(", ")});`;
+        const issues = new Array<SnapshotDriftIssue>();
+        const expectedColumnCount = (exp.leadingColumn != null ? 1 : 0) + exp.expressions.length;
+
+        if (act.columnCount !== expectedColumnCount)
+        {
+            issues.push({
+                tableName, indexName: exp.name, kind: "index-columns-mismatch", severity: "fatal",
+                message: `index '${exp.name}' has ${act.columnCount} column(s) where the declaration produces ${expectedColumnCount} - drop it in a hand-written migration and re-run the create`,
+                fix: DbTableCreator._createFixDdl(exp)
+            });
+
+            return issues;
+        }
+
+        if (exp.leadingColumn != null && act.columnDefs[0] !== exp.leadingColumn)
+        {
+            issues.push({
+                tableName, indexName: exp.name, kind: "index-columns-mismatch", severity: "fatal",
+                message: `index '${exp.name}' does not lead with '${exp.leadingColumn}' - org-scoped predicates constrain that column first and cannot use the index without it; drop it in a hand-written migration and re-run the create`,
+                fix: DbTableCreator._createFixDdl(exp)
+            });
+
+            return issues;
+        }
+
+        const offset = exp.leadingColumn != null ? 1 : 0;
+
+        exp.paths.forEach((path, i) =>
+        {
+            const columnType = act.columnTypes[offset + i];
+            const columnDef = act.columnDefs[offset + i];
+
+            // btree only: a btree attribute carries the indexed expression's result type, which
+            // is what a cast is. A GIN attribute carries the *opclass storage* type instead
+            // (int4 hashes for jsonb_path_ops, text for jsonb_ops - verified against Postgres),
+            // so for GIN the method, opclass and token checks are the whole comparison
+            if (exp.method === "btree")
+            {
+                const expectedType: string = exp.casts[i] ?? JsonValueType.text;
+
+                if (columnType !== expectedType)
+                {
+                    issues.push({
+                        tableName, indexName: exp.name, kind: "index-cast-mismatch", severity: "fatal",
+                        message: `index '${exp.name}' extracts '${path}' as ${columnType} where the declaration casts to ${expectedType} - the predicate expression cannot match the indexed one, so queries on it sequential-scan while looking indexed; drop the index in a hand-written migration and re-run the create`,
+                        fix: DbTableCreator._createFixDdl(exp)
+                    });
+
+                    // a type mismatch usually means a different expression altogether; the token
+                    // check would double-report the same drift
+                    return;
+                }
+            }
+
+            // the token comes from the path rather than the expression: pg_get_indexdef prints
+            // a single segment as 'segment' and a walked path as '{a,b}' (unquoted, unspaced)
+            const segments = path.split(".");
+            const token = segments.length === 1 ? `'${segments[0]}'` : `{${segments.join(",")}}`;
+
+            if (!columnDef.contains(token))
+                issues.push({
+                    tableName, indexName: exp.name, kind: "index-expression-mismatch", severity: "fatal",
+                    message: `index '${exp.name}' column ${offset + i + 1} does not read path '${path}' - the indexed expression is not the declared one; drop the index in a hand-written migration and re-run the create`,
+                    fix: DbTableCreator._createFixDdl(exp)
+                });
+        });
+
+        if (exp.method === "gin" && !act.indexDef.contains(SnapshotArrayIndex.opclass))
+            issues.push({
+                tableName, indexName: exp.name, kind: "index-opclass-mismatch", severity: "advisory",
+                message: `index '${exp.name}' is gin but not over ${SnapshotArrayIndex.opclass} - containment still works, but the index is larger and slower than the declared one`
+            });
+
+        return issues;
     }
 
     /**
@@ -485,7 +434,7 @@ export class DbTableCreator
      */
     private static _createFixDdl(expected: ExpectedIndex): string
     {
-        return `drop index if exists ${expected.name}; ${expected.ddl}`;
+        return tableDdl.createFixDdl(expected);
     }
 
     /**
@@ -504,7 +453,7 @@ export class DbTableCreator
      */
     public async createEventStreamTableForAggregate(aggregateType: AggregateRootClass): Promise<string>
     {
-        const tableName = this._validateTableName(DataHelper.createEventStreamTableName(aggregateType));
+        const tableName = tableDdl.validateTableName(DataHelper.createEventStreamTableName(aggregateType));
 
         await this._createTable(
             tableName,
@@ -539,7 +488,7 @@ export class DbTableCreator
      */
     public async createEventStreamTableForOrgAggregate(aggregateType: OrgAggregateRootClass): Promise<string>
     {
-        const tableName = this._validateTableName(DataHelper.createEventStreamTableName(aggregateType));
+        const tableName = tableDdl.validateTableName(DataHelper.createEventStreamTableName(aggregateType));
 
         await this._createTable(
             tableName,
@@ -596,7 +545,7 @@ export class DbTableCreator
         aggregateType: AggregateRootClassOf<TState>,
         options?: SnapshotTableOptions<TState>): Promise<SnapshotTableInfo>
     {
-        const tableName = this._validateTableName(DataHelper.createSnapshotTableName(aggregateType as AggregateRootClass));
+        const tableName = tableDdl.validateTableName(DataHelper.createSnapshotTableName(aggregateType as AggregateRootClass));
 
         const plan = this._planSnapshotTable(tableName, options);
 
@@ -658,7 +607,7 @@ export class DbTableCreator
         aggregateType: OrgAggregateRootClassOf<TState>,
         options?: SnapshotTableOptions<TState>): Promise<SnapshotTableInfo>
     {
-        const tableName = this._validateTableName(DataHelper.createSnapshotTableName(aggregateType as OrgAggregateRootClass));
+        const tableName = tableDdl.validateTableName(DataHelper.createSnapshotTableName(aggregateType as OrgAggregateRootClass));
 
         const plan = this._planSnapshotTable(tableName, options, "organization_id");
 
@@ -712,7 +661,7 @@ export class DbTableCreator
         aggregateType: AggregateRootClassOf<TState>,
         options?: SnapshotTableOptions<TState>): Promise<ReadonlyArray<SnapshotDriftIssue>>
     {
-        const tableName = this._validateTableName(DataHelper.createSnapshotTableName(aggregateType as AggregateRootClass));
+        const tableName = tableDdl.validateTableName(DataHelper.createSnapshotTableName(aggregateType as AggregateRootClass));
 
         const plan = this._planSnapshotTable(tableName, options);
 
@@ -740,7 +689,7 @@ export class DbTableCreator
         aggregateType: OrgAggregateRootClassOf<TState>,
         options?: SnapshotTableOptions<TState>): Promise<ReadonlyArray<SnapshotDriftIssue>>
     {
-        const tableName = this._validateTableName(DataHelper.createSnapshotTableName(aggregateType as OrgAggregateRootClass));
+        const tableName = tableDdl.validateTableName(DataHelper.createSnapshotTableName(aggregateType as OrgAggregateRootClass));
 
         const plan = this._planSnapshotTable(tableName, options, "organization_id");
 
@@ -764,7 +713,7 @@ export class DbTableCreator
      */
     public async verifyEventStreamTableForAggregate(aggregateType: AggregateRootClass): Promise<ReadonlyArray<SnapshotDriftIssue>>
     {
-        const tableName = this._validateTableName(DataHelper.createEventStreamTableName(aggregateType));
+        const tableName = tableDdl.validateTableName(DataHelper.createEventStreamTableName(aggregateType));
 
         return this._verifyTable(tableName, false);
     }
@@ -782,7 +731,7 @@ export class DbTableCreator
      */
     public async verifyEventStreamTableForOrgAggregate(aggregateType: OrgAggregateRootClass): Promise<ReadonlyArray<SnapshotDriftIssue>>
     {
-        const tableName = this._validateTableName(DataHelper.createEventStreamTableName(aggregateType));
+        const tableName = tableDdl.validateTableName(DataHelper.createEventStreamTableName(aggregateType));
 
         return this._verifyTable(tableName, true);
     }
@@ -823,7 +772,7 @@ export class DbTableCreator
         aggregateType: AggregateRootClassOf<TState>,
         options?: SnapshotTableOptions<TState>): Promise<SnapshotReconcileResult>
     {
-        const tableName = this._validateTableName(DataHelper.createSnapshotTableName(aggregateType as AggregateRootClass));
+        const tableName = tableDdl.validateTableName(DataHelper.createSnapshotTableName(aggregateType as AggregateRootClass));
 
         const plan = this._planSnapshotTable(tableName, options);
 
@@ -849,7 +798,7 @@ export class DbTableCreator
         aggregateType: OrgAggregateRootClassOf<TState>,
         options?: SnapshotTableOptions<TState>): Promise<SnapshotReconcileResult>
     {
-        const tableName = this._validateTableName(DataHelper.createSnapshotTableName(aggregateType as OrgAggregateRootClass));
+        const tableName = tableDdl.validateTableName(DataHelper.createSnapshotTableName(aggregateType as OrgAggregateRootClass));
 
         const plan = this._planSnapshotTable(tableName, options, "organization_id");
 
@@ -870,12 +819,7 @@ export class DbTableCreator
      */
     public validateIndexName(indexName: string): string
     {
-        const validated = this._validateIdentifier(indexName, "indexName");
-
-        given(validated, "indexName")
-            .ensure(t => t.startsWith(DbTableCreator._indexNamePrefix), `index name '${validated}' must start with '${DbTableCreator._indexNamePrefix}'`);
-
-        return validated;
+        return tableDdl.validateIndexName(indexName);
     }
 
     /**
@@ -892,14 +836,7 @@ export class DbTableCreator
      */
     public createIndexNameFromTableName(tableName: string, suffix?: string): string
     {
-        given(tableName, "tableName").ensureHasValue().ensureIsString();
-        given(suffix, "suffix").ensureIsString();
-
-        const trimmedTableName = tableName.trim();
-        const trimmedSuffix = suffix?.trim();
-        const indexName = `${DbTableCreator._indexNamePrefix}${trimmedTableName}${trimmedSuffix ? `_${trimmedSuffix}` : ""}`;
-
-        return this.validateIndexName(indexName);
+        return tableDdl.createIndexName(tableName, suffix);
     }
 
     /**
@@ -946,7 +883,7 @@ export class DbTableCreator
      */
     private async _createTable(tableName: string, columns: ReadonlyArray<string>, indexes?: ReadonlyArray<TableIndex>): Promise<void>
     {
-        const validatedTableName = this._validateIdentifier(tableName, "tableName");
+        const validatedTableName = tableDdl.validateIdentifier(tableName, "tableName");
 
         given(columns, "columns").ensureHasValue().ensureIsArray().ensureIsNotEmpty();
         given(indexes, "indexes").ensureIsArray();
@@ -961,7 +898,7 @@ export class DbTableCreator
         for (const index of indexes ?? [])
         {
             await this._db.executeCommand(`
-                ${DbTableCreator._createIndexDdl(validatedTableName, index)}
+                ${tableDdl.createIndexDdl(validatedTableName, index)}
             `);
         }
 
@@ -1102,7 +1039,7 @@ export class DbTableCreator
 
             expected.push({
                 name, isUnique: index.isUnique, method: "btree", leadingColumn, paths, expressions,
-                casts: [...index.casts], ddl: DbTableCreator._createIndexDdl(tableName, tableIndex)
+                casts: [...index.casts], ddl: tableDdl.createIndexDdl(tableName, tableIndex)
             });
 
             // the cross-organization twin: the same expressions and casts with no leading column, so a
@@ -1121,7 +1058,7 @@ export class DbTableCreator
 
                 expected.push({
                     name: twinName, isUnique: false, method: "btree", leadingColumn: undefined, paths, expressions,
-                    casts: [...index.casts], ddl: DbTableCreator._createIndexDdl(tableName, twin)
+                    casts: [...index.casts], ddl: tableDdl.createIndexDdl(tableName, twin)
                 });
             }
         }
@@ -1149,7 +1086,7 @@ export class DbTableCreator
             expected.push({
                 name, isUnique: false, method: "gin", leadingColumn: undefined,
                 paths: [arrayIndex.path], expressions: [expression], casts: [],
-                ddl: DbTableCreator._createIndexDdl(tableName, tableIndex)
+                ddl: tableDdl.createIndexDdl(tableName, tableIndex)
             });
         }
 
@@ -1213,7 +1150,7 @@ export class DbTableCreator
             plan.expected.push({
                 name: standalone.name, isUnique: false, method: "btree", leadingColumn,
                 paths: [], expressions: [], casts: [],
-                ddl: DbTableCreator._createIndexDdl(tableName, standalone)
+                ddl: tableDdl.createIndexDdl(tableName, standalone)
             });
         }
 
@@ -1232,7 +1169,7 @@ export class DbTableCreator
     {
         const issues = new Array<SnapshotDriftIssue>();
 
-        const columns = await this._fetchTableColumns(tableName);
+        const columns = await tableDdl.fetchTableColumnNames(this._db, tableName);
 
         if (columns.isEmpty)
         {
@@ -1273,7 +1210,7 @@ export class DbTableCreator
         if (issues.some(t => t.kind === "table-missing"))
             return issues;
 
-        const actual = await this._fetchTableIndexes(tableName);
+        const actual = await tableDdl.fetchTableIndexes(this._db, tableName);
 
         issues.push(...DbTableCreator._compareIndexes(tableName, expected, actual));
 
@@ -1324,110 +1261,6 @@ export class DbTableCreator
         return { tableName, fixed, remaining };
     }
 
-    /**
-     * Reads a table's column names from `information_schema`. Empty means the table does not exist.
-     *
-     * @param {string} tableName - The validated table name.
-     * @returns {Promise<ReadonlyArray<string>>} The column names, in ordinal order.
-     */
-    private async _fetchTableColumns(tableName: string): Promise<ReadonlyArray<string>>
-    {
-        const result = await this._db.executeQuery<{ columnName: string; }>(`
-            select column_name as "columnName"
-            from information_schema.columns
-            where table_schema = current_schema() and table_name = ?
-            order by ordinal_position;
-        `, tableName);
-
-        return result.rows.map(t => t.columnName);
-    }
-
-    /**
-     * Reads every index on a table from `pg_catalog`, structurally rather than as definition text.
-     *
-     * Per index: name, uniqueness, access method, column count, and per column the **result type**
-     * (`format_type` over `pg_attribute` - for an expression column that is the expression's type,
-     * which is what makes a cast comparable exactly, independent of how Postgres prints the
-     * expression) and the pretty-printed column definition (`pg_get_indexdef` with a column number -
-     * used only for token containment, never equality, because Postgres normalizes expression text:
-     * `(data->>'status')` comes back as `((data ->> 'status'::text))` and a quoted path array loses
-     * its quotes).
-     *
-     * @param {string} tableName - The validated table name.
-     * @returns {Promise<ReadonlyArray<ActualTableIndex>>} Every index on the table.
-     */
-    private async _fetchTableIndexes(tableName: string): Promise<ReadonlyArray<ActualTableIndex>>
-    {
-        const result = await this._db.executeQuery<ActualTableIndex>(`
-            select
-                ic.relname as "indexName",
-                ix.indisunique as "isUnique",
-                am.amname as "method",
-                ix.indnatts::int as "columnCount",
-                (select array_agg(format_type(a.atttypid, a.atttypmod) order by a.attnum)
-                   from pg_attribute a where a.attrelid = ix.indexrelid) as "columnTypes",
-                (select array_agg(pg_get_indexdef(ix.indexrelid, s.n, true) order by s.n)
-                   from generate_series(1, ix.indnatts::int) as s(n)) as "columnDefs",
-                pg_get_indexdef(ix.indexrelid) as "indexDef"
-            from pg_index ix
-            join pg_class ic on ic.oid = ix.indexrelid
-            join pg_class tc on tc.oid = ix.indrelid
-            join pg_namespace ns on ns.oid = tc.relnamespace
-            join pg_am am on am.oid = ic.relam
-            where tc.relname = ? and ns.nspname = current_schema();
-        `, tableName);
-
-        return result.rows;
-    }
-
-    /**
-     * Validates a Postgres identifier and returns it trimmed.
-     *
-     * @param {string} value - The candidate identifier.
-     * @param {string} argName - The argument name to report in errors.
-     * @param {number} [maxLength] - The budget to enforce; defaults to the full Postgres limit.
-     * @returns {string} The validated, trimmed identifier.
-     * @throws {ArgumentNullException} If the value is null or undefined.
-     * @throws {ArgumentException} If the value is not a string, is empty or whitespace, is not a valid identifier, or is too long.
-     */
-    private _validateIdentifier(value: string, argName: string, maxLength = DbTableCreator._maxIdentifierLength): string
-    {
-        given(value, argName).ensureHasValue().ensureIsString();
-
-        const trimmed = value.trim();
-
-        given(trimmed, argName)
-            .ensure(
-                t => DbTableCreator._identifierRegex.test(t),
-                `${argName} '${trimmed}' must contain only lowercase letters, digits and underscores, and cannot start with a digit`
-            )
-            .ensure(
-                t => t.length <= maxLength,
-                `${argName} '${trimmed}' (${trimmed.length} chars) exceeds the max length of ${maxLength} and would be silently truncated`
-            )
-            ;
-
-        return trimmed;
-    }
-
-    /**
-     * Validates a derived table name, budgeting for the index names composed over it.
-     *
-     * Every index this class creates is named `idx_<tableName>[_<suffix>]`, so a table name that
-     * uses the full 63 characters leaves no room for one. Validating against the reduced budget here
-     * means an overlong aggregate name is reported against `tableName` - the identifier actually at
-     * fault - rather than against a derived `indexName` further downstream.
-     *
-     * @param {string} tableName - The derived table name.
-     * @returns {string} The validated, trimmed table name.
-     * @throws {ArgumentNullException} If tableName is null or undefined.
-     * @throws {ArgumentException} If tableName is not a string, is empty or whitespace, is not a valid identifier, or leaves no room for an index name.
-     */
-    private _validateTableName(tableName: string): string
-    {
-        return this._validateIdentifier(
-            tableName, "tableName", DbTableCreator._maxIdentifierLength - DbTableCreator._indexNamePrefix.length);
-    }
 }
 
 /**
@@ -1512,77 +1345,3 @@ interface ExpectedIndex
     readonly ddl: string;
 }
 
-/**
- * One index as the catalog describes it - the row shape `DbTableCreator._fetchTableIndexes` selects.
- */
-interface ActualTableIndex
-{
-    /**
-     * `pg_class.relname` of the index.
-     */
-    readonly indexName: string;
-
-    /**
-     * `pg_index.indisunique`.
-     */
-    readonly isUnique: boolean;
-
-    /**
-     * `pg_am.amname` - `btree`, `gin`, ...
-     */
-    readonly method: string;
-
-    /**
-     * `pg_index.indnatts` - real columns and expression columns both count.
-     */
-    readonly columnCount: number;
-
-    /**
-     * `format_type()` per column, in column order. For a btree expression column this is the
-     * **expression's result type** - the parse tree's answer, not printed text - which is what makes
-     * a declared cast comparable exactly. For a GIN column it is the opclass *storage* type
-     * (`integer` for `jsonb_path_ops` hashes), so the cast comparison is btree-only.
-     */
-    readonly columnTypes: ReadonlyArray<string>;
-
-    /**
-     * `pg_get_indexdef(oid, n, true)` per column: the pretty-printed column definition, compared by
-     * token containment only.
-     */
-    readonly columnDefs: ReadonlyArray<string>;
-
-    /**
-     * `pg_get_indexdef(oid)` - the whole statement, used only to see the opclass, which no
-     * column-level accessor reports.
-     */
-    readonly indexDef: string;
-}
-
-/**
- * An index to create over a table.
- */
-interface TableIndex
-{
-    /**
-     * The index's name.
-     */
-    readonly name: string;
-
-    /**
-     * The indexed columns or expressions, in order.
-     */
-    readonly columns: ReadonlyArray<string>;
-
-    /**
-     * Whether the index enforces uniqueness. Defaults to false.
-     */
-    readonly isUnique?: boolean;
-
-    /**
-     * The access method, placed as `using <method>`. Omitted for the default btree.
-     *
-     * A closed literal union rather than a string: it is interpolated into DDL, and every other
-     * identifier this class emits is validated. A union costs nothing and is checked at compile time.
-     */
-    readonly method?: "gin";
-}
