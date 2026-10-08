@@ -14,13 +14,18 @@ import { CreatorRepository } from "./creator-repository.js";
  * Nothing below mentions `organization_id`, and that is the point. `query` prepends it to every predicate
  * from `this.domainContext.organizationId`, which is both the tenant isolation and the leading column every
  * btree index on this table starts with - so a query is scoped and index-usable for the same reason. The
- * only way past it is `queryAcrossOrganizations`, named for its consequence.
+ * ways past it are named for their consequence: the typed `queryAcrossOrganizations`, and the id pair.
  *
  * The uniqueness that follows from that is worth noting: `email` is declared unique, but because the index
  * leads with `organization_id` it is unique **per studio**. The same address can appear once in each, which
  * is what a tenant-scoped natural key means. It also means the bucket is whatever the domain context
  * resolves to at write time - a hard-coded or sentinel organization would collapse every write into one
  * bucket, making a constraint that reads as per-tenant behave globally.
+ *
+ * `email` is also declared `acrossOrganizations`, which buys it a second index with no studio prefix -
+ * `idx_creator_snaps_email_xorg`, created by `ExDbMigration_4` - so the one platform-wide question this
+ * class answers, `queryAcrossStudiosByEmail`, is an index lookup rather than a scan. Uniqueness is
+ * unmoved by that: the twin is never unique, and the org-leading index keeps the per-studio constraint.
  *
  * @class SnapshotCreatorRepository
  */
@@ -36,7 +41,9 @@ export class SnapshotCreatorRepository
      * or query the copy inside `data`, because that copy is not what any index covers.
      */
     public static readonly indexes = SnapshotQuerySet.for<CreatorState>()
-        .withPath("email", { unique: true })
+        // unique per studio (the index leads with organization_id), and ALSO indexed without that prefix,
+        // which is what lets `queryAcrossStudiosByEmail` go through the typed cross-studio door below
+        .withPath("email", { unique: true, acrossOrganizations: true })
         .withPath("joinedAt", { type: JsonValueType.bigint })
         .withPath("isDeactivated")
         // `role` is not declared on its own, and does not need to be: btree serves a leading prefix, so this
@@ -150,26 +157,28 @@ export class SnapshotCreatorRepository
     /**
      * Every creator holding this email, in every studio.
      *
-     * The deliberate exception, and the only method here that leaves the tenant boundary - which is why it
-     * is named for that rather than for what it selects. A platform-wide question ("is this person in more
-     * than one studio?") is legitimate; it just has to be visible at the call site.
+     * The deliberate exception - a method that leaves the tenant boundary, named for that rather than for
+     * what it selects, so that a platform-wide question ("is this person in more than one studio?") is
+     * visible at the call site. It is the same shape as every scoped read above, through the typed door:
+     * `queryAcrossOrganizations` takes a predicate exactly as `query` does, but only over paths declared
+     * `acrossOrganizations`, because only those have an index to walk once the studio filter is gone.
+     * `email` is declared so; a predicate on `role` here would be a compile error.
+     *
+     * -> select data from creator_snaps where (((data->>'email') = ?));
      */
     public queryAcrossStudiosByEmail(email: string): Promise<Array<Creator>>
     {
         given(email, "email").ensureHasValue().ensureIsString();
 
-        return this.queryAcrossOrganizations(
-            `select data from ${this.table} where ${this.querySet.expressionFor("email")} = ?;`,
-            email);
+        return this.queryAcrossOrganizations(this.querySet.eq("email", email));
     }
 
     /**
      * The creator with this id, in whatever studio owns it.
      *
-     * The other way out of the tenant boundary, and the cheap one. `email` above is indexed as
-     * `(organization_id, (data->>'email'))`, so dropping the filter drops the index with it and that
-     * search scans the table - acceptable for a rare platform-wide question, but a real cost. `id` is
-     * the primary key, which carries no organization prefix at all, so this stays an index lookup.
+     * The other way out of the tenant boundary, and the one that needs no declaration: `id` is the
+     * primary key, which carries no organization prefix at all, so this is an index lookup as it stands -
+     * where `email` above needed its `acrossOrganizations` twin to be one.
      *
      * It also needs no statement of its own: `queryByIdAcrossOrganizations` builds the same one
      * `queryById` does, minus the filter, so the placeholder run and the binding order are not this

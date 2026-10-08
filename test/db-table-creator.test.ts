@@ -1,6 +1,6 @@
 import { given } from "@nivinjoseph/n-defensive";
 import { AggregateRoot, AggregateState, DomainEvent, DomainObject, DomainObjectData, OrgAggregateRoot, OrgAggregateState, OrgDomainEvent } from "@nivinjoseph/n-domain";
-import { Exception } from "@nivinjoseph/n-exception";
+import { ArgumentException, Exception } from "@nivinjoseph/n-exception";
 import { Logger } from "@nivinjoseph/n-log";
 import { serialize } from "@nivinjoseph/n-util";
 import assert from "node:assert";
@@ -693,6 +693,120 @@ await describe("DbTableCreator tests", async () =>
 
             assert.strictEqual(db.commands.length, 2);
             assert.ok(!db.commands.contains("create index if not exists idx_invoice_snaps on invoice_snaps(organization_id);"));
+        });
+
+        // the cross-organization twin: the org-leading index as before, plus the same expressions with
+        // no leading column under an _xorg name - adjacent, so the pair reads as one declaration
+        await test("an acrossOrganizations path on an org table emits the org-leading index and a prefix-free _xorg twin", async () =>
+        {
+            const { creator, db } = createCreator();
+
+            const info = await creator.createSnapshotTableForOrgAggregate(invoiceType, { indexes: [
+                SnapshotIndex.forPath<InvoiceState>("status").acrossOrganizations(),
+                SnapshotIndex.forPath<InvoiceState>("total", JsonValueType.numeric)
+            ], arrayIndexes: [] });
+
+            assert.deepStrictEqual(db.commands.slice(1), [
+                "create index if not exists idx_invoice_snaps_status on invoice_snaps(organization_id, (data->>'status'));",
+                "create index if not exists idx_invoice_snaps_status_xorg on invoice_snaps((data->>'status'));",
+                "create index if not exists idx_invoice_snaps_total on invoice_snaps(organization_id, ((data->>'total')::numeric));"
+            ]);
+
+            // reported as created: the twin has no leading column, which is what distinguishes it
+            assert.deepStrictEqual(info.createdIndexes.map(t => [t.name, t.leadingColumn]), [
+                ["idx_invoice_snaps_status", "organization_id"],
+                ["idx_invoice_snaps_status_xorg", undefined],
+                ["idx_invoice_snaps_total", "organization_id"]
+            ]);
+            assert.deepStrictEqual(info.createdIndexes[1], {
+                name: "idx_invoice_snaps_status_xorg", paths: ["status"], expressions: ["(data->>'status')"],
+                isUnique: false, leadingColumn: undefined
+            });
+
+            // the org-leading indexes still cover the standalone one
+            assert.ok(!db.commands.contains("create index if not exists idx_invoice_snaps on invoice_snaps(organization_id);"));
+        });
+
+        await test("a unique acrossOrganizations path stays unique per organization: the _uq index leads, the _xorg twin is not unique", async () =>
+        {
+            const { creator, db } = createCreator();
+
+            await creator.createSnapshotTableForOrgAggregate(invoiceType, { indexes: [
+                SnapshotIndex.forPath<InvoiceState>("invoiceNumber").asUnique().acrossOrganizations()
+            ], arrayIndexes: [] });
+
+            assert.deepStrictEqual(db.commands.slice(1), [
+                "create unique index if not exists idx_invoice_snaps_invoicenumber_uq on invoice_snaps(organization_id, (data->>'invoiceNumber'));",
+                "create index if not exists idx_invoice_snaps_invoicenumber_xorg on invoice_snaps((data->>'invoiceNumber'));"
+            ]);
+        });
+
+        await test("a query set's acrossOrganizations declaration reaches the creator, composites included", async () =>
+        {
+            const { creator, db } = createCreator();
+
+            await creator.createSnapshotTableForOrgAggregate(invoiceType, SnapshotQuerySet.for<InvoiceState>()
+                .withPath("status", { acrossOrganizations: true })
+                .withComposite(["customer.city", "invoiceNumber"], { acrossOrganizations: true })
+                .withPath("total", { type: JsonValueType.numeric }));
+
+            assert.deepStrictEqual(db.commands.slice(1), [
+                "create index if not exists idx_invoice_snaps_status on invoice_snaps(organization_id, (data->>'status'));",
+                "create index if not exists idx_invoice_snaps_status_xorg on invoice_snaps((data->>'status'));",
+                `create index if not exists idx_invoice_snaps_customer_city_invoicenumber on invoice_snaps(organization_id, (data#>>'{"customer","city"}'), (data->>'invoiceNumber'));`,
+                `create index if not exists idx_invoice_snaps_customer_city_invoicenumber_xorg on invoice_snaps((data#>>'{"customer","city"}'), (data->>'invoiceNumber'));`,
+                "create index if not exists idx_invoice_snaps_total on invoice_snaps(organization_id, ((data->>'total')::numeric));"
+            ]);
+        });
+
+        // fail closed: a plain table has no tenant prefix to cross, so the flag is a declaration error
+        // there, and every entry point that plans the table says so before touching the database
+        await test("acrossOrganizations on a plain table is refused by create, verify and reconcile alike, before any DDL", async () =>
+        {
+            const { creator, db } = createCreator();
+            // the type refuses this on a plain state (the compile-time case follows); the cast is the
+            // JavaScript caller the plan-time check exists for
+            const flagged = { indexes: [<SnapshotIndex<OrderState>><unknown>SnapshotIndex.forPath<OrderState>("status").acrossOrganizations()], arrayIndexes: [] };
+            const refused = (e: any): boolean => e instanceof ArgumentException
+                && e.message.contains("acrossOrganizations") && e.message.contains("createSnapshotTableForOrgAggregate");
+
+            await assert.rejects(() => creator.createSnapshotTableForAggregate(orderType, flagged), refused);
+            await assert.rejects(() => creator.verifySnapshotTableForAggregate(orderType, flagged), refused);
+            await assert.rejects(() => creator.reconcileSnapshotTableForAggregate(orderType, flagged), refused);
+
+            assert.deepStrictEqual(db.commands, []);
+        });
+
+        // the state type is the first gate: on a plain state the builder step's result is the diagnostic
+        // rather than an index, so it cannot be declared at all - the same depth the query set's option
+        // fails at. The compiler is the assertion; the closure is never invoked.
+        await test("acrossOrganizations is refused at compile time on a plain state, and is an index on an org-scoped one", () =>
+        {
+            const rejected = async (): Promise<void> =>
+            {
+                const { creator } = createCreator();
+                const flagged = SnapshotIndex.forPath<OrderState>("status").acrossOrganizations();
+
+                // @ts-expect-error - not an index on a plain state: there is no organization prefix to drop
+                await creator.createSnapshotTableForAggregate(orderType, { indexes: [flagged], arrayIndexes: [] });
+
+                const across: SnapshotIndex<InvoiceState> = SnapshotIndex.forPath<InvoiceState>("status").acrossOrganizations();
+                assert.ok(across.isAcrossOrganizations);
+            };
+
+            assert.strictEqual(typeof rejected, "function");
+        });
+
+        // the options shape is enforced by the type, but a JavaScript caller can omit a field; the
+        // pipeline has always read an absent `indexes` as none, and the plan-time flag check must too
+        await test("a JavaScript caller omitting indexes still gets a table with no btree index", async () =>
+        {
+            const { creator, db } = createCreator();
+
+            await creator.createSnapshotTableForAggregate(orderType, <any>{ arrayIndexes: [] });
+
+            assert.strictEqual(db.commands.length, 1);
+            assert.ok(db.commands[0].startsWith("create table if not exists order_snaps"), db.commands[0]);
         });
 
         // pinned deliberately: the name encodes the paths and uniqueness, not the type. Creation is
@@ -1850,6 +1964,33 @@ await describe("DbTableCreator tests", async () =>
             assert.strictEqual(SnapshotIndex.forPath<OrderState>("status").withName("custom").nameSuffix, "custom");
             assert.strictEqual(SnapshotIndex.forPath<OrderState>("status").isUnique, false);
         });
+
+        // the cross-organization flag is a builder step like asUnique: it marks the index for a second,
+        // prefix-free copy on an org-scoped table, copies rather than mutates, and rides along every
+        // later step
+        await test("acrossOrganizations marks the index, copies rather than mutates, and is kept by later steps", () =>
+        {
+            // an org-scoped state: on a plain one the builder step is a compile error (see below)
+            const plain = SnapshotIndex.forPath<InvoiceState>("email");
+            const across = plain.acrossOrganizations();
+
+            assert.notStrictEqual(across, plain);
+            assert.strictEqual(plain.isAcrossOrganizations, false);
+            assert.strictEqual(across.isAcrossOrganizations, true);
+
+            // idempotent, like asUnique
+            assert.strictEqual(across.acrossOrganizations().isAcrossOrganizations, true);
+
+            // every other builder step clones the flag along, in either order
+            assert.strictEqual(across.asUnique().isAcrossOrganizations, true);
+            assert.strictEqual(across.andPath("status").isAcrossOrganizations, true);
+            assert.strictEqual(across.withName("em").isAcrossOrganizations, true);
+            assert.strictEqual(plain.asUnique().acrossOrganizations().isUnique, true);
+
+            // the flag does not reach the derived name - the creator appends its own suffix, as it
+            // does for _uq
+            assert.strictEqual(across.nameSuffix, "email");
+        });
     });
 
     // these need the whole set, or the table name, so they throw from the create call
@@ -1939,6 +2080,15 @@ await describe("DbTableCreator tests", async () =>
 
             await assert.rejects(() => creator.createSnapshotTableForAggregate(orderType, { indexes: [SnapshotIndex.forRawPath<OrderState>("a".repeat(45)).asUnique()], arrayIndexes: [] }));
             await assert.doesNotReject(() => creator.createSnapshotTableForAggregate(orderType, { indexes: [SnapshotIndex.forRawPath<OrderState>("a".repeat(44)).asUnique()], arrayIndexes: [] }));
+        });
+
+        await test("the identifier limit is 5 chars tighter for an acrossOrganizations index, because of the _xorg suffix", async () =>
+        {
+            const { creator } = createCreator();
+
+            // idx_ (4) + invoice_snaps (13) + _ (1) + 40 + _xorg (5) = 63, the limit; one more is over
+            await assert.rejects(() => creator.createSnapshotTableForOrgAggregate(invoiceType, { indexes: [SnapshotIndex.forRawPath<InvoiceState>("a".repeat(41)).acrossOrganizations()], arrayIndexes: [] }));
+            await assert.doesNotReject(() => creator.createSnapshotTableForOrgAggregate(invoiceType, { indexes: [SnapshotIndex.forRawPath<InvoiceState>("a".repeat(40)).acrossOrganizations()], arrayIndexes: [] }));
         });
 
         await test("rejects a unique index whose _uq name collides with a plain index's name", async () =>
@@ -3105,6 +3255,26 @@ await describe("DbTableCreator tests", async () =>
             const staleResult = await db.executeQuery<any>(`select id from team_snaps where ${stale.sql};`, ...stale.params);
 
             assert.deepStrictEqual(staleResult.rows.map(t => t.id as string), []);
+        });
+
+        await test("an acrossOrganizations path creates a real prefix-free twin beside the org-leading index", async () =>
+        {
+            await db.executeCommand("drop table if exists invoice_snaps;");
+            await creator.createSnapshotTableForOrgAggregate(invoiceType, SnapshotQuerySet.for<InvoiceState>()
+                .withPath("status", { acrossOrganizations: true })
+                .withPath("total", { type: JsonValueType.numeric }));
+
+            const indexes = await db.executeQuery<any>(
+                `select indexname, indexdef from pg_indexes where tablename = 'invoice_snaps' order by indexname;`);
+            const byName = new Map(indexes.rows.map(t => [t.indexname as string, t.indexdef as string]));
+
+            assert.ok(byName.has("idx_invoice_snaps_status"));
+            assert.ok(byName.get("idx_invoice_snaps_status")!.contains("organization_id"));
+            assert.ok(byName.has("idx_invoice_snaps_status_xorg"));
+            assert.ok(!byName.get("idx_invoice_snaps_status_xorg")!.contains("organization_id"));
+            assert.ok(byName.get("idx_invoice_snaps_status_xorg")!.contains("'status'"));
+            // the unflagged path has no twin
+            assert.ok(!byName.has("idx_invoice_snaps_total_xorg"));
         });
     });
 });

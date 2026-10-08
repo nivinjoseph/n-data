@@ -2,7 +2,7 @@ import { ArgumentException, ArgumentNullException, Exception } from "@nivinjosep
 import { Logger } from "@nivinjoseph/n-log";
 import assert from "node:assert";
 import test, { after, before, describe } from "node:test";
-import { Db, DbConnectionConfig, DbConnectionFactory, DbTableCreator, JsonValueType, KnexPgDb, KnexPgDbConnectionFactory, SnapshotIndex, SnapshotQuerySet } from "../src/index.js";
+import { Db, DbConnectionConfig, DbConnectionFactory, DbTableCreator, JsonValueType, KnexPgDb, KnexPgDbConnectionFactory, SnapshotIndex, SnapshotOrderBy, SnapshotQuerySet } from "../src/index.js";
 import { RepositoryQueryBuilder } from "../src/repository/repository-query.js";
 import { OrgAggregateRoot, OrgAggregateState, OrgDomainEvent } from "@nivinjoseph/n-domain";
 
@@ -90,7 +90,7 @@ await describe("RepositoryQueryBuilder tests", async () =>
             const built = RepositoryQueryBuilder.build("receipt_snaps", {
                 // a hand-written predicate now reaches `where` as a SnapshotPredicate, which carries
                 // its own values - the bare-string form and its positional params are gone
-                where: { sql: "(data->>'status') = ?", params: ["sent"] },
+                where: { sql: "(data->>'status') = ?", params: ["sent"], acrossOrganizations: false },
                 orderBy: "((data->>'total')::numeric) desc",
                 limit: 20,
                 offset: 40
@@ -221,15 +221,15 @@ await describe("RepositoryQueryBuilder tests", async () =>
         await test("the predicate guards apply to a predicate's sql too", async () =>
         {
             assert.throws(
-                () => RepositoryQueryBuilder.build("receipt_snaps", { sql: "select data from x", params: [] }, [], ORG),
+                () => RepositoryQueryBuilder.build("receipt_snaps", { sql: "select data from x", params: [], acrossOrganizations: false }, [], ORG),
                 ArgumentException);
 
             assert.throws(
-                () => RepositoryQueryBuilder.build("receipt_snaps", { sql: "a = ?; drop table x", params: [1] }, [], ORG),
+                () => RepositoryQueryBuilder.build("receipt_snaps", { sql: "a = ?; drop table x", params: [1], acrossOrganizations: false }, [], ORG),
                 ArgumentException);
 
             assert.throws(
-                () => RepositoryQueryBuilder.build("receipt_snaps", { sql: "   ", params: [] }, [], ORG),
+                () => RepositoryQueryBuilder.build("receipt_snaps", { sql: "   ", params: [], acrossOrganizations: false }, [], ORG),
                 ArgumentException);
         });
 
@@ -268,15 +268,15 @@ await describe("RepositoryQueryBuilder tests", async () =>
         {
             assert.deepStrictEqual(
                 RepositoryQueryBuilder.idPredicate("id", ["rec_1"]),
-                { sql: "id in (?)", params: ["rec_1"] });
+                { sql: "id in (?)", params: ["rec_1"], acrossOrganizations: true });
 
             assert.deepStrictEqual(
                 RepositoryQueryBuilder.idPredicate("id", ["rec_1", "rec_2"]),
-                { sql: "id in (?,?)", params: ["rec_1", "rec_2"] });
+                { sql: "id in (?,?)", params: ["rec_1", "rec_2"], acrossOrganizations: true });
 
             assert.deepStrictEqual(
                 RepositoryQueryBuilder.idPredicate("aggregate_id", ["o1"]),
-                { sql: "aggregate_id in (?)", params: ["o1"] });
+                { sql: "aggregate_id in (?)", params: ["o1"], acrossOrganizations: true });
         });
 
         await test("a predicate is conjoined to the ids, whose values bind first", async () =>
@@ -359,7 +359,7 @@ await describe("RepositoryQueryBuilder tests", async () =>
         {
             const built = RepositoryQueryBuilder.build("receipt_snaps",
                 RepositoryQueryBuilder.idPredicate("id", ["rec_1"],
-                    { sql: "a = ? or b = ?", params: [1, 2] }),
+                    { sql: "a = ? or b = ?", params: [1, 2], acrossOrganizations: false }),
                 [], ORG);
 
             assert.strictEqual(built.sql,
@@ -375,7 +375,7 @@ await describe("RepositoryQueryBuilder tests", async () =>
                 "where a = ?", "a = ?; drop table x", "   "])
             {
                 assert.throws(
-                    () => RepositoryQueryBuilder.idPredicate("id", ["rec_1"], { sql, params: [] }),
+                    () => RepositoryQueryBuilder.idPredicate("id", ["rec_1"], { sql, params: [], acrossOrganizations: false }),
                     (e: any) => e instanceof ArgumentException || e instanceof ArgumentNullException,
                     `expected '${sql}' to be rejected`);
             }
@@ -406,7 +406,7 @@ await describe("RepositoryQueryBuilder tests", async () =>
     {
         await test("exists selects a constant and stops at the first match", async () =>
         {
-            const built = RepositoryQueryBuilder.buildExists("order_snaps", { sql: "(data->>'slug') = ?", params: ["a"] });
+            const built = RepositoryQueryBuilder.buildExists("order_snaps", { sql: "(data->>'slug') = ?", params: ["a"], acrossOrganizations: false });
 
             assert.strictEqual(built.sql, `select 1 from order_snaps where ((data->>'slug') = ?) limit 1;`);
             assert.deepStrictEqual(built.params, ["a"]);
@@ -417,7 +417,7 @@ await describe("RepositoryQueryBuilder tests", async () =>
         await test("exists orders the organization filter, the predicate and the excluded id", async () =>
         {
             const built = RepositoryQueryBuilder.buildExists("receipt_snaps",
-                { sql: "(data->>'email') = ?", params: ["a@b.c"] }, "rec_1", ORG);
+                { sql: "(data->>'email') = ?", params: ["a@b.c"], acrossOrganizations: false }, "rec_1", ORG);
 
             assert.strictEqual(built.sql,
                 `select 1 from receipt_snaps where organization_id = ? and ((data->>'email') = ?) and id <> ? limit 1;`);
@@ -450,7 +450,7 @@ await describe("RepositoryQueryBuilder tests", async () =>
                 `select cast(count(*) as int) as count from order_snaps;`);
 
             const built = RepositoryQueryBuilder.buildCount("receipt_snaps",
-                { sql: "(data->>'isDeactivated') = ?", params: [false] }, ORG);
+                { sql: "(data->>'isDeactivated') = ?", params: [false], acrossOrganizations: false }, ORG);
 
             assert.strictEqual(built.sql,
                 `select cast(count(*) as int) as count from receipt_snaps where organization_id = ? and ((data->>'isDeactivated') = ?);`);
@@ -460,11 +460,11 @@ await describe("RepositoryQueryBuilder tests", async () =>
         await test("both reject a predicate that is really a whole statement, or a blank excluded id", async () =>
         {
             assert.throws(
-                () => RepositoryQueryBuilder.buildExists("order_snaps", { sql: "select 1 from x", params: [] }),
+                () => RepositoryQueryBuilder.buildExists("order_snaps", { sql: "select 1 from x", params: [], acrossOrganizations: false }),
                 ArgumentException);
 
             assert.throws(
-                () => RepositoryQueryBuilder.buildCount("order_snaps", { sql: "a = ?; drop table x", params: [1] }),
+                () => RepositoryQueryBuilder.buildCount("order_snaps", { sql: "a = ?; drop table x", params: [1], acrossOrganizations: false }),
                 ArgumentException);
 
             assert.throws(
@@ -519,7 +519,7 @@ await describe("RepositoryQueryBuilder tests", async () =>
         {
             assert.throws(() => RepositoryQueryBuilder.build("order_snaps", "", []), ArgumentException);
             assert.throws(() => RepositoryQueryBuilder.build("order_snaps", "   ", []), ArgumentException);
-            assert.throws(() => RepositoryQueryBuilder.build("order_snaps", { where: { sql: "  ", params: [] } }, []), ArgumentException);
+            assert.throws(() => RepositoryQueryBuilder.build("order_snaps", { where: { sql: "  ", params: [], acrossOrganizations: false } }, []), ArgumentException);
             assert.throws(() => RepositoryQueryBuilder.build("order_snaps", { orderBy: "" }, []), ArgumentException);
         });
 
@@ -557,6 +557,48 @@ await describe("RepositoryQueryBuilder tests", async () =>
             assert.throws(
                 () => RepositoryQueryBuilder.build("receipt_snaps", "id = ?", ["rec_1"], "   "),
                 ArgumentException);
+        });
+    });
+
+    // The runtime half of the cross-organization doors' typing, owned by the builder so that the
+    // predicate-versus-query shape test and the order-by widening exist exactly once: what the brand
+    // check sees is what `build` would normalize, and the builder's own errors come first.
+    await describe("The across-organizations brand check", async () =>
+    {
+        const brandSet = SnapshotQuerySet.for<ReceiptState>().withPath("status");
+        const branded = brandSet.rawAcrossOrganizations("1 = 1");
+        const unbranded = brandSet.raw("1 = 1");
+        const brandedTerm: SnapshotOrderBy<true> = { sql: "(data->>'status')", acrossOrganizations: true };
+        const refused = (e: any): boolean => e instanceof ArgumentException && e.message.contains("acrossOrganizations");
+
+        await test("a branded predicate or query passes, with or without typed order-by terms", () =>
+        {
+            RepositoryQueryBuilder.ensureAcrossOrganizations(undefined);
+            RepositoryQueryBuilder.ensureAcrossOrganizations(branded);
+            RepositoryQueryBuilder.ensureAcrossOrganizations({});
+            RepositoryQueryBuilder.ensureAcrossOrganizations({ where: branded, orderBy: brandedTerm });
+            RepositoryQueryBuilder.ensureAcrossOrganizations({ where: branded, orderBy: [brandedTerm, brandedTerm], limit: 1 });
+            // a raw-string order by is the caller's, as it is on the scoped form
+            RepositoryQueryBuilder.ensureAcrossOrganizations({ orderBy: "id" });
+        });
+
+        await test("anything unbranded is refused, naming the brand", () =>
+        {
+            assert.throws(() => RepositoryQueryBuilder.ensureAcrossOrganizations(unbranded), refused);
+            assert.throws(() => RepositoryQueryBuilder.ensureAcrossOrganizations({ where: unbranded }), refused);
+            assert.throws(() => RepositoryQueryBuilder.ensureAcrossOrganizations({ where: branded, orderBy: brandSet.orderBy("status") }), refused);
+            assert.throws(() => RepositoryQueryBuilder.ensureAcrossOrganizations({ where: branded, orderBy: [brandedTerm, brandSet.orderBy("status")] }), refused);
+
+            // the shapes only a JavaScript caller can produce: a bare literal, and the internal string form
+            assert.throws(() => RepositoryQueryBuilder.ensureAcrossOrganizations(<any>{ sql: "1 = 1", params: [] }), refused);
+            assert.throws(() => RepositoryQueryBuilder.ensureAcrossOrganizations(<any>"1 = 1"), refused);
+        });
+
+        await test("a predicate that also carries where is the builder's ambiguity error, not a brand error", () =>
+        {
+            assert.throws(
+                () => RepositoryQueryBuilder.ensureAcrossOrganizations(<any>{ sql: "1 = 1", params: [], acrossOrganizations: true, where: "x" }),
+                (e: any) => e instanceof ArgumentException && e.message.contains("cannot also carry"));
         });
     });
 

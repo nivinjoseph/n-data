@@ -305,7 +305,7 @@ await describe("SnapshotShapeGuard tests", async () =>
         // a counting view over a real set: same declaration, observable walk count
         const counting: DeclaredSnapshotQuerySet<StudioState> = {
             indexes: set.indexes, arrayIndexes: set.arrayIndexes,
-            paths: set.paths, arrayPaths: set.arrayPaths,
+            paths: set.paths, arrayPaths: set.arrayPaths, acrossOrganizationsPaths: set.acrossOrganizationsPaths,
             _pathCheckingIntact: true,
             verifyDocument: (document: SnapshotDocumentOf<StudioState>) =>
             {

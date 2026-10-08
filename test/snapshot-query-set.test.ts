@@ -1,10 +1,10 @@
-import { DomainObject, DomainObjectData, OrgAggregateRoot, OrgAggregateState, OrgDomainEvent } from "@nivinjoseph/n-domain";
+import { AggregateState, DomainObject, DomainObjectData, OrgAggregateRoot, OrgAggregateState, OrgAggregateStateFactory, OrgConfigurableDomainContext, OrgDomainEvent } from "@nivinjoseph/n-domain";
 import { ArgumentException, ArgumentNullException, Exception } from "@nivinjoseph/n-exception";
 import { Logger } from "@nivinjoseph/n-log";
 import { serialize } from "@nivinjoseph/n-util";
 import assert from "node:assert";
 import test, { after, before, describe } from "node:test";
-import { Db, DbConnectionConfig, DbConnectionFactory, DbTableCreator, DeclaredSnapshotQuerySet, JsonValueType, KnexPgDb, KnexPgDbConnectionFactory, OrgEventStreamBaseRepository, OrgSnapshotBaseRepository, SnapshotArrayIndex, SnapshotArrayPath, SnapshotIndex, SnapshotPath, SnapshotPathSpec, SnapshotQuerySet } from "../src/index.js";
+import { Db, DbConnectionConfig, DbConnectionFactory, DbTableCreator, DeclaredSnapshotQuerySet, JsonValueType, KnexPgDb, KnexPgDbConnectionFactory, OrgEventStreamBaseRepository, OrgSnapshotBaseRepository, QueryResult, SnapshotArrayIndex, SnapshotArrayPath, SnapshotIndex, SnapshotPath, SnapshotOrderBy, SnapshotPathSpec, SnapshotPredicate, SnapshotQuerySet, UnitOfWork } from "../src/index.js";
 
 
 class SilentLogger implements Logger
@@ -67,6 +67,12 @@ interface TicketState extends OrgAggregateState
     lines: Array<Line>;
 }
 
+// a plain (non-org) state: the one place the acrossOrganizations option must be refused
+interface PlainState extends AggregateState
+{
+    status: string;
+}
+
 // only the name reaches the DDL. Its own table name, because node --test runs files in parallel and
 // this suite creates and drops real tables.
 class Ticket extends OrgAggregateRoot<TicketState, OrgDomainEvent<TicketState>> { }
@@ -74,7 +80,9 @@ class Ticket extends OrgAggregateRoot<TicketState, OrgDomainEvent<TicketState>> 
 const ticketType = Ticket as any;
 
 const indexes = SnapshotQuerySet.for<TicketState>()
-    .withPath("status")
+    // declared across organizations: a second, prefix-free index, and the brand on every status predicate
+    .withPath("status", { acrossOrganizations: true })
+    // deliberately NOT across organizations - the control for the brand and for the planner
     .withPath("total", { type: JsonValueType.numeric })
     .withPath("openedAt")
     .withPath("isRush")
@@ -373,6 +381,94 @@ await describe("SnapshotQuerySet tests", async () =>
             assert.ok(literal.orderBy("series").sql.length > 0);
             assert.ok(literal.contains("labels", "urgent").sql.contains("@>"));
         });
+
+        // Every predicate carries a brand: whether every path in it is declared across organizations.
+        // A containment predicate is always `true` - a GIN index has no tenant prefix - and a bare
+        // literal is no predicate at all, because nothing stamped it.
+        await test("a predicate is branded, and a bare literal is not a predicate", async () =>
+        {
+            const rejected = (): void =>
+            {
+                // @ts-expect-error - a hand-written literal carries no brand; build it through raw()
+                const bare: SnapshotPredicate = { sql: "(data->>'status') = ?", params: ["sent"] };
+
+                // @ts-expect-error - a containment predicate is SnapshotPredicate<true>, never <false>
+                const scopedOnly: SnapshotPredicate<false> = indexes.contains("labels", "urgent");
+
+                assert.ok(bare);
+                assert.ok(scopedOnly);
+            };
+
+            assert.strictEqual(typeof rejected, "function");
+
+            const containment: SnapshotPredicate<true> = indexes.contains("labels", "urgent");
+            // the default type parameter admits both brands, so an existing annotation keeps working
+            const either: SnapshotPredicate = containment;
+
+            assert.strictEqual(containment.acrossOrganizations, true);
+            assert.strictEqual(either.acrossOrganizations, true);
+        });
+
+        // The brand follows the declaration: `status` is declared across organizations in the fixture
+        // and `total` is not; containment always is; a combinator is `true` only when every arm is;
+        // `not` keeps what it was given; and an order by term carries it like a predicate does.
+        await test("the brand follows the declaration, and combinators propagate it", async () =>
+        {
+            const flagged: SnapshotPredicate<true> = indexes.eq("status", "sent");
+            const unflagged: SnapshotPredicate<false> = indexes.gt("total", 1);
+            const allAcross: SnapshotPredicate<true> = indexes.and(indexes.eq("status", "sent"), indexes.contains("labels", "urgent"));
+            const negated: SnapshotPredicate<true> = indexes.not(indexes.isNull("status"));
+            const ordered: SnapshotOrderBy<true> = indexes.orderBy("status", "desc");
+            const hand: SnapshotPredicate<true> = indexes.rawAcrossOrganizations(`${indexes.expressionFor("status")} like ?`, "se%");
+
+            // a composite flagged as a whole flags each member
+            const composite = SnapshotQuerySet.for<TicketState>()
+                .withComposite(["series", { path: "revision", type: JsonValueType.integer }], { acrossOrganizations: true });
+            const member: SnapshotPredicate<true> = composite.gte("revision", 2);
+
+            const rejected = (): void =>
+            {
+                // @ts-expect-error - total is not declared across organizations
+                const a: SnapshotPredicate<true> = indexes.gt("total", 1);
+
+                // @ts-expect-error - one unflagged arm makes the whole conjunction unflagged
+                const b: SnapshotPredicate<true> = indexes.and(indexes.eq("status", "sent"), indexes.gt("total", 1));
+
+                // @ts-expect-error - raw never brands; rawAcrossOrganizations is the door for a hand-written cross-org fragment
+                const c: SnapshotPredicate<true> = indexes.raw("1 = 1");
+
+                // @ts-expect-error - nor is an order by term on an unflagged path branded
+                const d: SnapshotOrderBy<true> = indexes.orderBy("total");
+
+                assert.ok([a, b, c, d]);
+            };
+
+            assert.strictEqual(typeof rejected, "function");
+            // the runtime half of the same claim
+            assert.deepStrictEqual(
+                [flagged, unflagged, allAcross, negated, ordered, hand, member].map(t => t.acrossOrganizations),
+                [true, false, true, true, true, true, true]);
+        });
+
+        // The option is declarable only where it means something, and brands only as a literal.
+        await test("acrossOrganizations is refused on a plain state, and a non-literal flag does not brand", async () =>
+        {
+            const rejected = (flag: boolean): void =>
+            {
+                // @ts-expect-error - a plain snapshot table has no organization_id column, so there is no prefix to cross
+                SnapshotQuerySet.for<PlainState>().withPath("status", { acrossOrganizations: true });
+
+                // a boolean-typed flag is not the literal `true`: the path is declared, but not branded
+                const maybe = SnapshotQuerySet.for<TicketState>().withPath("status", { acrossOrganizations: flag });
+
+                // @ts-expect-error - not branded, because the flag arrived as `boolean`
+                const p: SnapshotPredicate<true> = maybe.eq("status", "sent");
+
+                assert.ok(p);
+            };
+
+            assert.strictEqual(typeof rejected, "function");
+        });
     });
 
     // Pins the pattern the class docs tell a consumer to write. Nothing is instantiated - the point is
@@ -580,6 +676,105 @@ await describe("SnapshotQuerySet tests", async () =>
                     return this.queryByIds(["tkt_1", "tkt_2"], this.querySet.gt("total", 10));
                 }
 
+                // The typed cross-organization doors take only a branded predicate - one whose every
+                // path is declared `acrossOrganizations` (or is an array path), so that dropping the
+                // organization filter still leaves an index to walk. `status` is declared so in the
+                // fixture; `total` is not.
+                public acceptedAcross(status: string): Promise<Array<Ticket>>
+                {
+                    return this.queryAcrossOrganizations(this.querySet.eq("status", status));
+                }
+
+                public acceptedAcrossComposed(status: string): Promise<Array<Ticket>>
+                {
+                    return this.queryAcrossOrganizations({
+                        where: this.querySet.and(this.querySet.eq("status", status), this.querySet.contains("labels", "urgent")),
+                        orderBy: this.querySet.orderBy("status", "desc"),
+                        limit: 5
+                    });
+                }
+
+                public acceptedAcrossRaw(prefix: string): Promise<Array<Ticket>>
+                {
+                    // the hand-written cross-org fragment, branded by the caller through the named door
+                    return this.queryAcrossOrganizations(
+                        this.querySet.rawAcrossOrganizations(`${this.querySet.expressionFor("status")} like ?`, prefix));
+                }
+
+                public acceptedAcrossCountAndExists(status: string): Promise<[number, boolean]>
+                {
+                    return Promise.all([
+                        this.countAcrossOrganizations(this.querySet.eq("status", status)),
+                        this.existsAcrossOrganizations(this.querySet.eq("status", status), "tkt_1")
+                    ]);
+                }
+
+                public acceptedAcrossEverything(): Promise<[Array<Ticket>, number, boolean]>
+                {
+                    // no predicate at all: the whole table, every organization - deliberate, and spelt out
+                    return Promise.all([
+                        this.queryAcrossOrganizations({}),
+                        this.countAcrossOrganizations(),
+                        this.existsAcrossOrganizations()
+                    ]);
+                }
+
+                public acceptedStatementAcross(status: string): Promise<Array<Ticket>>
+                {
+                    // the raw statement door, renamed to say what it is - the plain variant's `queryStatement`
+                    return this.queryStatementAcrossOrganizations(
+                        `select data from ${this.table} where ${this.querySet.expressionFor("status")} = ?;`, status);
+                }
+
+                public rejectedAcrossUnflagged(): Promise<Array<Ticket>>
+                {
+                    // @ts-expect-error - total is not declared across organizations: no index to walk once the filter is gone
+                    return this.queryAcrossOrganizations(this.querySet.gt("total", 1));
+                }
+
+                public rejectedAcrossMixed(): Promise<Array<Ticket>>
+                {
+                    // @ts-expect-error - one unflagged arm is enough to reject the conjunction
+                    return this.queryAcrossOrganizations(this.querySet.and(this.querySet.eq("status", "open"), this.querySet.gt("total", 1)));
+                }
+
+                public rejectedAcrossOrderBy(): Promise<Array<Ticket>>
+                {
+                    // @ts-expect-error - and an order by on an unflagged path is rejected on the query form
+                    return this.queryAcrossOrganizations({ where: this.querySet.eq("status", "open"), orderBy: this.querySet.orderBy("total") });
+                }
+
+                public rejectedAcrossRaw(): Promise<Array<Ticket>>
+                {
+                    // @ts-expect-error - raw never brands; rawAcrossOrganizations is the door
+                    return this.queryAcrossOrganizations(this.querySet.raw("1 = 1"));
+                }
+
+                public rejectedAcrossCount(): Promise<number>
+                {
+                    // @ts-expect-error - the count door is typed the same way
+                    return this.countAcrossOrganizations(this.querySet.gt("total", 1));
+                }
+
+                public rejectedAcrossExists(): Promise<boolean>
+                {
+                    // @ts-expect-error - and the exists door
+                    return this.existsAcrossOrganizations(this.querySet.gt("total", 1));
+                }
+
+                public rejectedOldStatementDoor(): Promise<Array<Ticket>>
+                {
+                    // @ts-expect-error - the typed door does not take a statement; that is queryStatementAcrossOrganizations now
+                    return this.queryAcrossOrganizations(`select data from ${this.table};`);
+                }
+
+                // and the scoped doors are unmoved: a flagged predicate is index-served there too, since
+                // the path keeps its org-leading index
+                public acceptedFlaggedScoped(status: string): Promise<Array<Ticket>>
+                {
+                    return this.query({ where: this.querySet.eq("status", status), orderBy: this.querySet.orderBy("status") });
+                }
+
                 public rejectedFilteredByUndeclaredPath(): Promise<Ticket | null>
                 {
                     // @ts-expect-error - the narrow type reaches the new door too: 'unindexed' was never declared
@@ -683,40 +878,40 @@ await describe("SnapshotQuerySet tests", async () =>
         await test("comparisons emit the declared expression, parenthesized, with the value bound", async () =>
         {
             assert.deepStrictEqual(indexes.eq("status", "sent"),
-                { sql: `((data->>'status') = ?)`, params: ["sent"] });
+                { sql: `((data->>'status') = ?)`, params: ["sent"], acrossOrganizations: true });
 
             assert.deepStrictEqual(indexes.ne("status", "sent"),
-                { sql: `((data->>'status') <> ?)`, params: ["sent"] });
+                { sql: `((data->>'status') <> ?)`, params: ["sent"], acrossOrganizations: true });
 
             assert.deepStrictEqual(indexes.gt("total", 100),
-                { sql: `(((data->>'total')::numeric) > ?)`, params: [100] });
+                { sql: `(((data->>'total')::numeric) > ?)`, params: [100], acrossOrganizations: false });
 
             assert.deepStrictEqual(indexes.gte("total", 100),
-                { sql: `(((data->>'total')::numeric) >= ?)`, params: [100] });
+                { sql: `(((data->>'total')::numeric) >= ?)`, params: [100], acrossOrganizations: false });
 
             assert.deepStrictEqual(indexes.lt("total", 100),
-                { sql: `(((data->>'total')::numeric) < ?)`, params: [100] });
+                { sql: `(((data->>'total')::numeric) < ?)`, params: [100], acrossOrganizations: false });
 
             assert.deepStrictEqual(indexes.lte("total", 100),
-                { sql: `(((data->>'total')::numeric) <= ?)`, params: [100] });
+                { sql: `(((data->>'total')::numeric) <= ?)`, params: [100], acrossOrganizations: false });
         });
 
         await test("a nested path uses the #>> form, matching the index", async () =>
         {
             assert.deepStrictEqual(indexes.eq("party.city", "Toronto"),
-                { sql: `((data#>>'{"party","city"}') = ?)`, params: ["Toronto"] });
+                { sql: `((data#>>'{"party","city"}') = ?)`, params: ["Toronto"], acrossOrganizations: false });
         });
 
         await test("in emits one placeholder per value", async () =>
         {
             assert.deepStrictEqual(indexes.in("status", ["sent", "paid", "void"]),
-                { sql: `((data->>'status') in (?,?,?))`, params: ["sent", "paid", "void"] });
+                { sql: `((data->>'status') in (?,?,?))`, params: ["sent", "paid", "void"], acrossOrganizations: true });
         });
 
         await test("null checks bind nothing", async () =>
         {
-            assert.deepStrictEqual(indexes.isNull("status"), { sql: `((data->>'status') is null)`, params: [] });
-            assert.deepStrictEqual(indexes.isNotNull("status"), { sql: `((data->>'status') is not null)`, params: [] });
+            assert.deepStrictEqual(indexes.isNull("status"), { sql: `((data->>'status') is null)`, params: [], acrossOrganizations: true });
+            assert.deepStrictEqual(indexes.isNotNull("status"), { sql: `((data->>'status') is not null)`, params: [], acrossOrganizations: true });
         });
 
         await test("a composite member's own cast reaches its expression", async () =>
@@ -732,6 +927,9 @@ await describe("SnapshotQuerySet tests", async () =>
             // passed through as the array index built it - already parenthesized, so nothing is added
             assert.strictEqual(predicate.sql, `((data->'lines') @> cast(? as jsonb))`);
             assert.deepStrictEqual(predicate.params, [JSON.stringify([{ sku: "a", isVoid: false }])]);
+
+            // a GIN index carries no tenant prefix, so a containment predicate crosses organizations with its index
+            assert.strictEqual(predicate.acrossOrganizations, true);
         });
 
         await test("and/or nest safely and concatenate params in fragment order", async () =>
@@ -743,12 +941,20 @@ await describe("SnapshotQuerySet tests", async () =>
             assert.strictEqual(combined.sql,
                 `(((data->>'status') = ?) and ((((data->>'total')::numeric) > ?) or ((data->>'isRush') = ?)))`);
             assert.deepStrictEqual(combined.params, ["sent", 10, true]);
+            // total and isRush are not declared across organizations, so neither is the whole
+            assert.strictEqual(combined.acrossOrganizations, false);
+
+            // every arm declared across organizations - status is, and containment always is - so the whole is too
+            assert.strictEqual(
+                indexes.and(indexes.eq("status", "sent"), indexes.contains("labels", "urgent")).acrossOrganizations, true);
+            assert.strictEqual(
+                indexes.or(indexes.eq("status", "sent"), indexes.isNull("status")).acrossOrganizations, true);
         });
 
         await test("not wraps a predicate and keeps its params", async () =>
         {
             assert.deepStrictEqual(indexes.not(indexes.eq("status", "sent")),
-                { sql: `(not ((data->>'status') = ?))`, params: ["sent"] });
+                { sql: `(not ((data->>'status') = ?))`, params: ["sent"], acrossOrganizations: true });
         });
 
         await test("raw parenthesizes a hand-written fragment so it composes", async () =>
@@ -760,12 +966,25 @@ await describe("SnapshotQuerySet tests", async () =>
             assert.strictEqual(combined.sql,
                 `(((data->>'status') = ?) and ((data#>>'{"party","city"}') like ?))`);
             assert.deepStrictEqual(combined.params, ["sent", "To%"]);
+            // raw never brands - the caller wrote the fragment - so neither does anything it is part of
+            assert.strictEqual(combined.acrossOrganizations, false);
+        });
+
+        await test("rawAcrossOrganizations parenthesizes like raw, validates like raw, and brands the fragment", async () =>
+        {
+            const predicate = indexes.rawAcrossOrganizations(`${indexes.expressionFor("status")} like ?`, "se%");
+
+            assert.deepStrictEqual(predicate, { sql: `((data->>'status') like ?)`, params: ["se%"], acrossOrganizations: true });
+
+            assert.throws(() => indexes.rawAcrossOrganizations("select 1 from t"), ArgumentException);
+            assert.throws(() => indexes.rawAcrossOrganizations("a = ?; drop table t", 1), ArgumentException);
+            assert.throws(() => indexes.rawAcrossOrganizations("   "), ArgumentException);
         });
 
         await test("orderBy emits the declared expression and an optional direction", async () =>
         {
-            assert.deepStrictEqual(indexes.orderBy("total", "desc"), { sql: `((data->>'total')::numeric) desc` });
-            assert.deepStrictEqual(indexes.orderBy("status"), { sql: `(data->>'status')` });
+            assert.deepStrictEqual(indexes.orderBy("total", "desc"), { sql: `((data->>'total')::numeric) desc`, acrossOrganizations: false });
+            assert.deepStrictEqual(indexes.orderBy("status"), { sql: `(data->>'status')`, acrossOrganizations: true });
         });
 
         await test("the set exposes real index instances, in declaration order", async () =>
@@ -784,6 +1003,22 @@ await describe("SnapshotQuerySet tests", async () =>
         });
 
         // copy-on-write: the chain does not mutate what it was called on, so a set is safe to share
+        await test("acrossOrganizationsPaths names the flagged scalar paths, and the index carries the flag", async () =>
+        {
+            assert.deepStrictEqual(indexes.acrossOrganizationsPaths, ["status"]);
+            assert.deepStrictEqual(indexes.indexes.map(t => t.isAcrossOrganizations), [true, false, false, false, false, false]);
+
+            // a composite flagged as a whole flags each of its paths, on one index
+            const composite = SnapshotQuerySet.for<TicketState>()
+                .withComposite(["series", { path: "revision", type: JsonValueType.integer }], { acrossOrganizations: true });
+
+            assert.deepStrictEqual(composite.acrossOrganizationsPaths, ["series", "revision"]);
+            assert.strictEqual(composite.indexes[0].isAcrossOrganizations, true);
+
+            // and the receiver of a with... call is unmoved, as always
+            assert.deepStrictEqual(SnapshotQuerySet.for<TicketState>().withPath("status").acrossOrganizationsPaths, []);
+        });
+
         await test("each with... call returns a new set and leaves the receiver alone", async () =>
         {
             const base = SnapshotQuerySet.for<TicketState>().withPath("status");
@@ -893,6 +1128,188 @@ await describe("SnapshotQuerySet tests", async () =>
         });
     });
 
+    // The doors' statements, pinned without a database: a recording Db hands back empty results (and
+    // a count row), so what is asserted is the SQL and the bindings each door emits - and that the
+    // runtime guard refuses an unbranded predicate before anything reaches the database.
+    await describe("The cross-organization doors", async () =>
+    {
+        class RecordingDb implements Db
+        {
+            public readonly queries = new Array<{ sql: string; params: ReadonlyArray<any>; }>();
+
+            public executeQuery<T>(sql: string, ...params: Array<any>): Promise<QueryResult<T>>
+            {
+                this.queries.push({ sql, params });
+
+                // a count statement needs its one row; everything else reads as "nothing matched"
+                return Promise.resolve(new QueryResult<T>(sql.startsWith("select cast(count") ? [<T><unknown>{ count: 7 }] : []));
+            }
+
+            public executeCommand(): Promise<void> { return Promise.resolve(); }
+            public executeCommandWithinUnitOfWork(): Promise<void> { return Promise.resolve(); }
+        }
+
+        class NoUnitOfWork implements UnitOfWork
+        {
+            public getTransactionScope(): Promise<object> { return Promise.resolve({}); }
+            public onCommit(): void { /* never committed here */ }
+            public commit(): Promise<void> { return Promise.resolve(); }
+            public onRollback(): void { /* never rolled back here */ }
+            public rollback(): Promise<void> { return Promise.resolve(); }
+        }
+
+        // every read here returns no rows, so no state is ever created or deserialized
+        class TicketStateFactory extends OrgAggregateStateFactory<TicketState>
+        {
+            public create(): TicketState { throw new Error("no ticket is ever created in this block"); }
+        }
+
+        class TicketEventStreamRepository extends OrgEventStreamBaseRepository<Ticket, TicketState, OrgDomainEvent<TicketState>>
+        {
+            public constructor(db: Db)
+            {
+                const context = new OrgConfigurableDomainContext("user_1", ORG);
+
+                super(context, db, new NoUnitOfWork(), new SilentLogger(), Ticket, new TicketStateFactory(context));
+            }
+
+            protected onSave(): Promise<void> { return Promise.resolve(); }
+        }
+
+        class TicketRepository extends OrgSnapshotBaseRepository<Ticket, TicketState, OrgDomainEvent<TicketState>>
+        {
+            public static readonly indexes = indexes;
+
+            protected override get querySet(): typeof TicketRepository.indexes { return TicketRepository.indexes; }
+
+            public constructor(eventStreamRepository: TicketEventStreamRepository)
+            {
+                super(eventStreamRepository);
+            }
+
+            public across(status: string): Promise<Array<Ticket>>
+            {
+                return this.queryAcrossOrganizations(this.querySet.eq("status", status));
+            }
+
+            public acrossPaged(status: string): Promise<Array<Ticket>>
+            {
+                return this.queryAcrossOrganizations({
+                    where: this.querySet.eq("status", status),
+                    orderBy: this.querySet.orderBy("status", "desc"),
+                    limit: 5,
+                    offset: 10
+                });
+            }
+
+            public scoped(status: string): Promise<Array<Ticket>>
+            {
+                return this.query(this.querySet.eq("status", status));
+            }
+
+            public countAcross(status?: string): Promise<number>
+            {
+                return this.countAcrossOrganizations(status == null ? undefined : this.querySet.eq("status", status));
+            }
+
+            public existsAcross(status: string, excludeId?: string): Promise<boolean>
+            {
+                return this.existsAcrossOrganizations(this.querySet.eq("status", status), excludeId);
+            }
+
+            public statementAcross(status: string): Promise<Array<Ticket>>
+            {
+                return this.queryStatementAcrossOrganizations(
+                    `select data from ${this.table} where ${this.querySet.expressionFor("status")} = ?;`, status);
+            }
+
+            // the runtime guard's subjects: the unbranded shapes a JavaScript caller, or an `any`, could pass
+            public acrossUnchecked(whereOrQuery: any): Promise<Array<Ticket>> { return this.queryAcrossOrganizations(whereOrQuery); }
+            public countUnchecked(predicate: any): Promise<number> { return this.countAcrossOrganizations(predicate); }
+            public existsUnchecked(predicate: any): Promise<boolean> { return this.existsAcrossOrganizations(predicate); }
+        }
+
+        const build = (): { repository: TicketRepository; db: RecordingDb; } =>
+        {
+            const db = new RecordingDb();
+
+            return { repository: new TicketRepository(new TicketEventStreamRepository(db)), db };
+        };
+
+        await test("the typed door builds the statement with no organization filter; the scoped door keeps it", async () =>
+        {
+            const { repository, db } = build();
+
+            assert.deepStrictEqual(await repository.across("open"), []);
+            assert.deepStrictEqual(await repository.scoped("open"), []);
+
+            assert.deepStrictEqual(db.queries, [
+                { sql: "select data from ticket_snaps where (((data->>'status') = ?));", params: ["open"] },
+                { sql: "select data from ticket_snaps where organization_id = ? and (((data->>'status') = ?));", params: [ORG, "open"] }
+            ]);
+        });
+
+        await test("the query form carries order by, limit and offset across organizations", async () =>
+        {
+            const { repository, db } = build();
+
+            await repository.acrossPaged("open");
+
+            assert.deepStrictEqual(db.queries, [{
+                sql: "select data from ticket_snaps where (((data->>'status') = ?)) order by (data->>'status') desc limit ? offset ?;",
+                params: ["open", 5, 10]
+            }]);
+        });
+
+        await test("countAcrossOrganizations and existsAcrossOrganizations drop the filter too, and take no predicate at all", async () =>
+        {
+            const { repository, db } = build();
+
+            assert.strictEqual(await repository.countAcross("open"), 7);
+            assert.strictEqual(await repository.countAcross(), 7);
+            assert.strictEqual(await repository.existsAcross("open", "tkt_1"), false);
+
+            assert.deepStrictEqual(db.queries.map(t => t.sql), [
+                "select cast(count(*) as int) as count from ticket_snaps where (((data->>'status') = ?));",
+                "select cast(count(*) as int) as count from ticket_snaps;",
+                "select 1 from ticket_snaps where (((data->>'status') = ?)) and id <> ? limit 1;"
+            ]);
+            assert.deepStrictEqual(db.queries[2].params, ["open", "tkt_1"]);
+        });
+
+        await test("the statement door runs what it is given", async () =>
+        {
+            const { repository, db } = build();
+
+            await repository.statementAcross("open");
+
+            assert.deepStrictEqual(db.queries, [{ sql: "select data from ticket_snaps where (data->>'status') = ?;", params: ["open"] }]);
+        });
+
+        // the compile-time refusal has a runtime twin, for a JavaScript caller or an `any`: nothing
+        // unbranded reaches the database
+        await test("an unbranded predicate or order by term is refused before any statement runs", async () =>
+        {
+            const { repository, db } = build();
+            const unbranded = indexes.gt("total", 1);
+            const bare = { sql: "1 = 1", params: [] };
+            const refused = (e: any): boolean => e instanceof ArgumentException && e.message.contains("acrossOrganizations");
+
+            await assert.rejects(() => repository.acrossUnchecked(unbranded), refused);
+            await assert.rejects(() => repository.acrossUnchecked(bare), refused);
+            await assert.rejects(() => repository.acrossUnchecked({ where: indexes.eq("status", "open"), orderBy: indexes.orderBy("total") }), refused);
+            await assert.rejects(() => repository.acrossUnchecked({ where: indexes.eq("status", "open"), orderBy: [indexes.orderBy("status"), indexes.orderBy("total")] }), refused);
+            await assert.rejects(() => repository.countUnchecked(unbranded), refused);
+            await assert.rejects(() => repository.existsUnchecked(unbranded), refused);
+
+            assert.deepStrictEqual(db.queries, []);
+
+            // a raw string order by is the caller's, as it is on the scoped form
+            await repository.acrossUnchecked({ where: indexes.eq("status", "open"), orderBy: "id" });
+            assert.strictEqual(db.queries.length, 1);
+        });
+    });
+
     await describe("Against Postgres", async () =>
     {
         let dbConnectionFactory: DbConnectionFactory;
@@ -968,6 +1385,10 @@ await describe("SnapshotQuerySet tests", async () =>
             assert.ok(names.contains("idx_ticket_snaps_labels_gin"), names.join(", "));
             assert.ok(names.contains("idx_ticket_snaps_lines_gin"), names.join(", "));
             assert.ok(names.contains("idx_ticket_snaps_plan_badges_gin"), names.join(", "));
+
+            // the flagged path's prefix-free twin - and no twin for the unflagged one
+            assert.ok(names.contains("idx_ticket_snaps_status_xorg"), names.join(", "));
+            assert.ok(!names.contains("idx_ticket_snaps_total_xorg"), names.join(", "));
         });
 
         // the claim that makes one declaration worth having: the predicate cannot drift from the index
@@ -978,6 +1399,125 @@ await describe("SnapshotQuerySet tests", async () =>
 
             assert.ok(plan.contains("idx_ticket_snaps_status"), plan);
             assert.ok(!plan.contains("Seq Scan"), plan);
+            // and the organization filter is served BY the index rather than applied to its output: an
+            // Index Cond naming organization_id is the org-leading index at work, where the twin (whose
+            // name contains this one's) would show the column as a Filter. The planner prefers the
+            // org-leading index on this fixture because it is strictly more selective - 5 organizations
+            // x 499 statuses, so its lookup returns ~2 rows where the twin's returns ~11 and filters -
+            // which is exactly why the twin leaves scoped reads unchanged
+            assert.ok(/Index Cond:[^\n]*organization_id/.test(plan), plan);
+        });
+
+        // What "the whole index is scanned" looks like, measured rather than inferred: the pages the
+        // index scan node touched, against the pages the index has. A lookup touches a handful; a scan
+        // of a non-leading column touches every one.
+        //
+        // The index node and its own Buffers line - the heap node above a bitmap scan has one too, so
+        // the match anchors on the index node, whichever shape the planner chose. Pages are hit plus
+        // read, so a cold cache counts the same as a warm one.
+        const indexScanOf = (plan: string): { index: string; touched: number; } | null =>
+        {
+            const match = /(?:Bitmap )?Index(?: Only)? Scan (?:on|using) (\S+)[^\n]*\n(?:[^\n]*\n)*?\s*Buffers: ([^\n]*)/.exec(plan);
+            if (match == null)
+                return null;
+
+            const count = (kind: string): number => Number(new RegExp(`${kind}=(\\d+)`).exec(match[2])?.[1] ?? 0);
+
+            return { index: match[1], touched: count("hit") + count("read") };
+        };
+
+        const indexScanBuffers = async (predicate: string, ...params: ReadonlyArray<any>): Promise<{ index: string; touched: number; pages: number; }> =>
+        {
+            const explained = await db.executeQuery<any>(
+                `explain (analyze, buffers, costs off, timing off, summary off) select id from ticket_snaps where ${predicate};`, ...params);
+            const plan = explained.rows.map(t => t["QUERY PLAN"] as string).join("\n");
+            const scan = indexScanOf(plan);
+            assert.ok(scan != null, plan);
+
+            // `cast(... as regclass)` rather than `?::regclass`: a `?` beside a `:` is a knex binding hazard
+            const size = await db.executeQuery<any>(`select pg_relation_size(cast(? as regclass)) / 8192 as pages;`, scan.index);
+
+            return { ...scan, pages: Number(size.rows[0].pages) };
+        };
+
+        // The reader the planner proof rests on, pinned on its own: EXPLAIN prints a bitmap scan as
+        // `Bitmap Index Scan on <idx>` and a plain one as `Index Scan using <idx> on <table>`, and a cold
+        // cache reports pages as `read=` beside or instead of `hit=`. Either shape is a valid lookup, and
+        // both must count.
+        await test("the plan reader understands both index-scan shapes and a cold cache", () =>
+        {
+            const bitmap = [
+                "Bitmap Heap Scan on ticket_snaps (actual rows=11 loops=1)",
+                "  Recheck Cond: ((data ->> 'status'::text) = 'st7'::text)",
+                "  Heap Blocks: exact=11",
+                "  Buffers: shared hit=13",
+                "  ->  Bitmap Index Scan on idx_ticket_snaps_status_xorg (actual rows=11 loops=1)",
+                "        Index Cond: ((data ->> 'status'::text) = 'st7'::text)",
+                "        Buffers: shared hit=2"
+            ].join("\n");
+            const plain = [
+                "Index Scan using idx_ticket_snaps_total on ticket_snaps (actual rows=10 loops=1)",
+                "  Index Cond: (((data ->> 'total'::text))::numeric > '4990'::numeric)",
+                "  Buffers: shared hit=1 read=3"
+            ].join("\n");
+
+            assert.deepStrictEqual(indexScanOf(bitmap), { index: "idx_ticket_snaps_status_xorg", touched: 2 });
+            assert.deepStrictEqual(indexScanOf(plain), { index: "idx_ticket_snaps_total", touched: 4 });
+            assert.strictEqual(indexScanOf("Seq Scan on ticket_snaps (actual rows=10 loops=1)\n  Buffers: shared hit=200"), null);
+        });
+
+        // The claim this feature exists to make: a predicate on a path declared across organizations is
+        // an index LOOKUP with the organization filter dropped. The control is the same kind of read on
+        // the unflagged path, which has only the org-leading index: btree serves a leading prefix, so
+        // the planner either scans the table or - where rows are wide, as here - walks that index end to
+        // end, checking the non-leading column on every entry. Neither is a lookup, and the buffers say so.
+        await test("a cross-organization predicate on a flagged path is a lookup on the _xorg twin; on an unflagged path the table or the whole index is scanned", async () =>
+        {
+            const flagged = indexes.eq("status", "st7");
+            const across = await planFor(flagged.sql, ...flagged.params);
+
+            assert.ok(across.contains("idx_ticket_snaps_status_xorg"), across);
+            assert.ok(!across.contains("Seq Scan"), across);
+
+            const twin = await indexScanBuffers(flagged.sql, ...flagged.params);
+            assert.strictEqual(twin.index, "idx_ticket_snaps_status_xorg");
+            assert.ok(twin.touched <= 3, `a lookup on the twin touched ${twin.touched} of its ${twin.pages} pages`);
+
+            // the control is a claim about the planner this proves it against: Postgres 18 adds a btree
+            // skip scan that walks an org-leading index once per distinct organization_id, which would
+            // make the unflagged read cheap without a twin - a changed premise rather than a regression,
+            // so the control stops at the version where the premise holds
+            const version = Number((await db.executeQuery<any>("show server_version_num;")).rows[0].server_version_num);
+            if (version < 180000)
+            {
+                const unflagged = indexes.gt("total", 4990);
+                const control = await planFor(unflagged.sql, ...unflagged.params);
+
+                if (control.contains("Seq Scan"))
+                    assert.ok(!control.contains("idx_ticket_snaps_total"), control);
+                else
+                {
+                    const whole = await indexScanBuffers(unflagged.sql, ...unflagged.params);
+                    assert.strictEqual(whole.index, "idx_ticket_snaps_total");
+                    // relative to the lookup rather than to an absolute page count, so row width and
+                    // fixture size cannot move it: a whole-index walk is many times a lookup
+                    assert.ok(whole.touched > twin.touched * 4,
+                        `expected the whole org-leading index (${whole.pages} pages) to be read, not a lookup; it touched ${whole.touched} where the twin's lookup touched ${twin.touched}`);
+                }
+            }
+        });
+
+        // ordering is served the same way: the twin is a btree over the flagged expression, so a
+        // cross-organization order by walks it instead of sorting
+        await test("a cross-organization order by on a flagged path walks the _xorg twin", async () =>
+        {
+            const term = indexes.orderBy("status", "desc");
+            const explained = await db.executeQuery<any>(
+                `explain (costs off) select id from ticket_snaps order by ${term.sql} limit 5;`);
+            const plan = explained.rows.map(t => t["QUERY PLAN"] as string).join("\n");
+
+            assert.ok(plan.contains("idx_ticket_snaps_status_xorg"), plan);
+            assert.ok(!plan.contains("Sort"), plan);
         });
 
         await test("a cast comparison uses the cast index and compares numerically", async () =>

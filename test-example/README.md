@@ -56,6 +56,8 @@ db-migration/
   ex-db-migrator.ts             one migrator, named for the database it owns
   migrations/ex-db-migration_1.ts
   migrations/ex-db-migration_2.ts
+  migrations/ex-db-migration_3.ts
+  migrations/ex-db-migration_4.ts
 test/                           the doubles and the tests
 ```
 
@@ -70,7 +72,7 @@ name — exactly one underscore, integer suffix greater than zero — so `ExDbMi
 | `studio.test.ts` | no | Studio's behavior and invariants, through the factory and an in-memory repository |
 | `creator.test.ts` | no | the same for Creator, including that a natural key is per-tenant |
 | `serialization.test.ts` | no | every `@serialize`d class round-trips, through events *and* through a snapshot; every declared index path resolves in a real snapshot (`verifyDocument`); and a materialized derived value is recomputed on read rather than trusted, so a stale stored count cannot reach the object |
-| `example.test.ts` | **yes** | migrations, the DDL and indexes, drift verification (`verifySnapshotTableForAggregate` asserts empty against the same declarations), the organization filter, the unique constraints, an id lookup composed with a declared path (`queryById`/`queryByIds`, including that an archived studio is excluded while `get` still returns it), both ways out of the tenant boundary (`queryAcrossOrganizations` by email, and `queryByIdAcrossOrganizations` by id - including that an id owned by another studio is still a miss for `get`, and that what the cross-tenant read returns cannot be saved from the reading studio), and the unit of work |
+| `example.test.ts` | **yes** | migrations, the DDL and indexes, drift verification (`verifySnapshotTableForAggregate` asserts empty against the same declarations), the organization filter, the unique constraints, an id lookup composed with a declared path (`queryById`/`queryByIds`, including that an archived studio is excluded while `get` still returns it), both ways out of the tenant boundary (the typed `queryAcrossOrganizations` by `email`, a path declared across organizations - including that an unflagged path such as `role` is a compile error there - and `queryByIdAcrossOrganizations` by id, including that an id owned by another studio is still a miss for `get`, and that what the cross-tenant read returns cannot be saved from the reading studio), and the unit of work |
 
 The split matters. `serialization.test.ts` is the one that catches the most damaging class of mistake: a
 serialized key that does not match a constructor parameter arrives as `undefined` and trips a guard at *read*
@@ -129,3 +131,8 @@ Adding the path also needed `ExDbMigration_3`. A migration never re-runs, so a p
 table's migration has run compiles, builds a predicate, and sequential-scans forever — which is why the third
 migration simply re-calls `createSnapshotTableForAggregate` with the current declaration and lets
 `if not exists` create only what is missing.
+
+`ExDbMigration_4` is the same idiom for a different change: `email` was declared `acrossOrganizations` after
+`_2` had run, and the flag *is* an index — the prefix-free `idx_creator_snaps_email_xorg` twin that the typed
+cross-studio read walks — so it too needs a migration that re-calls the create. Flagging a path is adding an
+index, and the drift check reports the missing twin exactly as it reports a missing path.

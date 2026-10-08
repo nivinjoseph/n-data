@@ -46,6 +46,14 @@ included) — with `forRawPath` as the deliberate door. Several errors are phras
 the *property name* in the error text tells you the fix. **Trust the compiler here instead of
 guessing**, and read the error rather than working around it.
 
+The same declaration decides what may cross the tenant boundary. A path declared
+`{ acrossOrganizations: true }` gets a second, prefix-free `_xorg` index, and every predicate and
+`orderBy` term over it is branded `SnapshotPredicate<true>` — the only brand the typed cross-org doors
+(`queryAcrossOrganizations`, `existsAcrossOrganizations`, `countAcrossOrganizations`) accept, at
+compile time and at runtime. Containment is always branded, `and`/`or` only when every arm is, `raw`
+never (`rawAcrossOrganizations` is the door, and the caller owns the claim). A hand-built
+`{ sql, params }` literal is not a predicate at all: nothing stamped it.
+
 **One caveat, and it is the exception to "fails closed".** `DomainObjectSerialized` maps over the
 class's declared `TDataKeys`, not over its `@serialize` decorators, and the runtime serializer walks
 the decorators. So the two sets can differ, and when they do the extra keys are *written to every row*
@@ -113,14 +121,20 @@ Ordered roughly by how expensive they are to get wrong.
   statement with the organization filter dropped, also `protected`, also returning `null`/`[]` on a
   miss. What they return is read-only in practice: `save` rejects an aggregate whose organization is
   not the current one, so a cross-tenant read cannot become a cross-tenant write.
-- **Crossing the tenant boundary keeps the index only for an id or an array.** Every btree expression
-  index on an org snapshot table leads with `organization_id`, and btree serves only a leading prefix
-  — so a *cross-organization* predicate on a declared path cannot use its index and sequentially
-  scans, however exactly the expression matches. Two reads survive the crossing intact: a lookup by
-  `id`, served by the primary key, which has no tenant prefix; and array containment, served by a GIN
-  index, which cannot have one. This is why the cross-organization surface is an id pair plus a raw
-  statement door, and not a general typed predicate — prefer `queryByIdAcrossOrganizations` and reach
-  for `queryAcrossOrganizations` knowing what it costs.
+- **Crossing the tenant boundary keeps an index lookup only for an id, an array, or a path declared
+  `acrossOrganizations`.** Every btree expression index on an org snapshot table leads with
+  `organization_id`, and btree serves only a leading prefix — so a *cross-organization* predicate on
+  an ordinary declared path cannot be an index lookup, however exactly the expression matches: the
+  planner scans the table, or walks the whole index end to end (measured: 22 of 23 index pages,
+  against 2 for a lookup). Three reads survive the crossing: a lookup by `id`, served by the primary
+  key, which has no tenant prefix; array containment, served by a GIN index, which cannot have one;
+  and a path declared `{ acrossOrganizations: true }`, which gets a second index without the prefix
+  (`idx_<table>_<path>_xorg`, never unique, needing its own migration like any index). That is why
+  the typed cross-org doors — `queryAcrossOrganizations`, `existsAcrossOrganizations`,
+  `countAcrossOrganizations` — accept only `SnapshotPredicate<true>`, the brand a predicate carries
+  exactly when every path in it is flagged: an unflagged path is a compile error there, and
+  `queryStatementAcrossOrganizations` is the raw statement door for everything else, used knowing
+  what it costs.
 - **`DbMigrator` has a required call order.** Configure, then `await bootstrap()`, then
   `await runMigrations()` — the latter throws if bootstrap has not run. Supply *exactly one* of
   `useSystemTable(name)` or `registerDbVersionProvider(cls)`; both or neither throws.
@@ -129,10 +143,11 @@ Ordered roughly by how expensive they are to get wrong.
   underscore, integer > 0 after it. **Renaming the class renumbers the migration.** Also,
   `registerMigrations` takes bare `Function`s, so nothing checks that a class implements
   `DbMigration`.
-- **DDL is `if not exists`, matched on name alone.** The derived index name encodes paths and
-  uniqueness but *not* `JsonValueType`. So adding a numeric cast to an already-indexed path silently
-  keeps the old uncast index, and dropping `.asUnique()` never drops the `_uq` index. Nothing here
-  alters or drops — that takes a hand-written migration.
+- **DDL is `if not exists`, matched on name alone.** The derived index name encodes paths, uniqueness
+  and the cross-org flag (`_uq`, `_xorg`, `_gin` suffixes) but *not* `JsonValueType`. So adding a
+  numeric cast to an already-indexed path silently keeps the old uncast index, dropping `.asUnique()`
+  never drops the `_uq` index, and clearing `acrossOrganizations` never drops the `_xorg` twin.
+  Nothing here alters or drops — that takes a hand-written migration.
 - **A `@serialize`d getter left out of `TDataKeys` is stored but undeclarable, and nothing tells
   you.** The serializer walks decorators, so the key is in every row; the path types walk
   `DomainObjectSerialized` over `TDataKeys`, so `withPath` on it is a compile error; and
@@ -150,7 +165,9 @@ Ordered roughly by how expensive they are to get wrong.
   migration.
 - **Adding a path to a query set needs a *new* migration.** Migrations are versioned by class name
   and never re-run, so a path added after the table's migration ran compiles, queries, and
-  sequential-scans forever. The re-run is cheap — `if not exists` creates only what is missing.
+  sequential-scans forever. The re-run is cheap — `if not exists` creates only what is missing. So
+  does flagging an existing path `acrossOrganizations`: the flag is a second index under its own
+  `_xorg` name, created only by a create call that runs after the flag exists.
 - **Drift never fails on its own — detect it.** `DbTableCreator.verifySnapshotTableForAggregate`
   (org and event-stream variants exist) takes the same arguments as the create call, touches
   nothing, and returns every declaration-vs-database divergence as `SnapshotDriftIssue`s — missing

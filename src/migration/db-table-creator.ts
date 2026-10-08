@@ -57,6 +57,11 @@ export interface SnapshotTableIndexInfo
      * standalone one, since each of those leads with `organization_id` and serves it as a leading
      * prefix. `organization_id` is constrained regardless - `OrgSnapshotBaseRepository.query` adds it
      * either way, because tenant isolation is a correctness rule independent of the plan.
+     *
+     * Also `undefined` for the `_xorg` twin a btree declaration flagged `acrossOrganizations` adds on an
+     * org-scoped table: the same expressions and casts with no leading column, which is the whole
+     * point of it - it is the index a read that drops the organization filter can still walk. It is
+     * told apart from a GIN entry by {@link method}, which it leaves unset.
      */
     readonly leadingColumn?: string;
 }
@@ -114,7 +119,9 @@ export interface SnapshotTableInfo
      * {@link SnapshotIndex.expressionForPath}, whose expression provably matches what was indexed.
      * Read this to see what a predicate has to constrain, since a btree index only serves a leading
      * prefix of its columns - so the second path of a composite, or anything on an org-scoped table
-     * ahead of `organization_id`, is not independently searchable.
+     * ahead of `organization_id`, is not independently searchable. The `_xorg` twin of a path declared
+     * `acrossOrganizations` is the exception by design: it has no leading column, so its expressions
+     * are searchable with the organization filter dropped.
      */
     readonly createdIndexes: ReadonlyArray<SnapshotTableIndexInfo>;
 }
@@ -164,7 +171,8 @@ export interface SnapshotDriftIssue
      * - `index-opclass-mismatch`: a GIN index not over `jsonb_path_ops` - still serves `@>`, larger
      *   and slower.
      * - `orphan-index`: an index following this class's `idx_<table>` naming that no current
-     *   declaration produces - the residue of a changed declaration, or a deliberate hand-built one.
+     *   declaration produces - the residue of a changed declaration (a cleared `unique` leaves its
+     *   `_uq` index, a cleared `acrossOrganizations` its `_xorg` twin), or a deliberate hand-built one.
      */
     readonly kind:
         | "table-missing"
@@ -243,7 +251,9 @@ export interface SnapshotReconcileResult
  * For each aggregate type this can provision an event-stream table (the append-only log
  * of domain events) and a snapshot table (the materialized current state). Separate
  * methods exist for plain aggregates and organization-scoped aggregates; the latter add
- * an `organization_id` column and include it in the leading position of their indexes.
+ * an `organization_id` column and include it in the leading position of their indexes - with one
+ * deliberate exception, the prefix-free `_xorg` twin a btree declaration flagged `acrossOrganizations`
+ * also gets, so that a read spanning organizations still has an index.
  *
  * All table and index creation is idempotent (`if not exists`), so the methods are safe
  * to invoke on every startup/migration run. Note that `if not exists` does not *reconcile*:
@@ -440,7 +450,9 @@ export class DbTableCreator
                 tableName, indexName: act.indexName, kind: "orphan-index", severity: "advisory",
                 message: act.isUnique
                     ? `index '${act.indexName}' is not produced by these declarations, and it is unique - it still constrains every row written to this table, so if a 'unique' was cleared from a declaration this is the index that keeps enforcing it; nothing here drops - drop it in a hand-written migration, or ignore it if deliberate`
-                    : act.indexName.endsWith("_gin")
+                    : act.indexName.endsWith("_xorg")
+                        ? `index '${act.indexName}' is not produced by these declarations - likely the residue of a cleared acrossOrganizations; scoped reads never needed it, so it only costs writes; nothing here drops - drop it in a hand-written migration, or ignore it if deliberate`
+                        : act.indexName.endsWith("_gin")
                         ? `index '${act.indexName}' is not produced by these declarations - likely the residue of a path no longer array-indexed; nothing here drops - drop it in a hand-written migration, or ignore it if deliberate`
                         : `index '${act.indexName}' is not produced by these declarations - the residue of a changed declaration, or a hand-built index (a 'text_pattern_ops' index for prefix LIKE is a legitimate one); nothing here drops - drop it in a hand-written migration if unintended`
             });
@@ -619,6 +631,14 @@ export class DbTableCreator
      * a table whose only indexes are array ones still gets the standalone `(organization_id)` index -
      * both to serve a plain org-scoped scan, and to give the planner something to BitmapAnd the GIN
      * scan against.
+     *
+     * A btree declaration flagged `acrossOrganizations` is created twice: the org-leading index as
+     * above, and a twin over the same expressions and casts with no leading column, named
+     * `<name>_xorg` and never unique (uniqueness stays per organization, on the org-leading one). The
+     * twin is what the org repository's typed cross-organization reads can walk, and it is why those
+     * reads are typed at all: a predicate is accepted there only over flagged paths. It does not count
+     * towards the leading-column requirement, since it does not lead with the column. On a plain table
+     * the flag is refused - there is no prefix to cross - before any DDL runs.
      *
      * `TState` is inferred from `aggregateType`, so every index's paths are checked against the
      * aggregate's real state shape.
@@ -898,12 +918,12 @@ export class DbTableCreator
      * that was removed, so the error is the migration instruction.
      *
      * @param {SnapshotTableOptions<any>} [options] - The caller's options, a query set, or nothing.
-     * @returns The btree and GIN declarations, in declaration order.
+     * @returns The btree and GIN declarations, in declaration order - each possibly absent, since the type requires both fields but a JavaScript caller may omit one; every consumer reads an absent collection as empty.
      * @throws {ArgumentException} If options is neither absent nor an options-shaped object.
      */
     private _readOptions(options?: SnapshotTableOptions<any>): {
-        indexes: ReadonlyArray<SnapshotIndex<any>>;
-        arrayIndexes: ReadonlyArray<SnapshotArrayIndex<any>>;
+        indexes?: ReadonlyArray<SnapshotIndex<any>>;
+        arrayIndexes?: ReadonlyArray<SnapshotArrayIndex<any>>;
     }
     {
         if (options == null)
@@ -1047,6 +1067,10 @@ export class DbTableCreator
      * on name alone - so whichever ran first would win and the other would be silently skipped,
      * leaving an index that answers no query the declaration was written for.
      *
+     * A btree index flagged `acrossOrganizations` additionally plans its `_xorg` twin when there is a
+     * leading column to drop: the same expressions and casts, no leading column, never unique, emitted
+     * right after its sibling. The suffix is load-bearing for the same reason `_uq` and `_gin` are.
+     *
      * @param {string} tableName - The table the indexes belong to.
      * @param {ReadonlyArray<SnapshotIndex<any>>} [indexes] - The declared btree indexes.
      * @param {ReadonlyArray<SnapshotArrayIndex<any>>} [arrayIndexes] - The declared array containment indexes.
@@ -1080,6 +1104,26 @@ export class DbTableCreator
                 name, isUnique: index.isUnique, method: "btree", leadingColumn, paths, expressions,
                 casts: [...index.casts], ddl: DbTableCreator._createIndexDdl(tableName, tableIndex)
             });
+
+            // the cross-organization twin: the same expressions and casts with no leading column, so a
+            // read that drops the organization filter still has an index to walk. Never unique - the
+            // org-leading index keeps uniqueness per organization - and adjacent to its sibling, so the
+            // emitted DDL reads as one declaration. Only an org table has a prefix to cross;
+            // _planSnapshotTable refuses the flag on a plain one before this runs.
+            if (leadingColumn != null && index.isAcrossOrganizations)
+            {
+                const twinName = this.createIndexNameFromTableName(tableName, `${index.nameSuffix}_xorg`);
+                const twin: TableIndex = { name: twinName, columns: expressions, isUnique: false };
+
+                tableIndexes.push(twin);
+
+                infos.push({ name: twinName, paths, expressions, isUnique: false, leadingColumn: undefined });
+
+                expected.push({
+                    name: twinName, isUnique: false, method: "btree", leadingColumn: undefined, paths, expressions,
+                    casts: [...index.casts], ddl: DbTableCreator._createIndexDdl(tableName, twin)
+                });
+            }
         }
 
         for (const arrayIndex of arrayIndexes ?? [])
@@ -1133,13 +1177,26 @@ export class DbTableCreator
      * @param {string} [leadingColumn] - The real column every btree index leads with, on an org-scoped table.
      * @returns {IndexPlan} The plan, with the standalone index appended when applicable.
      * @throws {ArgumentNullException} If an element of either collection is null or undefined.
-     * @throws {ArgumentException} If the options or indexes are invalid, duplicated, or derive colliding names.
+     * @throws {ArgumentException} If the options or indexes are invalid, duplicated, or derive colliding names; or if an index is flagged `acrossOrganizations` with no leading column to drop - a plain table.
      */
     private _planSnapshotTable(tableName: string, options?: SnapshotTableOptions<any>, leadingColumn?: string): IndexPlan
     {
         const { indexes, arrayIndexes } = this._readOptions(options);
 
         this._validateIndexes(indexes, arrayIndexes);
+
+        // fail closed: a plain table has no organization_id, so there is no tenant prefix for a twin to
+        // drop - the flag is a declaration error here rather than a no-op, and every entry point that
+        // plans the table (create, verify, reconcile) says so before touching the database
+        if (leadingColumn == null)
+        {
+            const flagged = (indexes ?? []).where(t => t.isAcrossOrganizations).map(t => `[${t.paths.join(", ")}]`);
+
+            given(flagged, "indexes").ensure(
+                t => t.isEmpty,
+                `the index over ${flagged.join(", ")} is declared acrossOrganizations, but this table is not organization-scoped - there is no organization_id column, so there is no tenant prefix to cross; remove the option, or create the table with createSnapshotTableForOrgAggregate`
+            );
+        }
 
         const plan = this._planIndexes(tableName, indexes, arrayIndexes, leadingColumn);
 

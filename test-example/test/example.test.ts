@@ -141,12 +141,12 @@ await describe("The example application", async () =>
             assert.ok(names.contains("ex_db_system"), names.join(", "));
         });
 
-        await test("record version 3, one per migration", async () =>
+        await test("record version 4, one per migration", async () =>
         {
             const result = await db.executeQuery<{ data: { version: number; }; }>(
                 `select data from ex_db_system where key = 'db_info';`);
 
-            assert.strictEqual(result.rows[0].data.version, 3);
+            assert.strictEqual(result.rows[0].data.version, 4);
         });
 
         await test("create every index the repositories declared", async () =>
@@ -171,6 +171,11 @@ await describe("The example application", async () =>
             assert.ok(names.contains("idx_creator_snaps_email_uq"), names.join(", "));
             assert.ok(names.contains("idx_creator_snaps_role_displayname"), names.join(", "));
             assert.ok(names.contains("idx_creator_snaps_skills_gin"), names.join(", "));
+            // ...except the prefix-free twin `email` gets for being declared across organizations - the
+            // point of ExDbMigration_4, which re-called the create after the flag was added
+            assert.ok(names.contains("idx_creator_snaps_email_xorg"), names.join(", "));
+            // `role` is not declared so, and has no twin
+            assert.ok(!names.contains("idx_creator_snaps_role_displayname_xorg"), names.join(", "));
         });
 
         // the drift detector in its assert-empty idiom, against the same declarations the migrations
@@ -205,7 +210,7 @@ await describe("The example application", async () =>
 
             const result = await db.executeQuery<{ data: { version: number; }; }>(
                 `select data from ex_db_system where key = 'db_info';`);
-            assert.strictEqual(result.rows[0].data.version, 3);
+            assert.strictEqual(result.rows[0].data.version, 4);
         });
     });
 
@@ -842,10 +847,29 @@ await describe("The example application", async () =>
             }
         });
 
-        // the deliberate exception, and the only read that leaves the boundary
-        await test("queryAcrossOrganizations is the only way out", async () =>
+        // the deliberate exception: the typed cross-organization door, which admits only paths
+        // declared across organizations - `email` is, so the read below is an index lookup with the
+        // studio filter dropped. `role` is not, and the compiler says so.
+        await test("queryAcrossOrganizations is the typed way out, and only for a flagged path", async () =>
         {
             domainContext.organizationId = studioAId;
+
+            // the compiler is the assertion: `tsc` reports an unused '@ts-expect-error' as an error, so
+            // this fails the build if an unflagged path ever gets through. Never invoked.
+            const rejected = (): void =>
+            {
+                class RefusedCreatorRepository extends SnapshotCreatorRepository
+                {
+                    public byRoleAcrossStudios(role: string): Promise<Array<Creator>>
+                    {
+                        // @ts-expect-error - role is not declared across organizations: no index to walk once the filter is gone
+                        return this.queryAcrossOrganizations(this.querySet.eq("role", role));
+                    }
+                }
+
+                assert.strictEqual(typeof RefusedCreatorRepository, "function");
+            };
+            assert.strictEqual(typeof rejected, "function");
 
             const scope = createScope();
 
@@ -869,9 +893,9 @@ await describe("The example application", async () =>
             }
         });
 
-        // the other way out, and the one an index actually serves: `id` is the primary key, which
-        // carries no organization prefix, so this crosses the boundary without the scan the email
-        // search above pays for
+        // the other way out: `id` is the primary key, which carries no organization prefix, so an id
+        // crosses the boundary as a lookup with no declaration needed - the email search above needs
+        // its `acrossOrganizations` twin for the same result
         await test("an id can be found in whatever studio owns it", async () =>
         {
             domainContext.organizationId = studioAId;

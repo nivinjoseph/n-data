@@ -191,8 +191,13 @@ export type SnapshotElementMatch<TElement> =
  * The two halves are produced by one call and never separately, because for a variadic predicate the
  * placeholder count is not fixed - {@link SnapshotArrayContainment.containsAny} over three matches
  * emits three, and pairing them up afterwards is not something a caller should be doing.
+ *
+ * Branded `acrossOrganizations: true` through its base, always: a GIN index carries no
+ * `organization_id` prefix (a multicolumn GIN over a varchar column would need `btree_gin`), so
+ * containment is served by its index whether or not the organization filter is present, and a
+ * containment predicate goes through the cross-organization doors as it is.
  */
-export interface SnapshotArrayPredicate extends SnapshotPredicate
+export interface SnapshotArrayPredicate extends SnapshotPredicate<true>
 {
     /**
      * A fully parenthesized boolean fragment, e.g. `((data->'members') @> cast(? as jsonb))`.
@@ -627,7 +632,7 @@ export class SnapshotArrayIndex<T>
             {
                 SnapshotArrayIndex._validateMatches([match], "match");
 
-                return { sql: `(${term})`, params: [toDocument([match])] };
+                return { sql: `(${term})`, params: [toDocument([match])], acrossOrganizations: true };
             },
             containsAll(matches: ReadonlyArray<SnapshotElementMatch<TElement>>): SnapshotArrayPredicate
             {
@@ -635,7 +640,7 @@ export class SnapshotArrayIndex<T>
 
                 // one document, one index scan - jsonb containment already means "every one of
                 // these", so N matches do not need N predicates
-                return { sql: `(${term})`, params: [toDocument([...matches])] };
+                return { sql: `(${term})`, params: [toDocument([...matches])], acrossOrganizations: true };
             },
             containsAny(matches: ReadonlyArray<SnapshotElementMatch<TElement>>): SnapshotArrayPredicate
             {
@@ -647,7 +652,8 @@ export class SnapshotArrayIndex<T>
                 // fragment safe to compose before it gets there.
                 return {
                     sql: `(${matches.map(() => term).join(" or ")})`,
-                    params: matches.map(t => toDocument([t]))
+                    params: matches.map(t => toDocument([t])),
+                    acrossOrganizations: true
                 };
             }
         };

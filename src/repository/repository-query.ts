@@ -13,8 +13,13 @@ import { validateBooleanFragment } from "./sql-fragment.js";
  *
  * On an organization-scoped repository the tenant filter is added ahead of `where` and is not
  * expressible here - that is the whole point of it being automatic. The ways out are named for that
- * consequence rather than expressed as a flag here: `queryAcrossOrganizations` for a whole statement,
- * and `queryByIdAcrossOrganizations`/`queryByIdsAcrossOrganizations` when the read is by id.
+ * consequence rather than expressed as a flag here: `queryAcrossOrganizations`, which takes this same
+ * shape at `RepositoryQuery<true>` - a predicate and order-by terms branded across organizations, so
+ * that the read is still index-served with the filter gone; `queryStatementAcrossOrganizations` for a
+ * whole statement; and `queryByIdAcrossOrganizations`/`queryByIdsAcrossOrganizations` when the read
+ * is by id.
+ *
+ * @template TAcrossOrganizations - The brand the predicate and the typed order-by terms must carry. The default `boolean` admits either, which is what the scoped `query` takes; the cross-organization door takes `true`.
  *
  * @example
  * ```typescript
@@ -38,7 +43,7 @@ import { validateBooleanFragment } from "./sql-fragment.js";
  * this.query({ orderBy: this.querySet.orderBy("placedAt", "desc"), limit: 10 });
  * ```
  */
-export interface RepositoryQuery
+export interface RepositoryQuery<TAcrossOrganizations extends boolean = boolean>
 {
     /**
      * The `where` predicate, without the `where` keyword.
@@ -52,7 +57,7 @@ export interface RepositoryQuery
      * Omit it to select every row the repository can see - which on an organization-scoped
      * repository still means only the current organization's.
      */
-    readonly where?: SnapshotPredicate;
+    readonly where?: SnapshotPredicate<TAcrossOrganizations>;
 
     /**
      * The `order by` list, without the `order by` keywords.
@@ -60,9 +65,10 @@ export interface RepositoryQuery
      * Prefer `SnapshotQuerySet.orderBy`, singly or as an array for several keys: an expression index
      * serves an `order by` only when the expression matches the indexed one textually, and taking it
      * from the declaration is what guarantees that. A raw string is accepted for anything that cannot
-     * express - `nulls last`, a collation, an ordering on a function of two paths.
+     * express - `nulls last`, a collation, an ordering on a function of two paths. A raw string is
+     * the caller's on the cross-organization door too, where a typed term must be branded.
      */
-    readonly orderBy?: string | SnapshotOrderBy | ReadonlyArray<SnapshotOrderBy>;
+    readonly orderBy?: string | SnapshotOrderBy<TAcrossOrganizations> | ReadonlyArray<SnapshotOrderBy<TAcrossOrganizations>>;
 
     /**
      * The maximum number of rows to return. Bound as a parameter, not interpolated.
@@ -221,11 +227,11 @@ export class RepositoryQueryBuilder
      * @param {string} column - The id column to match against.
      * @param {ReadonlyArray<string>} values - The ids; must be non-empty, since `in ()` is not valid SQL.
      * @param {SnapshotPredicate} [predicate] - A further condition every matched row must also satisfy.
-     * @returns {SnapshotPredicate} The fragment and its values, positionally matched - the ids first, then the predicate's own.
+     * @returns {SnapshotPredicate} The fragment and its values, positionally matched - the ids first, then the predicate's own. Branded `acrossOrganizations: true` whatever the conjoined predicate carries: the id column is the primary key, which has no tenant prefix, so the lookup is index-served with or without the organization filter and the predicate only filters the rows the key found.
      * @throws {ArgumentException} If column is empty, values is empty, the predicate's params are not an array, or its sql is a whole statement, keeps the `where` keyword, is empty, or contains a ';'.
      */
     public static idPredicate(column: string, values: ReadonlyArray<string>,
-        predicate?: SnapshotPredicate): SnapshotPredicate
+        predicate?: SnapshotPredicate): SnapshotPredicate<true>
     {
         given(column, "column").ensureHasValue().ensureIsString()
             .ensure(t => t.isNotEmptyOrWhiteSpace(), "column is empty");
@@ -236,7 +242,7 @@ export class RepositoryQueryBuilder
         const ids = `${column.trim()} in (${values.map(() => "?").join(",")})`;
 
         if (predicate == null)
-            return { sql: ids, params: [...values] };
+            return { sql: ids, params: [...values], acrossOrganizations: true };
 
         // validated *before* it is spliced behind `... and (`, for the same reason `raw` validates
         // before parenthesizing: both regexes in validateBooleanFragment are anchored, so a fragment
@@ -247,7 +253,8 @@ export class RepositoryQueryBuilder
             // parenthesized: `and` binds tighter than `or`, so a bare `a = ? or b = ?` would parse as
             // `(id in (...) and a) or b` and return rows the id filter was supposed to exclude
             sql: `${ids} and (${validated})`,
-            params: [...values, ...predicate.params]
+            params: [...values, ...predicate.params],
+            acrossOrganizations: true
         };
     }
 
@@ -296,6 +303,46 @@ export class RepositoryQueryBuilder
             sql: `select cast(count(*) as int) as count from ${table.trim()}${clause.sql};`,
             params: clause.params
         };
+    }
+
+    /**
+     * The runtime half of the brand the typed cross-organization doors require at compile time, for a
+     * JavaScript caller or an `any`: the predicate - or the query form's predicate and every typed
+     * order-by term - must carry `acrossOrganizations: true`.
+     *
+     * It lives here rather than on the repository so that "what shape arrived" is decided once: the
+     * argument goes through the same {@link _normalize} `build` uses (so a predicate that also carries
+     * `where` fails with the builder's own ambiguity error, and the internal string form reads as
+     * unbranded), and the terms are widened by the same helper `_validateOrderBy` uses. An absent
+     * predicate is the whole table, which needs no index; a raw-string order by is the caller's, as it
+     * is on the scoped form.
+     *
+     * @param {string | SnapshotPredicate | RepositoryQuery} [whereOrQuery] - What the door was handed.
+     * @throws {ArgumentException} If the predicate or a typed order-by term is not branded across organizations, or if the argument is not a shape {@link build} would accept.
+     */
+    public static ensureAcrossOrganizations(whereOrQuery: string | SnapshotPredicate | RepositoryQuery | undefined): void
+    {
+        if (whereOrQuery == null)
+            return;
+
+        const query = RepositoryQueryBuilder._normalize(whereOrQuery);
+        const reason = "must be branded acrossOrganizations: true - build it over paths declared { acrossOrganizations: true } (or array paths), or through rawAcrossOrganizations; a predicate on an unflagged path cannot use an index once the organization filter is dropped";
+
+        // decided ahead of the guard: `where` is a union the ensurer overloads cannot take as one, and
+        // the internal string form carries no brand by construction
+        if (query.where != null)
+        {
+            const branded = typeof query.where !== "string" && query.where.acrossOrganizations === true;
+
+            given(branded, "where").ensure(t => t, reason);
+        }
+
+        if (query.orderBy != null && typeof query.orderBy !== "string")
+        {
+            const terms = RepositoryQueryBuilder._orderByTerms(query.orderBy);
+
+            given(terms, "orderBy").ensure(t => t.every(u => u.acrossOrganizations === true), `every term ${reason}`);
+        }
     }
 
     /**
@@ -463,12 +510,7 @@ export class RepositoryQueryBuilder
         // string would have been, so everything below validates one shape
         if (typeof orderBy !== "string")
         {
-            // widened before the test on purpose: Array.isArray's predicate is a mutable `any[]`, which
-            // does not narrow a ReadonlyArray, so tested directly the check reads as vacuous
-            const candidate: unknown = orderBy;
-            const terms: ReadonlyArray<SnapshotOrderBy> = Array.isArray(candidate)
-                ? <ReadonlyArray<SnapshotOrderBy>>candidate
-                : [<SnapshotOrderBy>orderBy];
+            const terms = RepositoryQueryBuilder._orderByTerms(orderBy);
 
             given(terms, "orderBy").ensureIsArray().ensureIsNotEmpty()
                 // read through `any` so a JavaScript caller passing something order-by-shaped is caught
@@ -494,6 +536,21 @@ export class RepositoryQueryBuilder
             );
 
         return orderBy.trim();
+    }
+
+    /**
+     * The typed terms an `orderBy` carries, one or several, as one list.
+     *
+     * Widened before the test on purpose: Array.isArray's predicate is a mutable `any[]`, which does
+     * not narrow a ReadonlyArray, so tested directly the check reads as vacuous. Shared by
+     * {@link _validateOrderBy} and {@link ensureAcrossOrganizations}, so the two cannot disagree about
+     * what a term is.
+     */
+    private static _orderByTerms(orderBy: SnapshotOrderBy | ReadonlyArray<SnapshotOrderBy>): ReadonlyArray<SnapshotOrderBy>
+    {
+        const candidate: unknown = orderBy;
+
+        return Array.isArray(candidate) ? <ReadonlyArray<SnapshotOrderBy>>candidate : [<SnapshotOrderBy>orderBy];
     }
 
     /**

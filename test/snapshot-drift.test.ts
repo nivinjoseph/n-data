@@ -215,6 +215,55 @@ await describe("Snapshot drift verification", async () =>
         assert.ok(issues[1].message.contains("keeps enforcing"));
     });
 
+    // gap F: the cross-organization twin is a second index under its own name, so flagging a path
+    // after the migration ran is a missing index, and clearing the flag leaves the twin as an orphan
+    await test("an org table with an acrossOrganizations path verifies clean straight after creation", async () =>
+    {
+        await dropAll();
+
+        const declared = SnapshotQuerySet.for<CharterState>()
+            .withPath("code", { acrossOrganizations: true })
+            .withPath("seats", { type: JsonValueType.integer })
+            .withArrayPath("tags");
+        await creator.createSnapshotTableForOrgAggregate(charterType, declared);
+
+        assert.deepStrictEqual(await creator.verifySnapshotTableForOrgAggregate(charterType, declared), []);
+    });
+
+    await test("a path flagged acrossOrganizations after the migration ran is a fatal index-missing for the _xorg twin, carrying the fix", async () =>
+    {
+        await dropAll();
+
+        const migrated = SnapshotQuerySet.for<CharterState>().withPath("code");
+        await creator.createSnapshotTableForOrgAggregate(charterType, migrated);
+
+        const current = SnapshotQuerySet.for<CharterState>().withPath("code", { acrossOrganizations: true });
+        const issues = await creator.verifySnapshotTableForOrgAggregate(charterType, current);
+
+        assert.deepStrictEqual(compact(issues), ["index-missing(fatal):idx_charter_snaps_code_xorg"]);
+        assert.strictEqual(issues[0].fix, "create index if not exists idx_charter_snaps_code_xorg on charter_snaps((data->>'code'));");
+
+        // the defined process converges here too
+        await db.executeCommand(issues[0].fix);
+        assert.deepStrictEqual(await creator.verifySnapshotTableForOrgAggregate(charterType, current), []);
+    });
+
+    await test("a cleared acrossOrganizations leaves the _xorg twin as an advisory orphan that names the consequence", async () =>
+    {
+        await dropAll();
+
+        const migrated = SnapshotQuerySet.for<CharterState>().withPath("code", { acrossOrganizations: true });
+        await creator.createSnapshotTableForOrgAggregate(charterType, migrated);
+
+        const current = SnapshotQuerySet.for<CharterState>().withPath("code");
+        const issues = await creator.verifySnapshotTableForOrgAggregate(charterType, current);
+
+        assert.deepStrictEqual(compact(issues), ["orphan-index(advisory):idx_charter_snaps_code_xorg"]);
+        assert.ok(issues[0].message.contains("acrossOrganizations"));
+        // advisory, so no fix: the twin may be deliberate, and scoped reads never needed it
+        assert.strictEqual(issues[0].fix, undefined);
+    });
+
     // gap E: a path migrated scalar -> array; the `_gin` name is missing and the old btree lingers
     await test("a path migrated from scalar to array is a missing GIN index plus a btree orphan", async () =>
     {
@@ -399,6 +448,21 @@ await describe("Snapshot drift verification", async () =>
             ]);
             assert.deepStrictEqual(result.remaining, []);
             assert.deepStrictEqual(await creator.verifySnapshotTableForAggregate(parcelType, current), []);
+        });
+
+        await test("a newly flagged path's _xorg twin is created by reconcile, and the closing verify proves it", async () =>
+        {
+            await dropAll();
+
+            const migrated = SnapshotQuerySet.for<CharterState>().withPath("code");
+            await creator.createSnapshotTableForOrgAggregate(charterType, migrated);
+
+            const current = SnapshotQuerySet.for<CharterState>().withPath("code", { acrossOrganizations: true });
+            const result = await creator.reconcileSnapshotTableForOrgAggregate(charterType, current);
+
+            assert.deepStrictEqual(result.fixed.map(t => `${t.kind}:${t.indexName}`), ["index-missing:idx_charter_snaps_code_xorg"]);
+            assert.deepStrictEqual(result.remaining, []);
+            assert.deepStrictEqual(await creator.verifySnapshotTableForOrgAggregate(charterType, current), []);
         });
 
         await test("an advisory orphan is reported but never touched", async () =>

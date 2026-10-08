@@ -11,7 +11,8 @@ Releases before 7.0.0 live in git history only.
 ## [Unreleased]
 
 This is the **v8** line. No reindexing and no data migration: every index and every emitted statement
-is byte-identical to v7's.
+is byte-identical to v7's — unless a path is declared `acrossOrganizations`, which creates one new index
+per flagged path and needs a migration to do so.
 
 ### Changed
 
@@ -40,8 +41,36 @@ is byte-identical to v7's.
   create adds when no btree declaration covers that column — reported with empty `paths` and the
   column as `leadingColumn`. It was created but unreported before, so a test doing `deepStrictEqual`
   on `createdIndexes` for such a table will see the extra entry.
+- **Breaking:** `OrgSnapshotBaseRepository.queryAcrossOrganizations` is now the *typed*
+  cross-organization door, taking a `SnapshotPredicate<true>` or `RepositoryQuery<true>`; the raw
+  statement door it used to be is `queryStatementAcrossOrganizations(sql, ...params)`, unchanged in
+  behavior. Rename call sites.
+- **Breaking:** `SnapshotPredicate` and `SnapshotOrderBy` carry a required `acrossOrganizations: boolean`
+  brand and are generic over it (default `boolean`, so an annotation naming no brand keeps compiling);
+  `RepositoryQuery` is generic the same way, and `DeclaredSnapshotQuerySet` gains
+  `acrossOrganizationsPaths`. A hand-built `{ sql, params }` literal no longer satisfies
+  `SnapshotPredicate` — build it through `raw` or `rawAcrossOrganizations`.
 
 ### Added
+
+- **Typed, index-served cross-organization reads.** `withPath`/`withComposite` take
+  `acrossOrganizations: true` on an org-scoped state (refused on a plain one, at compile time and at
+  plan time). `DbTableCreator.createSnapshotTableForOrgAggregate` then creates the path's
+  `(organization_id, expr)` index *and* a prefix-free twin named `idx_<table>_<suffix>_xorg` (never
+  unique), reported in `createdIndexes` with no `leadingColumn`, expected by
+  `verifySnapshotTableForOrgAggregate` (a missing twin is a fatal `index-missing` carrying its DDL; a
+  leftover one after clearing the flag is an advisory orphan) and created by
+  `reconcileSnapshotTableForOrgAggregate`. Every predicate and order-by term is branded by the paths it
+  reads — `SnapshotPredicate<true>` when all are flagged, containment always, `and`/`or` when every arm
+  is, `rawAcrossOrganizations` by the caller's claim — and `OrgSnapshotBaseRepository` gains
+  `queryAcrossOrganizations(predicate | query)`, `existsAcrossOrganizations` and
+  `countAcrossOrganizations`, which accept only that brand, at compile time and, for JavaScript
+  callers, at runtime. `SnapshotIndex` gains `acrossOrganizations()`/`isAcrossOrganizations`;
+  `SnapshotQuerySet` gains `rawAcrossOrganizations` and `acrossOrganizationsPaths`. Planner-tested: a
+  flagged path's cross-org predicate is an index lookup on the twin (2 index pages touched), where the
+  same read on an unflagged path walks the whole org-leading index (22 of 23 pages) or scans the table.
+  `test-example/` carries the worked pair: `email` flagged on `SnapshotCreatorRepository`,
+  `ExDbMigration_4` creating the twin, `queryAcrossStudiosByEmail` through the typed door.
 
 - **`force` on the snapshot repositories' save doors.** `save(value, force)` and
   `saveWithin(value, unitOfWork, force)` on `SnapshotBaseRepository` and `OrgSnapshotBaseRepository`
@@ -59,13 +88,15 @@ is byte-identical to v7's.
 - **Cross-organization lookup by id on `OrgSnapshotBaseRepository`.** `queryByIdAcrossOrganizations(id,
   predicate?)` and `queryByIdsAcrossOrganizations(ids, predicate?)` are `queryById`/`queryByIds` with
   the organization filter dropped - the read a platform-wide question needs ("which organization owns
-  this id?"), which previously meant hand-writing a statement through `queryAcrossOrganizations` and,
+  this id?"), which previously meant hand-writing a statement through what is now
+  `queryStatementAcrossOrganizations` and,
   for a list, hand-building the `in (?, ?, ...)` placeholder run. They keep the same id hygiene and the
   same null-on-miss contract, and they are `protected`, so crossing the boundary is still a method a
   subclass names for itself rather than something the public surface offers. Cheap where a
   cross-organization condition on a declared path is not: `id` is the primary key, the one index on an
   org snapshot table with no leading `organization_id`, so this stays an index lookup while a path
-  predicate without the tenant filter cannot use its index at all. What comes back is read-only in
+  predicate without the tenant filter cannot use its index at all - unless the path is declared
+  `acrossOrganizations`, below. What comes back is read-only in
   practice - `save` still rejects an aggregate belonging to another organization.
 - **Documentation: the materialized-derived-value rule.** A `@serialize`d getter left out of a
   `DomainObject`'s `TDataKeys` is written to every row — the runtime serializer walks decorators —
