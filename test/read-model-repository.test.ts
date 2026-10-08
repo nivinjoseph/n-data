@@ -6,6 +6,7 @@ import { serialize } from "@nivinjoseph/n-util";
 import assert from "node:assert";
 import test, { after, before, describe } from "node:test";
 import { AnyReadModel, ColumnType, Db, DbConnectionConfig, DbConnectionFactory, DbException, IntactReadModelSchema, KnexPgDb, KnexPgDbConnectionFactory, KnexPgUnitOfWork, QueryResult, ReadModel, ReadModelBaseRepository, ReadModelColumns, ReadModelData, ReadModelNotFoundException, ReadModelSchema, ReadModelTableCreator, TransactionProvider, UnitOfWork } from "../src/index.js";
+import { ReadModelRowMapper } from "../src/read-model/read-model-row-mapper.js";
 
 
 /**
@@ -248,18 +249,20 @@ class CapturingDb implements Db
     private readonly _queries = new Array<Recorded>();
     private _rows = new Array<unknown>();
     private _failNextCommand = false;
+    private _failCommandNumber = 0;
 
     public get commands(): ReadonlyArray<Recorded> { return this._commands.map(t => ({ sql: normalize(t.sql), params: t.params })); }
     public get queries(): ReadonlyArray<Recorded> { return this._queries.map(t => ({ sql: normalize(t.sql), params: t.params })); }
 
     public answerWith(rows: Array<unknown>): void { this._rows = rows; }
     public failNextCommand(): void { this._failNextCommand = true; }
+    public failCommand(ordinal: number): void { this._failCommandNumber = ordinal; }
 
     public executeCommand(sql: string, ...params: Array<any>): Promise<void>
     {
         this._commands.push({ sql, params });
 
-        if (this._failNextCommand)
+        if (this._failNextCommand || this._commands.length === this._failCommandNumber)
         {
             this._failNextCommand = false;
             return Promise.reject(new Error("boom"));
@@ -394,6 +397,106 @@ await describe("ReadModelBaseRepository", async () =>
             ]);
             assert.strictEqual(uow.commits, 1);
             assert.strictEqual(shared.commits, 0);
+        });
+
+        await test("saveAll writes a batch as one multi-row upsert, rows sorted by id so concurrent batches lock in one order, and commits its own unit of work", async () =>
+        {
+            const { repo, db, uow } = harness();
+
+            // handed over out of order on purpose: the statement carries them sorted by id
+            await repo.saveAll([
+                entry({ id: "led_3", sequence: 3, labels: [] }),
+                entry({ id: "led_1", sequence: 1 }),
+                entry({ id: "led_2", sequence: 2, memo: "second", postedAt: 1700000001000 })
+            ]);
+
+            const row = "(?, ?, ?, to_timestamp(? / 1000.0), ?, ?, ?, ?, ?, ?)";
+            assert.deepStrictEqual(db.commands, [{
+                sql: "insert into ledger_entry_read_model (id, account, amount, posted_at, memo, labels, is_void, sequence, weights, counts) "
+                    + `values ${row}, ${row}, ${row} `
+                    + "on conflict (id) do update set account = excluded.account, amount = excluded.amount, posted_at = excluded.posted_at, memo = excluded.memo, "
+                    + "labels = excluded.labels, is_void = excluded.is_void, sequence = excluded.sequence, weights = excluded.weights, counts = excluded.counts;",
+                params: [
+                    "led_1", "acc_1", 12.5, 1700000000000, null, ["rent", "q4"], false, 1, null, [3, 4],
+                    "led_2", "acc_1", 12.5, 1700000001000, "second", ["rent", "q4"], false, 2, null, [3, 4],
+                    "led_3", "acc_1", 12.5, 1700000000000, null, [], false, 3, null, [3, 4]
+                ]
+            }]);
+            assert.strictEqual(uow.commits, 1);
+        });
+
+        await test("saveAllWithin writes into the caller's unit of work and commits nothing; an empty batch touches nothing at all", async () =>
+        {
+            const { repo, db, uow } = harness();
+            const shared = new FakeUnitOfWork();
+
+            await repo.saveAllWithin([entry()], shared);
+            assert.strictEqual(db.commands.length, 1);
+            assert.strictEqual(shared.commits, 0);
+
+            await repo.saveAll([]);
+            await repo.saveAllWithin([], shared);
+            assert.strictEqual(db.commands.length, 1);
+            assert.strictEqual(uow.commits, 0);
+            assert.strictEqual(shared.commits, 0);
+        });
+
+        await test("a batch is chunked at 500 rows per statement - Postgres binds at most 65535 parameters", async () =>
+        {
+            const { repo, db } = harness();
+
+            await repo.saveAll(Array.from({ length: 501 }, (_, i) => entry({ id: `led_b${i}`, sequence: 1000 + i })));
+
+            assert.strictEqual(db.commands.length, 2);
+            assert.strictEqual(db.commands[0].params.length, 500 * 10);
+            assert.strictEqual((db.commands[0].sql.match(/to_timestamp/g) ?? []).length, 500);
+            assert.strictEqual(db.commands[1].params.length, 10);
+            // sorted by id, so the one row in the last chunk is the lexicographically greatest id
+            assert.strictEqual(db.commands[1].params[0], "led_b99");
+            assert.strictEqual(db.commands[0].params[0], "led_b0");
+        });
+
+        await test("a failure in a later chunk of saveAllWithin leaves the earlier chunks queued in the caller's transaction and rethrows", async () =>
+        {
+            const { repo, db } = harness();
+            const shared = new FakeUnitOfWork();
+
+            db.failCommand(2);
+            await assert.rejects(() => repo.saveAllWithin(Array.from({ length: 501 }, (_, i) => entry({ id: `led_c${i}`, sequence: 2000 + i })), shared), /boom/);
+
+            // the first chunk went out; discarding it is the caller's rollback, not this repository's
+            assert.strictEqual(db.commands.length, 2);
+            assert.strictEqual(db.commands[0].params.length, 500 * 10);
+            assert.strictEqual(shared.commits, 0);
+            assert.strictEqual(shared.rollbacks, 0);
+        });
+
+        await test("a batch is rejected whole, before anything is queued: a duplicate id, a bad value in any row, a foreign instance", async () =>
+        {
+            const { repo, db } = harness();
+
+            // Postgres refuses to upsert one row twice in a statement, so it is refused here by name
+            await assert.rejects(() => repo.saveAll([entry({ id: "led_1" }), entry({ id: "led_1", sequence: 9 })]),
+                (e: Error) => e instanceof ArgumentException && e.message.contains("led_1"));
+            // a bad row is named by position and id, so a ten-thousand-row batch is not a bisection exercise
+            await assert.rejects(() => repo.saveAll([entry(), entry(<any>{ id: "led_2", sequence: 2, amount: "12.5" })]),
+                (e: Error) => e instanceof ArgumentException && e.message.contains("models[1]") && e.message.contains("led_2") && e.message.contains("amount"));
+            await assert.rejects(() => repo.saveAll([entry(), <any>new Other({ id: "oth_1", name: "x" })]),
+                (e: Error) => e instanceof ArgumentException && e.message.contains("models[1]"));
+
+            assert.strictEqual(db.commands.length, 0);
+        });
+
+        await test("a failed chunk rolls back an owned unit of work and rethrows", async () =>
+        {
+            const { repo, db, uow, logger } = harness();
+
+            db.failNextCommand();
+            await assert.rejects(() => repo.saveAll([entry(), entry({ id: "led_2", sequence: 2 })]), /boom/);
+
+            assert.strictEqual(uow.rollbacks, 1);
+            assert.strictEqual(uow.commits, 0);
+            assert.strictEqual(logger.errors.length, 1);
         });
 
         await test("a value the column cannot hold is refused before anything is queued", async () =>
@@ -598,6 +701,30 @@ await describe("ReadModelBaseRepository", async () =>
         });
     });
 
+    await describe("The row mapper's chunking", async () =>
+    {
+        await test("the chunk size follows Postgres' parameter limit, not the 500-row cap, for a wide table", async () =>
+        {
+            const wide = new ReadModelRowMapper("wide_read_model", "Wide",
+                Array.from({ length: 200 }, (_, i) => ({ key: `c${i}`, column: `c${i}`, type: ColumnType.text, index: false, unique: false })));
+
+            // 201 parameters per row: floor(65535 / 201)
+            assert.strictEqual(wide.chunkSize, 326);
+            assert.strictEqual(new ReadModelRowMapper("t", "T", [{ key: "a", column: "a", type: ColumnType.text, index: false, unique: false }]).chunkSize, 500);
+        });
+
+        await test("a statement is rendered only for a row count the chunk admits", async () =>
+        {
+            const mapper = new ReadModelRowMapper("t", "T", [{ key: "a", column: "a", type: ColumnType.text, index: false, unique: false }]);
+
+            assert.throws(() => mapper.upsertSqlFor(0), ArgumentException);
+            assert.throws(() => mapper.upsertSqlFor(501), ArgumentException);
+            assert.throws(() => mapper.upsertSqlFor(1.5), ArgumentException);
+            assert.strictEqual(mapper.upsertSqlFor(1), mapper.upsertSql);
+            assert.strictEqual(mapper.upsertSqlFor(500), mapper.upsertSqlFor(500));
+        });
+    });
+
     // Nothing is instantiated: the `@ts-expect-error` lines are the assertions, and tsc fails on an
     // unused one.
     await describe("The subclass pattern (compile-time)", async () =>
@@ -634,6 +761,8 @@ await describe("ReadModelBaseRepository", async () =>
                         await this.get("led_1", this.schema.eq("isVoid", false));
                         // @ts-expect-error - getAll is the whole table; it takes no ids
                         await this.getAll("led_1");
+                        // @ts-expect-error - saveAll takes the array itself, not a rest parameter
+                        await this.saveAll(entry(), entry());
                         // @ts-expect-error - the narrow schema type reaches the subclass
                         await this.query(this.schema.eq("nope", 1));
                     }
@@ -856,6 +985,34 @@ await describe("ReadModelBaseRepository against Postgres", async () =>
         await repository().saveWithin(entry({ id: "led_cm", sequence: 52 }), committed);
         await committed.commit();
         assert.strictEqual((await repository().get("led_cm")).id, "led_cm");
+    });
+
+    await test("a batch of 1200 rows round-trips through saveAllWithin, and a second batch updates in place", async () =>
+    {
+        await db.executeCommand(`delete from ${T};`);
+
+        const batch = Array.from({ length: 1200 }, (_, i) =>
+            entry({ id: `led_batch${i}`, account: `acc_batch${i % 3}`, amount: i, postedAt: 1700000000000 + i * 1000, sequence: 5000 + i, labels: [`b${i % 5}`] }));
+
+        const unitOfWork = new KnexPgUnitOfWork(dbConnectionFactory);
+        await repository().saveAllWithin(batch, unitOfWork);
+        await unitOfWork.commit();
+
+        assert.strictEqual(await repository().countAll(), 1200);
+        const row = await repository().get("led_batch777");
+        assert.strictEqual(row.amount, 777);
+        assert.strictEqual(row.postedAt, 1700000000000 + 777 * 1000);
+        assert.deepStrictEqual(row.labels, ["b2"]);
+
+        await repository().saveAll(batch.map(t => entry({ id: t.id, account: t.account, amount: t.amount + 1, postedAt: t.postedAt, sequence: t.sequence, labels: t.labels })));
+
+        assert.strictEqual(await repository().countAll(), 1200);
+        assert.strictEqual((await repository().get("led_batch777")).amount, 778);
+
+        const rolledBack = new KnexPgUnitOfWork(dbConnectionFactory);
+        await repository().saveAllWithin([entry({ id: "led_batch_rb", sequence: 9999 })], rolledBack);
+        await rolledBack.rollback();
+        await assert.rejects(() => repository().get("led_batch_rb"), ReadModelNotFoundException);
     });
 
     await test("the table verifies clean against the declaration it was created from", async () =>

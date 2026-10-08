@@ -16,6 +16,9 @@ per flagged path and needs a migration to do so.
 
 ### Changed
 
+- **Breaking:** `ReadModelRepository<T>` gains `saveAll(models)` and `saveAllWithin(models, unitOfWork)`.
+  A hand-written implementor — an in-memory test double of a domain interface extending it — must add
+  both; a class extending `ReadModelBaseRepository` inherits them.
 - **Breaking:** n-domain 4.0.3 is required, and nested typed paths follow it exclusively. Typed paths,
   array paths and containment element shapes come from `DomainObjectSerialized`, offered only for real
   n-domain `DomainObject`/`DomainEntity` members. A state member typed as a bare or custom
@@ -53,6 +56,13 @@ per flagged path and needs a migration to do so.
 
 ### Added
 
+- **Batch writes on read model repositories.** `saveAll`/`saveAllWithin` write a batch as one
+  multi-row `insert ... on conflict (id) do update` per chunk of up to 500 rows (fewer for a wide
+  table: Postgres binds at most 65535 parameters per statement), so a re-projection costs one round
+  trip per chunk rather than per row. The whole batch is checked before anything is queued and a bad
+  row is named by position and id; a batch may not repeat an id; the rows go out sorted by id so
+  concurrent batches lock in one order. `ReadModelShapeGuard.adviseOnce` replaces `verify`
+  (internal).
 - **Read models.** A flat, `DomainEntity`-shaped projection — `ReadModel<TThis, TDataKeys>`, an `id`
   plus scalar or array-of-scalar properties — stored one row per instance in a table with one real
   typed column per property, so any analytical SQL runs against it. Declared once by
@@ -62,8 +72,7 @@ per flagged path and needs a migration to do so.
   every consumer takes `IntactReadModelSchema<T>`, so a schema widened to `ReadModelSchema<any>` is
   refused where it is handed over. Consumed by `ReadModelTableCreator` (`createReadModelTable`, `verifyReadModelTable` with
   `ReadModelDriftIssue`, `reconcileReadModelTable`) and by `ReadModelBaseRepository`
-  (`get`/`getByIds`/`getAll`, the upsert `save`/`saveWithin`, `delete`/`deleteWithin`, and the
-  protected `query`/`queryById`/`queryByIds`/`exists`/`count`/`queryRaw`/`queryStatement` doors, with
+  (`get`/`getByIds`/`getAll`, the upsert `save`/`saveWithin`, `delete`/`deleteWithin`, and the protected `query`/`queryById`/`queryByIds`/`exists`/`count`/`queryRaw`/`queryStatement` doors, with
   `ReadModelQuery` for ordering and paging). Predicates: `eq`/`ne`/`gt`/`gte`/`lt`/`lte`/`in`,
   `isNull`/`isNotNull` on any column, `like`/`ilike` on text, `contains`/`containsAll`/`containsAny`
   over array columns (GIN-served `@>`/`&&`), `and`/`or`/`not`/`raw`, `orderBy`, `columnFor`.

@@ -953,19 +953,23 @@ await describe("The example application", async () =>
 
     await describe("Creator activity, the cross-studio read model", async () =>
     {
-        // Projects every creator of a studio, each in its own scope: a save commits the scope's unit of
-        // work, so one write per scope is the model here as everywhere else
-        const project = async (studioId: string): Promise<number> =>
+        // Projects every creator of a studio as one batch: `saveAll` writes them as one multi-row
+        // upsert (up to 500 rows per statement) and commits the repository's own unit of work once.
+        // `UnitOfWork` is transient, so nothing here is shared with `CreatorRepository` - the
+        // shared-transaction shape is the `saveWithin` test further down
+        const project = (studioId: string): Promise<number> =>
         {
             domainContext.organizationId = studioId;
 
-            const creators = await inScope(s => s.resolve<CreatorRepository>("CreatorRepository").getAll());
+            return inScope(async s =>
+            {
+                const creators = await s.resolve<CreatorRepository>("CreatorRepository").getAll();
 
-            for (const creator of creators)
-                await inScope(s => s.resolve<CreatorActivityRepository>("CreatorActivityRepository")
-                    .save(CreatorActivity.fromCreator(creator)));
+                await s.resolve<CreatorActivityRepository>("CreatorActivityRepository")
+                    .saveAll(creators.map(t => CreatorActivity.fromCreator(t)));
 
-            return creators.length;
+                return creators.length;
+            });
         };
 
         await test("projects every creator of both studios into one table, and reads across them", async () =>

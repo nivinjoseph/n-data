@@ -132,7 +132,12 @@ Ordered roughly by how expensive they are to get wrong.
 - **A read model save is always an upsert, and nothing scopes a read model.** `ReadModelBaseRepository`
   has no change check and no `force`; `save`/`saveWithin` always write the row, `delete` is
   idempotent, and no organization filter exists — a tenant id is a declared column a method constrains
-  deliberately. The repository takes `DomainContext` for injection-shape consistency only.
+  deliberately. A batch goes through `saveAll`/`saveAllWithin`: one multi-row upsert per chunk of up to 500
+  rows (fewer for a wide table - 65535 bound parameters per statement), the whole batch checked
+  before anything is queued with each bad row named by position and id, a repeated id refused up
+  front (Postgres cannot upsert one row twice in a statement), and the rows written sorted by id so
+  concurrent batches lock in one order. Do not loop `saveWithin` over thousands of rows - that is one
+  round trip per row. The repository takes `DomainContext` for injection-shape consistency only.
 - **Every read model column is nullable, and the TypeScript type is the application's contract.** No
   `not null` is ever emitted and there is no nullability declaration. A property added later is a
   column added by re-running the migration (`add column if not exists`); rows older than the property

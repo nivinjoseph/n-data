@@ -42,6 +42,23 @@ export interface ReadModelRepository<T>
     saveWithin(model: T, unitOfWork: UnitOfWork): Promise<void>;
 
     /**
+     * Writes a batch - one multi-row upsert per chunk, rather than one statement per model - in a
+     * transaction this repository owns, and commits it. The batch is checked whole before anything is
+     * queued (a bad row is named by its position and id), may not carry the same id twice, and goes
+     * out sorted by id so concurrent batches lock rows in one order. An empty batch writes nothing.
+     *
+     * **Takes an array rather than a rest parameter**, for the reason `getByIds` does: spread over
+     * an empty list it would be the same call as no argument at all.
+     */
+    saveAll(models: ReadonlyArray<T>): Promise<void>;
+
+    /**
+     * Writes a batch into a transaction the caller owns, and **does not commit**. The door a
+     * re-projection wants: thousands of rows land as a few statements, in the caller's transaction.
+     */
+    saveAllWithin(models: ReadonlyArray<T>, unitOfWork: UnitOfWork): Promise<void>;
+
+    /**
      * Removes the row with this id, in a transaction this repository owns, and commits it. A no-op
      * when no row carries the id.
      */

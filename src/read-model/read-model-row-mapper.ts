@@ -26,7 +26,11 @@ export class ReadModelRowMapper
     private readonly _typeName: string;
     private readonly _columns: ReadonlyArray<ReadModelColumnInfo>;
     private readonly _selectList: string;
+    private readonly _upsertHead: string;
+    private readonly _rowTerms: string;
+    private readonly _upsertTail: string;
     private readonly _upsertSql: string;
+    private readonly _upsertSqlByRowCount = new Map<number, string>();
     private readonly _deleteSql: string;
 
     /**
@@ -35,13 +39,20 @@ export class ReadModelRowMapper
     public get selectList(): string { return this._selectList; }
 
     /**
-     * The upsert: an insert of every column, `on conflict (id) do update` setting each from
-     * `excluded`. One row is always affected, which is what keeps the driver's affected-row check
-     * satisfied on both paths.
+     * The single-row upsert: an insert of every column, `on conflict (id) do update` setting each
+     * from `excluded`. One row is always affected, which is what keeps the driver's affected-row
+     * check satisfied on both paths.
      */
     public get upsertSql(): string { return this._upsertSql; }
 
     public get deleteSql(): string { return this._deleteSql; }
+
+    /**
+     * How many rows one multi-row upsert may carry: Postgres binds at most 65535 parameters per
+     * statement, and each row binds `id` plus one per column - capped at 500, past which a statement
+     * gains nothing and only grows.
+     */
+    public get chunkSize(): number { return Math.min(500, Math.floor(65535 / (this._columns.length + 1))); }
 
     public constructor(table: string, typeName: string, columns: ReadonlyArray<ReadModelColumnInfo>)
     {
@@ -57,12 +68,41 @@ export class ReadModelRowMapper
         const names = this._columns.map(t => t.column);
 
         this._selectList = ["id", ...names].join(", ");
-        this._upsertSql = `insert into ${this._table}
+        this._upsertHead = `insert into ${this._table}
                             (id, ${names.join(", ")})
-                            values (?, ${this._columns.map(t => bindingTermOf(t.type)).join(", ")})
+                            values `;
+        this._rowTerms = `(?, ${this._columns.map(t => bindingTermOf(t.type)).join(", ")})`;
+        this._upsertTail = `
                             on conflict (id) do update
                             set ${names.map(t => `${t} = excluded.${t}`).join(", ")};`;
         this._deleteSql = `delete from ${this._table} where id = ?;`;
+        this._upsertSql = this.upsertSqlFor(1);
+    }
+
+
+    /**
+     * The upsert for `rowCount` rows: one value tuple per row, each binding `id` and then every
+     * column through its own term, so the parameters are the rows' {@link toParams} results
+     * concatenated in row order. `rowCount` rows are always affected. Rendered once per row count
+     * and remembered - a batch only ever asks for the chunk size and one remainder.
+     *
+     * @throws {ArgumentException} If rowCount is not a positive integer within {@link chunkSize}.
+     */
+    public upsertSqlFor(rowCount: number): string
+    {
+        given(rowCount, "rowCount").ensureHasValue().ensureIsNumber()
+            .ensure(t => Number.isInteger(t) && t >= 1 && t <= this.chunkSize, `rowCount must be an integer between 1 and ${this.chunkSize}`);
+
+        const cached = this._upsertSqlByRowCount.get(rowCount);
+        if (cached != null)
+            return cached;
+
+        const rows = new Array<string>(rowCount).fill(this._rowTerms).join(",\n                                   ");
+        const sql = `${this._upsertHead}${rows}${this._upsertTail}`;
+
+        this._upsertSqlByRowCount.set(rowCount, sql);
+
+        return sql;
     }
 
 

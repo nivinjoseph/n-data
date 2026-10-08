@@ -155,6 +155,6 @@ is a column added by re-running the migration, identical to one created on day 1
 property read NULL there until re-projected, and the class's own constructor is what refuses that at
 hydration. And when a projection is written from an aggregate's `onSave`, it must resolve its **own**
 transient `UnitOfWork`: `onSave` fires after the scope's unit of work has committed, and a committed unit of
-work is dead. `example.test.ts` shows the other shape instead - the application projecting explicitly, and
-sharing one explicit unit of work between `CreatorRepository.saveWithin` and the projection's, so the row
-lands with the aggregate or not at all.
+work is dead. `example.test.ts` shows the other shape instead - the application projecting explicitly (a studio's creators
+in one `saveAll`, which is one multi-row upsert), and sharing one explicit unit of work between
+`CreatorRepository.saveWithin` and the projection's, so the row lands with the aggregate or not at all.
