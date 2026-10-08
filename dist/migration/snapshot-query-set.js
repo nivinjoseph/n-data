@@ -15,6 +15,13 @@ import { SnapshotArrayIndex } from "./snapshot-array-index.js";
  * value of the wrong type for the leaf it is compared against, as is a numeric comparison on a path
  * declared without a cast.
  *
+ * A path declared `{ acrossOrganizations: true }` is also indexed *without* the `organization_id`
+ * prefix on an org-scoped table, and every predicate and order-by term carries a brand saying whether
+ * all of its paths are so declared - `SnapshotPredicate<true>` - which is what the org repository's
+ * typed cross-organization reads accept. Containment is always branded, since a GIN index has no
+ * prefix; `and`/`or` are branded only when every arm is; {@link raw} never is, and
+ * {@link rawAcrossOrganizations} is the door for a hand-written fragment that must be.
+ *
  * The state is bound once, by {@link for}, and every path after that is inferred from its string
  * literal. That split is not stylistic: TypeScript has no partial type-argument inference, so
  * `SnapshotIndex.forPath<OrderState>("status")` - supplying the state explicitly - forces any path
@@ -104,6 +111,11 @@ export class SnapshotQuerySet {
      */
     _containmentsByPath = new Map();
     /**
+     * The scalar paths declared across organizations, in declaration order - what brands a predicate at
+     * runtime, as `TAcross` does at compile time.
+     */
+    _acrossOrganizationsPaths = new Array();
+    /**
      * The btree index declarations, in declaration order.
      *
      * Named to match `SnapshotTableOptions.indexes`, which is what lets this whole object be handed
@@ -122,6 +134,11 @@ export class SnapshotQuerySet {
      * The array paths this set indexes, in declaration order.
      */
     get arrayPaths() { return [...this._containmentsByPath.keys()]; }
+    /**
+     * The scalar paths declared `acrossOrganizations`, in declaration order - the ones a predicate can
+     * still read with an index once the organization filter is dropped.
+     */
+    get acrossOrganizationsPaths() { return [...this._acrossOrganizationsPaths]; }
     /**
      * Use {@link for}, which binds the state so every path after it is inferred.
      */
@@ -148,7 +165,26 @@ export class SnapshotQuerySet {
             params.push(...predicate.params);
         // the parens are what make nesting safe: `a and (b or c)` only means that if the inner
         // fragment carries its own
-        return { sql: `(${predicates.map(t => t.sql).join(` ${operator} `)})`, params };
+        return {
+            sql: `(${predicates.map(t => t.sql).join(` ${operator} `)})`, params,
+            // a conjunction or disjunction can cross organizations only if every arm can
+            acrossOrganizations: predicates.every(t => t.acrossOrganizations === true)
+        };
+    }
+    /**
+     * The one assertion the brand needs. A literal is shape-checked against `SnapshotPredicate` on the
+     * way in - a misspelt `params` or a dropped `sql` is a compile error - and only its brand is
+     * asserted on the way out, which is legal because every brand extends `boolean`, the type the
+     * literal carries. Nothing else in this class casts a predicate.
+     */
+    static _brand(predicate) {
+        return predicate;
+    }
+    /**
+     * {@link _brand} for an order-by term.
+     */
+    static _brandOrderBy(term) {
+        return term;
     }
     /**
      * Declares a btree index over one leaf scalar inside `data`, and makes that path queryable.
@@ -162,7 +198,7 @@ export class SnapshotQuerySet {
      * path declares that path.
      *
      * @param {TP} path - The key to index, dot delimited to reach a nested one. Checked against the state shape.
-     * @param {object} [options] - `type` to cast the extracted text, checked against the leaf ({@link SnapshotCastFor}: numeric types for a number, text/uuid for a string, boolean for a boolean - a mismatch is a compile error rather than an insert-time failure); `unique` to enforce a natural key; `name` to override the derived index name.
+     * @param {object} [options] - `type` to cast the extracted text, checked against the leaf ({@link SnapshotCastFor}: numeric types for a number, text/uuid for a string, boolean for a boolean - a mismatch is a compile error rather than an insert-time failure); `unique` to enforce a natural key; `name` to override the derived index name; `acrossOrganizations` to also index the path without the organization prefix on an org-scoped table and brand predicates over it ({@link SnapshotAcrossOrganizationsOption}: refused on a plain state, and only the literal `true` brands).
      * @returns {SnapshotQuerySet} A set that also knows this path - the receiver is left unchanged.
      * @throws {ArgumentException} If the path is already declared by this set, malformed, or the type is not a JsonValueType.
      */
@@ -188,7 +224,7 @@ export class SnapshotQuerySet {
      * inline literal infer as a tuple for it).
      *
      * @param {TSpecs} paths - The keys to index, in index order; each a path or a `{ path, type }` pair whose `type` is checked against that path's leaf ({@link SnapshotCastFor}), so a mismatched cast is a compile error.
-     * @param {object} [options] - `unique` to enforce the tuple as a natural key; `name` to override the derived index name.
+     * @param {object} [options] - `unique` to enforce the tuple as a natural key; `name` to override the derived index name; `acrossOrganizations` to also index the tuple without the organization prefix on an org-scoped table and brand predicates over every member ({@link SnapshotAcrossOrganizationsOption}).
      * @returns {SnapshotQuerySet} A set that also knows these paths.
      * @throws {ArgumentException} If paths is empty, any path is already declared by this set, or any path is malformed.
      */
@@ -283,23 +319,28 @@ export class SnapshotQuerySet {
     in(path, values) {
         given(values, "values").ensureHasValue().ensureIsArray().ensureIsNotEmpty();
         const expression = this._expressionFor(path);
-        return {
+        return SnapshotQuerySet._brand({
             sql: `(${expression} in (${values.map(() => "?").join(",")}))`,
-            params: [...values]
-        };
+            params: [...values],
+            acrossOrganizations: this._isAcrossOrganizations(path)
+        });
     }
     /**
      * Matches rows whose `data` omits `path`, or holds JSON null there - extraction yields SQL NULL
      * either way, and this API cannot tell the two apart.
      */
     isNull(path) {
-        return { sql: `(${this._expressionFor(path)} is null)`, params: [] };
+        return SnapshotQuerySet._brand({
+            sql: `(${this._expressionFor(path)} is null)`, params: [], acrossOrganizations: this._isAcrossOrganizations(path)
+        });
     }
     /**
      * Matches rows that carry a value at `path`.
      */
     isNotNull(path) {
-        return { sql: `(${this._expressionFor(path)} is not null)`, params: [] };
+        return SnapshotQuerySet._brand({
+            sql: `(${this._expressionFor(path)} is not null)`, params: [], acrossOrganizations: this._isAcrossOrganizations(path)
+        });
     }
     /**
      * Matches rows whose array at `path` contains an element matching `match`.
@@ -326,18 +367,24 @@ export class SnapshotQuerySet {
     /**
      * Every predicate must hold.
      *
+     * Branded across organizations only when every predicate is - one arm that cannot use an index
+     * without the organization filter makes the conjunction unable to as well.
+     *
      * @throws {ArgumentException} If no predicate is given - an empty `and` would emit `()`.
      */
     and(...predicates) {
-        return SnapshotQuerySet._combine("and", predicates);
+        return SnapshotQuerySet._brand(SnapshotQuerySet._combine("and", predicates));
     }
     /**
      * At least one predicate must hold.
      *
+     * Branded across organizations only when every predicate is, as {@link and} is: a BitmapOr needs
+     * every arm served by an index.
+     *
      * @throws {ArgumentException} If no predicate is given - an empty `or` would match nothing while reading as if it matched everything.
      */
     or(...predicates) {
-        return SnapshotQuerySet._combine("or", predicates);
+        return SnapshotQuerySet._brand(SnapshotQuerySet._combine("or", predicates));
     }
     /**
      * Negates a predicate.
@@ -345,10 +392,16 @@ export class SnapshotQuerySet {
      * Worth knowing what this does *not* do: a row whose `data` omits the key extracts NULL, and
      * `not NULL` is NULL, so negation does not bring absent rows back. Nor does a negated predicate
      * use the index - the planner cannot serve `not` from a btree range or a GIN containment.
+     *
+     * The brand is kept as given, for the same reason it is kept within an organization: the brand
+     * says every path is declared across organizations, which `not` does not change - whether a
+     * particular plan uses an index is Postgres's, here as there.
      */
     not(predicate) {
         given(predicate, "predicate").ensureHasValue().ensureIsObject();
-        return { sql: `(not ${predicate.sql})`, params: [...predicate.params] };
+        return SnapshotQuerySet._brand({
+            sql: `(not ${predicate.sql})`, params: [...predicate.params], acrossOrganizations: predicate.acrossOrganizations
+        });
     }
     /**
      * Wraps a hand-written fragment so it composes with the typed predicates.
@@ -362,14 +415,25 @@ export class SnapshotQuerySet {
      * @throws {ArgumentException} If sql is empty, is a whole statement, keeps the `where` keyword, or contains a ';'.
      */
     raw(sql, ...params) {
-        // validated *before* the parentheses go on, which is the whole point of the shared function:
-        // both of its regexes are anchored, so `(select 1 from t)` would sail past checks that
-        // `select 1 from t` fails. This is the only door a *consumer* hands a fragment to, but not
-        // the only place the ordering matters: `RepositoryQueryBuilder.idPredicate` splices a
-        // predicate behind `id in (?) and (`, and validates before splicing for exactly this reason.
-        const validated = validateBooleanFragment(sql, "sql");
-        given(params, "params").ensureHasValue().ensureIsArray();
-        return { sql: `(${validated})`, params: [...params] };
+        return this._raw(sql, params, false);
+    }
+    /**
+     * {@link raw} for a fragment that is meant to run across organizations.
+     *
+     * Same validation, same parenthesizing, one difference: the result is branded
+     * `acrossOrganizations: true`, so the org repository's typed cross-organization reads accept it. The
+     * brand is a claim the caller makes - that every expression in the fragment is served by an index
+     * that carries no tenant prefix - and nothing here checks it. Build the expressions from
+     * {@link expressionFor} over paths declared `acrossOrganizations`, or over array paths, and it
+     * holds; write anything else and the read runs, and is no index lookup. Named for its consequence,
+     * like the doors that take it.
+     *
+     * @param {string} sql - A boolean fragment. Parenthesized for you; bind values with `?`.
+     * @param {...ReadonlyArray<any>} params - Values bound to the fragment's placeholders.
+     * @throws {ArgumentException} If sql is empty, is a whole statement, keeps the `where` keyword, or contains a ';'.
+     */
+    rawAcrossOrganizations(sql, ...params) {
+        return this._raw(sql, params, true);
     }
     /**
      * One `order by` term over an indexed path.
@@ -388,7 +452,10 @@ export class SnapshotQuerySet {
     orderBy(path, direction) {
         given(direction, "direction").ensureIsString()
             .ensure(t => t === "asc" || t === "desc", "direction must be 'asc' or 'desc'");
-        return { sql: `${this._expressionFor(path)}${direction != null ? ` ${direction}` : ""}` };
+        return SnapshotQuerySet._brandOrderBy({
+            sql: `${this._expressionFor(path)}${direction != null ? ` ${direction}` : ""}`,
+            acrossOrganizations: this._isAcrossOrganizations(path)
+        });
     }
     /**
      * Checks every declared path - scalar and array, typed and raw - against one real snapshot
@@ -439,8 +506,14 @@ export class SnapshotQuerySet {
         next._arrayIndexes.push(...this._arrayIndexes);
         this._expressionsByPath.forEach((v, k) => next._expressionsByPath.set(k, v));
         this._containmentsByPath.forEach((v, k) => next._containmentsByPath.set(k, v));
+        next._acrossOrganizationsPaths.push(...this._acrossOrganizationsPaths);
         return next;
     }
+    /**
+     * `acrossOrganizations` is typed `boolean | string` rather than `boolean` because on a plain state
+     * the option's type is the diagnostic string - which a TypeScript caller cannot pass, and which the
+     * guard below rejects for a JavaScript one.
+     */
     _withComposite(specs, options) {
         const next = this._clone();
         const normalized = specs.map(t => typeof t === "string"
@@ -457,6 +530,13 @@ export class SnapshotQuerySet {
             index = index.andRawPath(spec.path, spec.type);
         if (options?.unique === true)
             index = index.asUnique();
+        // `true` and only `true` flags: the type admits the literal, and a JavaScript caller passing
+        // anything else is caught here rather than silently left unflagged
+        given(options?.acrossOrganizations, "acrossOrganizations").ensureIsBoolean();
+        // asserted back to the index: this method's own signature already gated the state, and inside
+        // the class TState is generic, so the builder's conditional result type cannot resolve here
+        if (options?.acrossOrganizations === true)
+            index = index.acrossOrganizations();
         if (options?.name != null)
             index = index.withName(options.name);
         next._indexes.push(index);
@@ -464,6 +544,9 @@ export class SnapshotQuerySet {
         // predicate from drifting away from the index it means
         for (const spec of normalized)
             next._expressionsByPath.set(spec.path.trim(), index.expressionForRawPath(spec.path));
+        // the runtime half of the brand: the same paths the type parameter accumulates
+        if (index.isAcrossOrganizations)
+            next._acrossOrganizationsPaths.push(...normalized.map(t => t.path.trim()));
         return next;
     }
     /**
@@ -535,7 +618,25 @@ export class SnapshotQuerySet {
         }
     }
     _comparison(path, operator, value) {
-        return { sql: `(${this._expressionFor(path)} ${operator} ?)`, params: [value] };
+        return SnapshotQuerySet._brand({
+            sql: `(${this._expressionFor(path)} ${operator} ?)`, params: [value], acrossOrganizations: this._isAcrossOrganizations(path)
+        });
+    }
+    /**
+     * Whether a declared path was flagged - the runtime side of {@link SnapshotPathAcross}.
+     */
+    _isAcrossOrganizations(path) {
+        return this._acrossOrganizationsPaths.includes(path.trim());
+    }
+    _raw(sql, params, acrossOrganizations) {
+        // validated *before* the parentheses go on, which is the whole point of the shared function:
+        // both of its regexes are anchored, so `(select 1 from t)` would sail past checks that
+        // `select 1 from t` fails. This is the only door a *consumer* hands a fragment to, but not
+        // the only place the ordering matters: `RepositoryQueryBuilder.idPredicate` splices a
+        // predicate behind `id in (?) and (`, and validates before splicing for exactly this reason.
+        const validated = validateBooleanFragment(sql, "sql");
+        given(params, "params").ensureHasValue().ensureIsArray();
+        return { sql: `(${validated})`, params: [...params], acrossOrganizations };
     }
     _expressionFor(path) {
         given(path, "path").ensureHasValue().ensureIsString()

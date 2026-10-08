@@ -218,11 +218,39 @@ type SnapshotLeafPath<T, TDepth extends number = 5> = [TDepth] extends [never] ?
  */
 export type SnapshotPath<T> = Exclude<SnapshotLeafPath<T>, "organizationId">;
 /**
+ * The diagnostic for an `acrossOrganizations` declaration on a state the type can see is not
+ * organization-scoped. One string, shared by the two doors that can refuse it: the query set's option
+ * carries it as the property's type, and {@link SnapshotIndex.acrossOrganizations} returns
+ * {@link SnapshotAcrossOrganizationsRequiresOrgState}, whose only property is named by it. Exported
+ * for the query set; absent from the barrel, like {@link PreviousDepth}.
+ */
+export type SnapshotAcrossOrganizationsMessage = "acrossOrganizations is only declarable on an organization-scoped state - a plain snapshot table has no organization_id column, so there is no tenant prefix to cross";
+/**
+ * A type nothing can be assigned to, whose property name carries the reason - what
+ * {@link SnapshotIndex.acrossOrganizations} returns on a plain state, so the result is not an index
+ * and cannot be declared. Same idiom as the query set's `SnapshotCastRequired`.
+ */
+export type SnapshotAcrossOrganizationsRequiresOrgState = {
+    readonly [K in SnapshotAcrossOrganizationsMessage]: never;
+};
+/**
+ * {@link SnapshotIndex.acrossOrganizations}'s result: the index itself on an organization-scoped state
+ * (one carrying `organizationId`, which is what `OrgAggregateState` adds), the diagnostic otherwise.
+ * Non-distributive, so `any` and a union resolve as a whole. Exported because it appears in a public
+ * signature; absent from the barrel.
+ */
+export type SnapshotAcrossOrganizationsResult<T, TIndex> = [
+    T
+] extends [{
+    readonly organizationId: string;
+}] ? TIndex : SnapshotAcrossOrganizationsRequiresOrgState;
+/**
  * Describes one index over the `data` column of a snapshot table, built fluently - and the source of
  * the SQL expressions that read it back.
  *
  * Start with {@link forPath} and chain {@link andPath} to make it composite, {@link asUnique} to
- * enforce a natural key, and {@link withName} to override the derived name. Each path carries its
+ * enforce a natural key, {@link acrossOrganizations} to also index it without the organization prefix
+ * on an org-scoped table, and {@link withName} to override the derived name. Each path carries its
  * own optional cast, so a composite whose members need different types is expressible.
  *
  * Paths are checked against `T`, the aggregate's state shape. Every path is validated - and its
@@ -276,6 +304,7 @@ export declare class SnapshotIndex<T> {
     private readonly _expressionsByPath;
     private readonly _castsByPath;
     private _isUnique;
+    private _isAcrossOrganizations;
     private _name;
     /**
      * The paths this index covers, trimmed, in the order they were added - which is the order of the
@@ -303,6 +332,12 @@ export declare class SnapshotIndex<T> {
      * Whether this index enforces uniqueness.
      */
     get isUnique(): boolean;
+    /**
+     * Whether this index is also created without the `organization_id` prefix on an org-scoped table,
+     * so a predicate on its paths can still use an index once the organization filter is dropped. See
+     * {@link acrossOrganizations}.
+     */
+    get isAcrossOrganizations(): boolean;
     /**
      * The index name suffix: the name given to {@link withName}, or the paths lowercased with their
      * dots turned into underscores and joined - so `["tenantCode", "sku"]` gives `tenantcode_sku`.
@@ -400,7 +435,8 @@ export declare class SnapshotIndex<T> {
      * sufficient: btree serves only a leading prefix of an index's columns, so the second path of a
      * composite is not independently searchable. On an org-scoped table nothing is searchable until
      * the predicate also constrains `organization_id` - which `OrgSnapshotBaseRepository.query` does
-     * for you, ahead of whatever predicate you pass it.
+     * for you, ahead of whatever predicate you pass it - unless the index is flagged
+     * {@link acrossOrganizations}, whose prefix-free twin is searchable on its own.
      *
      * @param {SnapshotPath<T>} path - A path this index covers, checked against the state shape.
      * @returns {string} The parenthesized extraction expression, e.g. `(data->>'status')`.
@@ -448,6 +484,32 @@ export declare class SnapshotIndex<T> {
      * @returns {this} A new index, unique - the receiver is unchanged.
      */
     asUnique(): this;
+    /**
+     * Marks the index to be created a second time, without the `organization_id` prefix, on an
+     * organization-scoped snapshot table.
+     *
+     * Every btree index on such a table leads with `organization_id`, and btree serves only a leading
+     * prefix - so once a read drops the organization filter, a condition on an indexed path cannot be
+     * an index lookup: the planner scans the table, or walks the whole index. This flag buys the one
+     * thing that fixes that: a second index
+     * over the same expressions and casts with no leading column, named with an `_xorg` suffix beside
+     * the org-leading one, which the org repository's typed cross-organization reads can walk. The
+     * org-leading index stays, so scoped reads are exactly as they were.
+     *
+     * Three things it does not do. It is never unique: {@link asUnique} keeps meaning unique *within an
+     * organization*, and a global natural key remains a hand-written index. It is refused on a plain
+     * (non-org) snapshot table: there is no tenant prefix to cross, so `DbTableCreator` rejects the
+     * declaration at plan time rather than silently creating a duplicate - and for a state the type
+     * can see is not organization-scoped, the return type refuses it at compile time. And it does not reach the
+     * derived name: the creator appends the suffix, so the index name encodes the flag the way `_uq`
+     * and `_gin` encode theirs - which also means clearing the flag later leaves the `_xorg` index
+     * standing, as clearing `asUnique` leaves the `_uq` one (creation is `if not exists`).
+     *
+     * Costs what any index costs: it is maintained on every write of the table.
+     *
+     * @returns {this} A new index flagged across organizations - the receiver is unchanged. On a state the type can see is not organization-scoped the result is {@link SnapshotAcrossOrganizationsRequiresOrgState} instead, which no create call accepts.
+     */
+    acrossOrganizations(): SnapshotAcrossOrganizationsResult<T, this>;
     /**
      * Overrides the derived name suffix, giving `idx_<table>_<name>` (plus `_uq` when unique).
      *

@@ -48,6 +48,39 @@ export class RepositoryQueryBuilder {
      * @throws {ArgumentException} If the predicate is a whole statement, keeps the `where` keyword, is empty, or contains a ';'; if orderBy is empty or contains a ';'; if limit or offset is not a non-negative integer; or if params are supplied with no predicate.
      */
     static build(table, whereOrQuery, params, organizationId) {
+        return RepositoryQueryBuilder.buildSelect("data", table, whereOrQuery, params, organizationId);
+    }
+    /**
+     * Builds `select <selectList> from <table> [where ...] [order by ...] [limit ?] [offset ?]`.
+     *
+     * The body behind {@link build}, with the select list as a parameter: the aggregate repositories
+     * select `data`, the column each row is deserialized from, and a read model repository selects
+     * its declared columns. Everything else - the organization conjunct and its binding order, the
+     * parenthesized predicate, the bound row counts - is the same statement for both, which is why
+     * it is assembled once.
+     *
+     * The select list is interpolated, not bound, so it is validated the way the table name is: it
+     * must be a non-empty list, not a statement (no leading `select`), and carry no `;`. Column
+     * identifiers themselves are validated where they are declared, by the schema that emits them.
+     *
+     * Takes either predicate family - a `SnapshotPredicate`/`RepositoryQuery` or a
+     * `ReadModelPredicate`/`ReadModelQuery` - and nothing else: a hand-built `{ sql, params }` literal,
+     * which nothing branded, is a compile error here as it is on every repository door.
+     *
+     * @param {string} selectList - The columns to select, comma-separated, without the `select` keyword.
+     * @param {string} table - The repository's table.
+     * @param {string | SnapshotPredicate | RepositoryQuery | ReadModelPredicate | ReadModelQuery} whereOrQuery - The predicate, or the clauses to build from. The string form is internal; see {@link NormalizedQuery}.
+     * @param {ReadonlyArray<any>} params - Values bound to the internal string form's `?` placeholders; always empty for anything a consumer supplies.
+     * @param {string} [organizationId] - The organization to scope to; omitted on a non-org repository.
+     * @returns {BuiltRepositoryQuery} The statement and its parameters, positionally matched.
+     * @throws {ArgumentNullException} If selectList, table, whereOrQuery or params is null or undefined.
+     * @throws {ArgumentException} If the select list is empty, is a statement, or contains a ';'; if the predicate is a whole statement, keeps the `where` keyword, is empty, or contains a ';'; if orderBy is empty or contains a ';'; if limit or offset is not a non-negative integer; or if params are supplied with no predicate.
+     */
+    static buildSelect(selectList, table, whereOrQuery, params, organizationId) {
+        given(selectList, "selectList").ensureHasValue().ensureIsString()
+            .ensure(t => t.isNotEmptyOrWhiteSpace(), "selectList is empty")
+            .ensure(t => !/^\s*select\b/i.test(t), "selectList is the list of columns, not a statement - drop the 'select' keyword")
+            .ensure(t => !t.contains(";"), "selectList must not contain a ';'");
         given(table, "table").ensureHasValue().ensureIsString();
         given(params, "params").ensureHasValue().ensureIsArray();
         // an empty one would pass ensureIsString and then quietly match no rows at all, which reads as
@@ -63,7 +96,7 @@ export class RepositoryQueryBuilder {
         // they belong to are appended
         const clause = RepositoryQueryBuilder._buildWhereClause(where, organizationId);
         const boundParams = [...clause.params];
-        let sql = `select data from ${table.trim()}${clause.sql}`;
+        let sql = `select ${selectList.trim()} from ${table.trim()}${clause.sql}`;
         if (orderBy != null)
             sql += ` order by ${orderBy}`;
         if (limit != null) {
@@ -76,28 +109,6 @@ export class RepositoryQueryBuilder {
         }
         return { sql: `${sql};`, params: boundParams };
     }
-    /**
-     * Builds `<column> in (?, ?, ...)` over a set of ids, as a predicate carrying its own values -
-     * optionally conjoined with a further predicate.
-     *
-     * The one fragment the library assembles for itself. All four repositories look up by id - `id`
-     * on a snapshot table, `aggregate_id` on an event stream - and none of them can express it
-     * through a `SnapshotQuerySet`, whose paths reach inside `data` and whose declarations belong to
-     * the subclass. Building it here keeps the placeholder count and the value order derived from one
-     * array in one place; positional binding gives no second chance at getting that pairing right.
-     *
-     * The optional `predicate` is what lets an id lookup be filtered - "this id, but only if it is
-     * not archived" - which is otherwise inexpressible: the id column is not a query set path, so the
-     * two halves come from different places and have to meet somewhere. They meet here, and only
-     * here, because the snapshot repositories are siblings rather than a hierarchy and
-     * `DeclaredSnapshotQuerySet` offers them no `and` of its own.
-     *
-     * @param {string} column - The id column to match against.
-     * @param {ReadonlyArray<string>} values - The ids; must be non-empty, since `in ()` is not valid SQL.
-     * @param {SnapshotPredicate} [predicate] - A further condition every matched row must also satisfy.
-     * @returns {SnapshotPredicate} The fragment and its values, positionally matched - the ids first, then the predicate's own.
-     * @throws {ArgumentException} If column is empty, values is empty, the predicate's params are not an array, or its sql is a whole statement, keeps the `where` keyword, is empty, or contains a ';'.
-     */
     static idPredicate(column, values, predicate) {
         given(column, "column").ensureHasValue().ensureIsString()
             .ensure(t => t.isNotEmptyOrWhiteSpace(), "column is empty");
@@ -106,7 +117,7 @@ export class RepositoryQueryBuilder {
             .ensure(t => Array.isArray(t.params), "a predicate's params must be an array");
         const ids = `${column.trim()} in (${values.map(() => "?").join(",")})`;
         if (predicate == null)
-            return { sql: ids, params: [...values] };
+            return { sql: ids, params: [...values], acrossOrganizations: true };
         // validated *before* it is spliced behind `... and (`, for the same reason `raw` validates
         // before parenthesizing: both regexes in validateBooleanFragment are anchored, so a fragment
         // that has already been given a prefix sails past checks the bare fragment would fail
@@ -115,47 +126,52 @@ export class RepositoryQueryBuilder {
             // parenthesized: `and` binds tighter than `or`, so a bare `a = ? or b = ?` would parse as
             // `(id in (...) and a) or b` and return rows the id filter was supposed to exclude
             sql: `${ids} and (${validated})`,
-            params: [...values, ...predicate.params]
+            params: [...values, ...predicate.params],
+            acrossOrganizations: true
         };
     }
-    /**
-     * Builds `select 1 from <table> [where ...] limit 1;` - the statement behind a repository's `exists`.
-     *
-     * `select 1` rather than a column, so the read can be served index-only where the visibility map allows;
-     * and `limit 1`, so it stops at the first match rather than materializing the whole matching set. That
-     * second point is the reason `excludeId` is a parameter here rather than something a caller filters out
-     * of the rows afterwards - a filter applied after the fact cannot be combined with a limit.
-     *
-     * @param {string} table - The repository's table.
-     * @param {SnapshotPredicate} [predicate] - What to match; omitted asks whether the repository can see any row at all.
-     * @param {string} [excludeId] - An id that does not count as a match - "is this key taken by someone *else*".
-     * @param {string} [organizationId] - The organization to scope to; omitted on a non-org repository.
-     * @returns {BuiltRepositoryQuery} The statement and its parameters, positionally matched.
-     * @throws {ArgumentException} If the predicate's sql is a whole statement, keeps the `where` keyword, is empty, or contains a ';'; or if excludeId is empty.
-     */
     static buildExists(table, predicate, excludeId, organizationId) {
         const clause = RepositoryQueryBuilder._buildFilter(table, predicate, organizationId, excludeId);
         return { sql: `select 1 from ${table.trim()}${clause.sql} limit 1;`, params: clause.params };
     }
-    /**
-     * Builds `select cast(count(*) as int) as count from <table> [where ...];` - the statement behind a
-     * repository's `count`.
-     *
-     * The cast is not decoration: Postgres types `count(*)` as bigint, which the driver hands back as a
-     * string, so an uncast count would arrive as `"3"` rather than `3`.
-     *
-     * @param {string} table - The repository's table.
-     * @param {SnapshotPredicate} [predicate] - What to count; omitted counts every row the repository can see.
-     * @param {string} [organizationId] - The organization to scope to; omitted on a non-org repository.
-     * @returns {BuiltRepositoryQuery} The statement and its parameters, positionally matched.
-     * @throws {ArgumentException} If the predicate's sql is a whole statement, keeps the `where` keyword, is empty, or contains a ';'.
-     */
     static buildCount(table, predicate, organizationId) {
         const clause = RepositoryQueryBuilder._buildFilter(table, predicate, organizationId);
         return {
             sql: `select cast(count(*) as int) as count from ${table.trim()}${clause.sql};`,
             params: clause.params
         };
+    }
+    /**
+     * The runtime half of the brand the typed cross-organization doors require at compile time, for a
+     * JavaScript caller or an `any`: the predicate - or the query form's predicate and every typed
+     * order-by term - must carry `acrossOrganizations: true`.
+     *
+     * It lives here rather than on the repository so that "what shape arrived" is decided once: the
+     * argument goes through the same {@link _normalize} `build` uses (so a predicate that also carries
+     * `where` fails with the builder's own ambiguity error, and the internal string form reads as
+     * unbranded), and the terms are widened by the same helper `_validateOrderBy` uses. An absent
+     * predicate is the whole table, which needs no index; a raw-string order by is the caller's, as it
+     * is on the scoped form.
+     *
+     * @param {string | SnapshotPredicate | RepositoryQuery} [whereOrQuery] - What the door was handed.
+     * @throws {ArgumentException} If the predicate or a typed order-by term is not branded across organizations, or if the argument is not a shape {@link build} would accept.
+     */
+    static ensureAcrossOrganizations(whereOrQuery) {
+        if (whereOrQuery == null)
+            return;
+        const query = RepositoryQueryBuilder._normalize(whereOrQuery);
+        const reason = "must be branded acrossOrganizations: true - build it over paths declared { acrossOrganizations: true } (or array paths), or through rawAcrossOrganizations; a predicate on an unflagged path cannot use an index once the organization filter is dropped";
+        // decided ahead of the guard: `where` is a union the ensurer overloads cannot take as one, and
+        // the internal string form carries no brand by construction
+        if (query.where != null) {
+            // the normalized form is structural, so the brand is read back through the family that carries it
+            const branded = typeof query.where !== "string" && query.where.acrossOrganizations === true;
+            given(branded, "where").ensure(t => t, reason);
+        }
+        if (query.orderBy != null && typeof query.orderBy !== "string") {
+            const terms = RepositoryQueryBuilder._orderByTerms(query.orderBy);
+            given(terms, "orderBy").ensure(t => t.every(u => u.acrossOrganizations === true), `every term ${reason}`);
+        }
     }
     /**
      * Guards the arguments the two aggregate-free builders share, and assembles their `where` clause.
@@ -268,12 +284,7 @@ export class RepositoryQueryBuilder {
         // one or several terms from a SnapshotQuerySet flatten to the same comma-joined list a raw
         // string would have been, so everything below validates one shape
         if (typeof orderBy !== "string") {
-            // widened before the test on purpose: Array.isArray's predicate is a mutable `any[]`, which
-            // does not narrow a ReadonlyArray, so tested directly the check reads as vacuous
-            const candidate = orderBy;
-            const terms = Array.isArray(candidate)
-                ? candidate
-                : [orderBy];
+            const terms = RepositoryQueryBuilder._orderByTerms(orderBy);
             given(terms, "orderBy").ensureIsArray().ensureIsNotEmpty()
                 // read through `any` so a JavaScript caller passing something order-by-shaped is caught
                 // here rather than emitting `undefined` into the SQL
@@ -285,6 +296,18 @@ export class RepositoryQueryBuilder {
             .ensure(t => !/^\s*order\s+by\b/i.test(t), "orderBy must not include the 'order by' keywords, which are emitted for you")
             .ensure(t => !t.contains(";"), "orderBy must not contain a ';'");
         return orderBy.trim();
+    }
+    /**
+     * The typed terms an `orderBy` carries, one or several, as one list.
+     *
+     * Widened before the test on purpose: Array.isArray's predicate is a mutable `any[]`, which does
+     * not narrow a ReadonlyArray, so tested directly the check reads as vacuous. Shared by
+     * {@link _validateOrderBy} and {@link ensureAcrossOrganizations}, so the two cannot disagree about
+     * what a term is.
+     */
+    static _orderByTerms(orderBy) {
+        const candidate = orderBy;
+        return Array.isArray(candidate) ? candidate : [orderBy];
     }
     /**
      * @returns {number | null} The row count, or null when there is none.

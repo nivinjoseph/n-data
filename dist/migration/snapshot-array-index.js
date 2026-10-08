@@ -302,13 +302,13 @@ export class SnapshotArrayIndex {
         return {
             contains(match) {
                 SnapshotArrayIndex._validateMatches([match], "match");
-                return { sql: `(${term})`, params: [toDocument([match])] };
+                return { sql: `(${term})`, params: [toDocument([match])], acrossOrganizations: true };
             },
             containsAll(matches) {
                 SnapshotArrayIndex._validateMatches(matches, "matches");
                 // one document, one index scan - jsonb containment already means "every one of
                 // these", so N matches do not need N predicates
-                return { sql: `(${term})`, params: [toDocument([...matches])] };
+                return { sql: `(${term})`, params: [toDocument([...matches])], acrossOrganizations: true };
             },
             containsAny(matches) {
                 SnapshotArrayIndex._validateMatches(matches, "matches");
@@ -318,7 +318,8 @@ export class SnapshotArrayIndex {
                 // fragment safe to compose before it gets there.
                 return {
                     sql: `(${matches.map(() => term).join(" or ")})`,
-                    params: matches.map(t => toDocument([t]))
+                    params: matches.map(t => toDocument([t])),
+                    acrossOrganizations: true
                 };
             }
         };

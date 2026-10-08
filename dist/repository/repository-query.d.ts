@@ -1,4 +1,6 @@
 import { SnapshotOrderBy, SnapshotPredicate } from "../migration/snapshot-query-set.js";
+import type { ReadModelPredicate } from "../read-model/read-model-schema.js";
+import type { ReadModelQuery } from "../read-model/read-model-query.js";
 /**
  * The clauses a repository `query` may add around its predicate.
  *
@@ -10,8 +12,13 @@ import { SnapshotOrderBy, SnapshotPredicate } from "../migration/snapshot-query-
  *
  * On an organization-scoped repository the tenant filter is added ahead of `where` and is not
  * expressible here - that is the whole point of it being automatic. The ways out are named for that
- * consequence rather than expressed as a flag here: `queryAcrossOrganizations` for a whole statement,
- * and `queryByIdAcrossOrganizations`/`queryByIdsAcrossOrganizations` when the read is by id.
+ * consequence rather than expressed as a flag here: `queryAcrossOrganizations`, which takes this same
+ * shape at `RepositoryQuery<true>` - a predicate and order-by terms branded across organizations, so
+ * that the read is still index-served with the filter gone; `queryStatementAcrossOrganizations` for a
+ * whole statement; and `queryByIdAcrossOrganizations`/`queryByIdsAcrossOrganizations` when the read
+ * is by id.
+ *
+ * @template TAcrossOrganizations - The brand the predicate and the typed order-by terms must carry. The default `boolean` admits either, which is what the scoped `query` takes; the cross-organization door takes `true`.
  *
  * @example
  * ```typescript
@@ -35,7 +42,7 @@ import { SnapshotOrderBy, SnapshotPredicate } from "../migration/snapshot-query-
  * this.query({ orderBy: this.querySet.orderBy("placedAt", "desc"), limit: 10 });
  * ```
  */
-export interface RepositoryQuery {
+export interface RepositoryQuery<TAcrossOrganizations extends boolean = boolean> {
     /**
      * The `where` predicate, without the `where` keyword.
      *
@@ -48,16 +55,17 @@ export interface RepositoryQuery {
      * Omit it to select every row the repository can see - which on an organization-scoped
      * repository still means only the current organization's.
      */
-    readonly where?: SnapshotPredicate;
+    readonly where?: SnapshotPredicate<TAcrossOrganizations>;
     /**
      * The `order by` list, without the `order by` keywords.
      *
      * Prefer `SnapshotQuerySet.orderBy`, singly or as an array for several keys: an expression index
      * serves an `order by` only when the expression matches the indexed one textually, and taking it
      * from the declaration is what guarantees that. A raw string is accepted for anything that cannot
-     * express - `nulls last`, a collation, an ordering on a function of two paths.
+     * express - `nulls last`, a collation, an ordering on a function of two paths. A raw string is
+     * the caller's on the cross-organization door too, where a typed term must be branded.
      */
-    readonly orderBy?: string | SnapshotOrderBy | ReadonlyArray<SnapshotOrderBy>;
+    readonly orderBy?: string | SnapshotOrderBy<TAcrossOrganizations> | ReadonlyArray<SnapshotOrderBy<TAcrossOrganizations>>;
     /**
      * The maximum number of rows to return. Bound as a parameter, not interpolated.
      */
@@ -77,6 +85,37 @@ export interface RepositoryQuery {
 export interface BuiltRepositoryQuery {
     readonly sql: string;
     readonly params: ReadonlyArray<any>;
+}
+/**
+ * What the builders here read off a predicate: a boolean fragment and the values that bind to its
+ * `?` placeholders, in order.
+ *
+ * The structural core both predicate families share - `SnapshotPredicate` adds the
+ * `acrossOrganizations` brand over it, `ReadModelPredicate` adds the table brand - so one body
+ * assembles every statement without the builder knowing which family it is serving. Module-exported
+ * because it appears in public signatures; absent from the barrel, like the builder itself. A
+ * consumer never names it: each repository's `query` takes its own family's predicate.
+ */
+export interface SqlPredicate {
+    readonly sql: string;
+    readonly params: ReadonlyArray<any>;
+}
+/**
+ * What the builders here read off an `order by` term. See {@link SqlPredicate}.
+ */
+export interface SqlOrderBy {
+    readonly sql: string;
+}
+/**
+ * The object form of a query as the builders here read it: the predicate and the clauses that
+ * follow it. `RepositoryQuery` and `ReadModelQuery` are both this, each over its own predicate
+ * family. See {@link SqlPredicate}.
+ */
+export interface SqlQuery {
+    readonly where?: SqlPredicate;
+    readonly orderBy?: string | SqlOrderBy | ReadonlyArray<SqlOrderBy>;
+    readonly limit?: number;
+    readonly offset?: number;
 }
 /**
  * Assembles the statement a repository's `query` runs.
@@ -127,6 +166,33 @@ export declare class RepositoryQueryBuilder {
      */
     static build(table: string, whereOrQuery: string | SnapshotPredicate | RepositoryQuery, params: ReadonlyArray<any>, organizationId?: string): BuiltRepositoryQuery;
     /**
+     * Builds `select <selectList> from <table> [where ...] [order by ...] [limit ?] [offset ?]`.
+     *
+     * The body behind {@link build}, with the select list as a parameter: the aggregate repositories
+     * select `data`, the column each row is deserialized from, and a read model repository selects
+     * its declared columns. Everything else - the organization conjunct and its binding order, the
+     * parenthesized predicate, the bound row counts - is the same statement for both, which is why
+     * it is assembled once.
+     *
+     * The select list is interpolated, not bound, so it is validated the way the table name is: it
+     * must be a non-empty list, not a statement (no leading `select`), and carry no `;`. Column
+     * identifiers themselves are validated where they are declared, by the schema that emits them.
+     *
+     * Takes either predicate family - a `SnapshotPredicate`/`RepositoryQuery` or a
+     * `ReadModelPredicate`/`ReadModelQuery` - and nothing else: a hand-built `{ sql, params }` literal,
+     * which nothing branded, is a compile error here as it is on every repository door.
+     *
+     * @param {string} selectList - The columns to select, comma-separated, without the `select` keyword.
+     * @param {string} table - The repository's table.
+     * @param {string | SnapshotPredicate | RepositoryQuery | ReadModelPredicate | ReadModelQuery} whereOrQuery - The predicate, or the clauses to build from. The string form is internal; see {@link NormalizedQuery}.
+     * @param {ReadonlyArray<any>} params - Values bound to the internal string form's `?` placeholders; always empty for anything a consumer supplies.
+     * @param {string} [organizationId] - The organization to scope to; omitted on a non-org repository.
+     * @returns {BuiltRepositoryQuery} The statement and its parameters, positionally matched.
+     * @throws {ArgumentNullException} If selectList, table, whereOrQuery or params is null or undefined.
+     * @throws {ArgumentException} If the select list is empty, is a statement, or contains a ';'; if the predicate is a whole statement, keeps the `where` keyword, is empty, or contains a ';'; if orderBy is empty or contains a ';'; if limit or offset is not a non-negative integer; or if params are supplied with no predicate.
+     */
+    static buildSelect(selectList: string, table: string, whereOrQuery: string | SnapshotPredicate | RepositoryQuery | ReadModelPredicate | ReadModelQuery, params: ReadonlyArray<any>, organizationId?: string): BuiltRepositoryQuery;
+    /**
      * Builds `<column> in (?, ?, ...)` over a set of ids, as a predicate carrying its own values -
      * optionally conjoined with a further predicate.
      *
@@ -144,11 +210,17 @@ export declare class RepositoryQueryBuilder {
      *
      * @param {string} column - The id column to match against.
      * @param {ReadonlyArray<string>} values - The ids; must be non-empty, since `in ()` is not valid SQL.
-     * @param {SnapshotPredicate} [predicate] - A further condition every matched row must also satisfy.
-     * @returns {SnapshotPredicate} The fragment and its values, positionally matched - the ids first, then the predicate's own.
+     * Overloaded per predicate family: with a `SnapshotPredicate` (or none) the result is the branded
+     * `SnapshotPredicate<true>` the snapshot repositories need; with a `ReadModelPredicate` it is a
+     * plain `SqlPredicate`, since the brand means nothing on a read model table. A hand-built literal
+     * fits neither overload.
+     *
+     * @param {SnapshotPredicate | ReadModelPredicate} [predicate] - A further condition every matched row must also satisfy.
+     * @returns {SnapshotPredicate | SqlPredicate} The fragment and its values, positionally matched - the ids first, then the predicate's own. For the snapshot family, branded `acrossOrganizations: true` whatever the conjoined predicate carries: the id column is the primary key, which has no tenant prefix, so the lookup is index-served with or without the organization filter and the predicate only filters the rows the key found.
      * @throws {ArgumentException} If column is empty, values is empty, the predicate's params are not an array, or its sql is a whole statement, keeps the `where` keyword, is empty, or contains a ';'.
      */
-    static idPredicate(column: string, values: ReadonlyArray<string>, predicate?: SnapshotPredicate): SnapshotPredicate;
+    static idPredicate(column: string, values: ReadonlyArray<string>, predicate?: SnapshotPredicate): SnapshotPredicate<true>;
+    static idPredicate(column: string, values: ReadonlyArray<string>, predicate?: ReadModelPredicate): SqlPredicate;
     /**
      * Builds `select 1 from <table> [where ...] limit 1;` - the statement behind a repository's `exists`.
      *
@@ -157,14 +229,17 @@ export declare class RepositoryQueryBuilder {
      * second point is the reason `excludeId` is a parameter here rather than something a caller filters out
      * of the rows afterwards - a filter applied after the fact cannot be combined with a limit.
      *
+     * Overloaded per predicate family; the organization filter exists only on the snapshot one.
+     *
      * @param {string} table - The repository's table.
-     * @param {SnapshotPredicate} [predicate] - What to match; omitted asks whether the repository can see any row at all.
+     * @param {SnapshotPredicate | ReadModelPredicate} [predicate] - What to match; omitted asks whether the repository can see any row at all.
      * @param {string} [excludeId] - An id that does not count as a match - "is this key taken by someone *else*".
      * @param {string} [organizationId] - The organization to scope to; omitted on a non-org repository.
      * @returns {BuiltRepositoryQuery} The statement and its parameters, positionally matched.
      * @throws {ArgumentException} If the predicate's sql is a whole statement, keeps the `where` keyword, is empty, or contains a ';'; or if excludeId is empty.
      */
     static buildExists(table: string, predicate?: SnapshotPredicate, excludeId?: string, organizationId?: string): BuiltRepositoryQuery;
+    static buildExists(table: string, predicate?: ReadModelPredicate, excludeId?: string): BuiltRepositoryQuery;
     /**
      * Builds `select cast(count(*) as int) as count from <table> [where ...];` - the statement behind a
      * repository's `count`.
@@ -172,13 +247,32 @@ export declare class RepositoryQueryBuilder {
      * The cast is not decoration: Postgres types `count(*)` as bigint, which the driver hands back as a
      * string, so an uncast count would arrive as `"3"` rather than `3`.
      *
+     * Overloaded per predicate family; the organization filter exists only on the snapshot one.
+     *
      * @param {string} table - The repository's table.
-     * @param {SnapshotPredicate} [predicate] - What to count; omitted counts every row the repository can see.
+     * @param {SnapshotPredicate | ReadModelPredicate} [predicate] - What to count; omitted counts every row the repository can see.
      * @param {string} [organizationId] - The organization to scope to; omitted on a non-org repository.
      * @returns {BuiltRepositoryQuery} The statement and its parameters, positionally matched.
      * @throws {ArgumentException} If the predicate's sql is a whole statement, keeps the `where` keyword, is empty, or contains a ';'.
      */
     static buildCount(table: string, predicate?: SnapshotPredicate, organizationId?: string): BuiltRepositoryQuery;
+    static buildCount(table: string, predicate?: ReadModelPredicate): BuiltRepositoryQuery;
+    /**
+     * The runtime half of the brand the typed cross-organization doors require at compile time, for a
+     * JavaScript caller or an `any`: the predicate - or the query form's predicate and every typed
+     * order-by term - must carry `acrossOrganizations: true`.
+     *
+     * It lives here rather than on the repository so that "what shape arrived" is decided once: the
+     * argument goes through the same {@link _normalize} `build` uses (so a predicate that also carries
+     * `where` fails with the builder's own ambiguity error, and the internal string form reads as
+     * unbranded), and the terms are widened by the same helper `_validateOrderBy` uses. An absent
+     * predicate is the whole table, which needs no index; a raw-string order by is the caller's, as it
+     * is on the scoped form.
+     *
+     * @param {string | SnapshotPredicate | RepositoryQuery} [whereOrQuery] - What the door was handed.
+     * @throws {ArgumentException} If the predicate or a typed order-by term is not branded across organizations, or if the argument is not a shape {@link build} would accept.
+     */
+    static ensureAcrossOrganizations(whereOrQuery: string | SnapshotPredicate | RepositoryQuery | undefined): void;
     /**
      * Guards the arguments the two aggregate-free builders share, and assembles their `where` clause.
      */
@@ -228,6 +322,15 @@ export declare class RepositoryQueryBuilder {
      * @returns {string | null} The trimmed order by list, or null when there is none.
      */
     private static _validateOrderBy;
+    /**
+     * The typed terms an `orderBy` carries, one or several, as one list.
+     *
+     * Widened before the test on purpose: Array.isArray's predicate is a mutable `any[]`, which does
+     * not narrow a ReadonlyArray, so tested directly the check reads as vacuous. Shared by
+     * {@link _validateOrderBy} and {@link ensureAcrossOrganizations}, so the two cannot disagree about
+     * what a term is.
+     */
+    private static _orderByTerms;
     /**
      * @returns {number | null} The row count, or null when there is none.
      */

@@ -49,6 +49,11 @@ export interface SnapshotTableIndexInfo {
      * standalone one, since each of those leads with `organization_id` and serves it as a leading
      * prefix. `organization_id` is constrained regardless - `OrgSnapshotBaseRepository.query` adds it
      * either way, because tenant isolation is a correctness rule independent of the plan.
+     *
+     * Also `undefined` for the `_xorg` twin a btree declaration flagged `acrossOrganizations` adds on an
+     * org-scoped table: the same expressions and casts with no leading column, which is the whole
+     * point of it - it is the index a read that drops the organization filter can still walk. It is
+     * told apart from a GIN entry by {@link method}, which it leaves unset.
      */
     readonly leadingColumn?: string;
 }
@@ -100,7 +105,9 @@ export interface SnapshotTableInfo {
      * {@link SnapshotIndex.expressionForPath}, whose expression provably matches what was indexed.
      * Read this to see what a predicate has to constrain, since a btree index only serves a leading
      * prefix of its columns - so the second path of a composite, or anything on an org-scoped table
-     * ahead of `organization_id`, is not independently searchable.
+     * ahead of `organization_id`, is not independently searchable. The `_xorg` twin of a path declared
+     * `acrossOrganizations` is the exception by design: it has no leading column, so its expressions
+     * are searchable with the organization filter dropped.
      */
     readonly createdIndexes: ReadonlyArray<SnapshotTableIndexInfo>;
 }
@@ -146,7 +153,8 @@ export interface SnapshotDriftIssue {
      * - `index-opclass-mismatch`: a GIN index not over `jsonb_path_ops` - still serves `@>`, larger
      *   and slower.
      * - `orphan-index`: an index following this class's `idx_<table>` naming that no current
-     *   declaration produces - the residue of a changed declaration, or a deliberate hand-built one.
+     *   declaration produces - the residue of a changed declaration (a cleared `unique` leaves its
+     *   `_uq` index, a cleared `acrossOrganizations` its `_xorg` twin), or a deliberate hand-built one.
      */
     readonly kind: "table-missing" | "column-missing" | "index-missing" | "index-uniqueness-mismatch" | "index-method-mismatch" | "index-columns-mismatch" | "index-cast-mismatch" | "index-expression-mismatch" | "index-opclass-mismatch" | "orphan-index";
     /**
@@ -207,7 +215,9 @@ export interface SnapshotReconcileResult {
  * For each aggregate type this can provision an event-stream table (the append-only log
  * of domain events) and a snapshot table (the materialized current state). Separate
  * methods exist for plain aggregates and organization-scoped aggregates; the latter add
- * an `organization_id` column and include it in the leading position of their indexes.
+ * an `organization_id` column and include it in the leading position of their indexes - with one
+ * deliberate exception, the prefix-free `_xorg` twin a btree declaration flagged `acrossOrganizations`
+ * also gets, so that a read spanning organizations still has an index.
  *
  * All table and index creation is idempotent (`if not exists`), so the methods are safe
  * to invoke on every startup/migration run. Note that `if not exists` does not *reconcile*:
@@ -218,22 +228,6 @@ export interface SnapshotReconcileResult {
  * @class DbTableCreator
  */
 export declare class DbTableCreator {
-    /**
-     * Maximum identifier length Postgres permits before silently truncating.
-     * Postgres truncates identifiers to NAMEDATALEN - 1 = 63 bytes.
-     */
-    private static readonly _maxIdentifierLength;
-    /**
-     * An unquoted Postgres identifier that needs no folding: lowercase, digits, underscores.
-     * Anything else would either be truncated, folded, or change the statement's meaning
-     * once interpolated into DDL.
-     */
-    private static readonly _identifierRegex;
-    /**
-     * The prefix every index name carries. Its length is the budget a derived table name must leave
-     * free, so an index name composed over it can still fit.
-     */
-    private static readonly _indexNamePrefix;
     private readonly _db;
     private readonly _logger;
     /**
@@ -266,15 +260,12 @@ export declare class DbTableCreator {
      */
     private static _compareIndexes;
     /**
-     * The one place an index's DDL is rendered - {@link _createTable} emits it, and the plan carries
-     * it for the `index-missing` message, so the fix a verify issue names is the statement creation
-     * would run.
-     *
-     * @param {string} tableName - The validated table name.
-     * @param {TableIndex} index - The index definition.
-     * @returns {string} The `create index` statement.
+     * The snapshot side's column comparison - the family-specific hook the shared skeleton calls once
+     * name, method and uniqueness have been compared: column count, the leading column on an org
+     * table, each expression's result type against its declared cast, a path token per expression,
+     * and the GIN opclass.
      */
-    private static _createIndexDdl;
+    private static _compareIndexColumns;
     /**
      * The remedy for an index that exists under the declared name but is not the declared index:
      * drop it, then run the same statement creation would - the {@link ExpectedIndex.ddl} the plan
@@ -368,6 +359,14 @@ export declare class DbTableCreator {
      * a table whose only indexes are array ones still gets the standalone `(organization_id)` index -
      * both to serve a plain org-scoped scan, and to give the planner something to BitmapAnd the GIN
      * scan against.
+     *
+     * A btree declaration flagged `acrossOrganizations` is created twice: the org-leading index as
+     * above, and a twin over the same expressions and casts with no leading column, named
+     * `<name>_xorg` and never unique (uniqueness stays per organization, on the org-leading one). The
+     * twin is what the org repository's typed cross-organization reads can walk, and it is why those
+     * reads are typed at all: a predicate is accepted there only over flagged paths. It does not count
+     * towards the leading-column requirement, since it does not lead with the column. On a plain table
+     * the flag is refused - there is no prefix to cross - before any DDL runs.
      *
      * `TState` is inferred from `aggregateType`, so every index's paths are checked against the
      * aggregate's real state shape.
@@ -556,7 +555,7 @@ export declare class DbTableCreator {
      * that was removed, so the error is the migration instruction.
      *
      * @param {SnapshotTableOptions<any>} [options] - The caller's options, a query set, or nothing.
-     * @returns The btree and GIN declarations, in declaration order.
+     * @returns The btree and GIN declarations, in declaration order - each possibly absent, since the type requires both fields but a JavaScript caller may omit one; every consumer reads an absent collection as empty.
      * @throws {ArgumentException} If options is neither absent nor an options-shaped object.
      */
     private _readOptions;
@@ -604,6 +603,10 @@ export declare class DbTableCreator {
      * on name alone - so whichever ran first would win and the other would be silently skipped,
      * leaving an index that answers no query the declaration was written for.
      *
+     * A btree index flagged `acrossOrganizations` additionally plans its `_xorg` twin when there is a
+     * leading column to drop: the same expressions and casts, no leading column, never unique, emitted
+     * right after its sibling. The suffix is load-bearing for the same reason `_uq` and `_gin` are.
+     *
      * @param {string} tableName - The table the indexes belong to.
      * @param {ReadonlyArray<SnapshotIndex<any>>} [indexes] - The declared btree indexes.
      * @param {ReadonlyArray<SnapshotArrayIndex<any>>} [arrayIndexes] - The declared array containment indexes.
@@ -626,7 +629,7 @@ export declare class DbTableCreator {
      * @param {string} [leadingColumn] - The real column every btree index leads with, on an org-scoped table.
      * @returns {IndexPlan} The plan, with the standalone index appended when applicable.
      * @throws {ArgumentNullException} If an element of either collection is null or undefined.
-     * @throws {ArgumentException} If the options or indexes are invalid, duplicated, or derive colliding names.
+     * @throws {ArgumentException} If the options or indexes are invalid, duplicated, or derive colliding names; or if an index is flagged `acrossOrganizations` with no leading column to drop - a plain table.
      */
     private _planSnapshotTable;
     /**
@@ -661,52 +664,5 @@ export declare class DbTableCreator {
      * @returns {Promise<SnapshotReconcileResult>} What was fixed, and what the closing verify still reports.
      */
     private _reconcileSnapshotTable;
-    /**
-     * Reads a table's column names from `information_schema`. Empty means the table does not exist.
-     *
-     * @param {string} tableName - The validated table name.
-     * @returns {Promise<ReadonlyArray<string>>} The column names, in ordinal order.
-     */
-    private _fetchTableColumns;
-    /**
-     * Reads every index on a table from `pg_catalog`, structurally rather than as definition text.
-     *
-     * Per index: name, uniqueness, access method, column count, and per column the **result type**
-     * (`format_type` over `pg_attribute` - for an expression column that is the expression's type,
-     * which is what makes a cast comparable exactly, independent of how Postgres prints the
-     * expression) and the pretty-printed column definition (`pg_get_indexdef` with a column number -
-     * used only for token containment, never equality, because Postgres normalizes expression text:
-     * `(data->>'status')` comes back as `((data ->> 'status'::text))` and a quoted path array loses
-     * its quotes).
-     *
-     * @param {string} tableName - The validated table name.
-     * @returns {Promise<ReadonlyArray<ActualTableIndex>>} Every index on the table.
-     */
-    private _fetchTableIndexes;
-    /**
-     * Validates a Postgres identifier and returns it trimmed.
-     *
-     * @param {string} value - The candidate identifier.
-     * @param {string} argName - The argument name to report in errors.
-     * @param {number} [maxLength] - The budget to enforce; defaults to the full Postgres limit.
-     * @returns {string} The validated, trimmed identifier.
-     * @throws {ArgumentNullException} If the value is null or undefined.
-     * @throws {ArgumentException} If the value is not a string, is empty or whitespace, is not a valid identifier, or is too long.
-     */
-    private _validateIdentifier;
-    /**
-     * Validates a derived table name, budgeting for the index names composed over it.
-     *
-     * Every index this class creates is named `idx_<tableName>[_<suffix>]`, so a table name that
-     * uses the full 63 characters leaves no room for one. Validating against the reduced budget here
-     * means an overlong aggregate name is reported against `tableName` - the identifier actually at
-     * fault - rather than against a derived `indexName` further downstream.
-     *
-     * @param {string} tableName - The derived table name.
-     * @returns {string} The validated, trimmed table name.
-     * @throws {ArgumentNullException} If tableName is null or undefined.
-     * @throws {ArgumentException} If tableName is not a string, is empty or whitespace, is not a valid identifier, or leaves no room for an index name.
-     */
-    private _validateTableName;
 }
 //# sourceMappingURL=db-table-creator.d.ts.map

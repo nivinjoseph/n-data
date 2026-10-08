@@ -22,8 +22,9 @@ import { QueryResult } from "../db/query-result.js";
  *   throws `no created event passed` or silently rebuilds the aggregate at an earlier version.
  *
  * Anything else is what `OrgSnapshotBaseRepository` is for: it reads a materialized table whose indexes are
- * declared with a `SnapshotQuerySet`, prepends the organization filter to every predicate, and offers
- * `queryAcrossOrganizations` for the rare read that is genuinely meant to span tenants. For a projection over
+ * declared with a `SnapshotQuerySet`, prepends the organization filter to every predicate, and offers a typed
+ * `queryAcrossOrganizations` over paths declared across organizations for the read that is genuinely meant to
+ * span tenants. For a projection over
  * the raw event rows use {@link queryRawAcrossOrganizations} - which gets no organization filter, so such a
  * statement must constrain `organization_id` itself.
  *

@@ -20,6 +20,14 @@ export { SnapshotIndex, SnapshotPath, JsonValueType } from "./migration/snapshot
 export { SnapshotArrayIndex, SnapshotArrayPath, SnapshotArrayContainment, SnapshotArrayPredicate, SnapshotElementMatch, JsonScalar } from "./migration/snapshot-array-index.js";
 export { SnapshotQuerySet, DeclaredSnapshotQuerySet, SnapshotPredicate, SnapshotOrderBy, SnapshotPathSpec, SnapshotNumericType, SnapshotCastFor, SnapshotShapeIssue } from "./migration/snapshot-query-set.js";
 export { SnapshotDocumentOf, toSnapshotDocument } from "./migration/snapshot-document.js";
+export { ReadModel, AnyReadModel, ReadModelClass, ReadModelData, ReadModelKey } from "./read-model/read-model.js";
+export { ColumnType, ReadModelNumericType } from "./read-model/column-type.js";
+export { ReadModelSchema, IntactReadModelSchema, ReadModelColumns, ReadModelColumn, ReadModelScalarColumn, ReadModelArrayColumn, ReadModelPredicate, ReadModelOrderBy, ReadModelColumnInfo, ReadModelIndexInfo, ReadModelShapeIssue } from "./read-model/read-model-schema.js";
+export { ReadModelQuery } from "./read-model/read-model-query.js";
+export { ReadModelRepository } from "./read-model/read-model-repository.js";
+export { ReadModelNotFoundException } from "./read-model/read-model-not-found-exception.js";
+export { ReadModelBaseRepository } from "./read-model/read-model-base-repository.js";
+export { ReadModelTableCreator, ReadModelTableInfo, ReadModelDriftIssue, ReadModelReconcileResult } from "./read-model/read-model-table-creator.js";
 export { CacheService } from "./caching/cache-service.js";
 export { InMemoryCacheService } from "./caching/in-memory-cache-service.js";
 export { RedisCacheService } from "./caching/redis-cache-service.js";

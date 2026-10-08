@@ -18,8 +18,11 @@ import { snapshotDocumentToState, toSnapshotDocument } from "../migration/snapsh
  * on a field inside `data`, {@link queryById} or {@link queryByIds} for one that also constrains the
  * id, {@link exists} and {@link count} for a yes-or-no or a number, and - for a read that genuinely
  * leaves the tenant boundary - {@link queryByIdAcrossOrganizations} and
- * {@link queryByIdsAcrossOrganizations} by id, {@link queryAcrossOrganizations} for a whole statement,
- * {@link queryRawAcrossOrganizations} for a projection.
+ * {@link queryByIdsAcrossOrganizations} by id, {@link queryAcrossOrganizations} for a typed predicate
+ * over paths declared `acrossOrganizations`, {@link existsAcrossOrganizations} and
+ * {@link countAcrossOrganizations} for the same shapes as their scoped namesakes,
+ * {@link queryStatementAcrossOrganizations} for a whole statement, {@link queryRawAcrossOrganizations}
+ * for a projection.
  *
  * **Every one of those scopes itself to the current organization, so a subclass never writes that
  * filter.** `query` owns the statement - `select data from <table> where organization_id = ? and
@@ -27,12 +30,15 @@ import { snapshotDocumentToState, toSnapshotDocument } from "../migration/snapsh
  * which is both the tenant isolation and the leading index column; the id-shaped pair goes through
  * `query`, so it inherits the same guarantee, and an id belonging to another organization reads
  * exactly as one that does not exist. There is no way to forget it.
- * {@link queryAcrossOrganizations} is the deliberate exception, named for its consequence, for a read
- * that is genuinely meant to span tenants, and {@link queryByIdAcrossOrganizations} and
- * {@link queryByIdsAcrossOrganizations} are the id-shaped ones, which need no statement of their own.
- * Those two are also the only cheap way out: `id` is the primary key, and it is the one index on this
- * table with no leading `organization_id`, so a cross-tenant lookup by id is an index lookup where a
- * cross-tenant condition on a declared path is a sequential scan.
+ * The doors that leave the boundary are named for that consequence. {@link queryAcrossOrganizations}
+ * takes a typed predicate, and its type admits only paths declared `{ acrossOrganizations: true }` on
+ * the query set (and array paths): each such path also carries a prefix-free `_xorg` index, so the
+ * read is an index lookup with the filter dropped - which a path without the flag cannot be, since
+ * every other btree index here leads with `organization_id` and btree serves only a leading prefix
+ * (the planner then scans the table, or the whole index). {@link queryByIdAcrossOrganizations} and
+ * {@link queryByIdsAcrossOrganizations} are the id-shaped doors, cheap because `id` is the primary
+ * key and carries no tenant prefix; {@link queryStatementAcrossOrganizations} runs a whole statement,
+ * for what the built shape cannot express.
  *
  * As with the plain variant, what is queryable is declared with a `SnapshotQuerySet` exposed by
  * overriding {@link querySet} - one object that both the migration creates the
@@ -41,11 +47,12 @@ import { snapshotDocumentToState, toSnapshotDocument } from "../migration/snapsh
  *
  * ```typescript
  * const indexes = SnapshotQuerySet.for<InvoiceState>()
- *     .withPath("status")
+ *     .withPath("status", { acrossOrganizations: true })
  *     .withComposite(["series", "invoiceNumber"], { unique: true });
  *
  * await tableCreator.createSnapshotTableForOrgAggregate(Invoice, indexes);
  * // -> create index ... on invoice_snaps(organization_id, (data->>'status'));
+ * //    create index ... idx_invoice_snaps_status_xorg on invoice_snaps((data->>'status'));
  * //    create unique index ... on invoice_snaps(organization_id, (data->>'series'), (data->>'invoiceNumber'));
  * ```
  *
@@ -86,7 +93,7 @@ import { snapshotDocumentToState, toSnapshotDocument } from "../migration/snapsh
  *     // declared once: the migration creates these, this class queries them, and the paths below are
  *     // checked against exactly this list
  *     public static readonly indexes = SnapshotQuerySet.for<InvoiceState>()
- *         .withPath("status")
+ *         .withPath("status", { acrossOrganizations: true })
  *         .withPath("issuedAt", { type: JsonValueType.bigint })
  *         .withArrayPath("labels");
  *
@@ -126,6 +133,15 @@ import { snapshotDocumentToState, toSnapshotDocument } from "../migration/snapsh
  *         // -> where organization_id = ? and (id in (?) and (((data->>'status') = ?)))
  *         return this.queryById(id, this.querySet.eq("status", "open"));
  *     }
+ *
+ *     public getByStatusAcrossOrganizations(status: string): Promise<Array<Invoice>>
+ *     {
+ *         // typed, and an index lookup with the organization filter dropped: `status` is declared
+ *         // across organizations, so it has a prefix-free twin to walk. `issuedAt` is not, and a
+ *         // predicate on it would be a compile error here; `labels` is an array path, always admitted
+ *         // -> select data from invoice_snaps where (((data->>'status') = ?));
+ *         return this.queryAcrossOrganizations(this.querySet.eq("status", status));
+ *     }
  * }
  *
  * // in the migration - the same object
@@ -140,7 +156,7 @@ export class OrgSnapshotBaseRepository extends BaseRepository {
      * The `organization_id = ?` filter {@link query} prepends, as a predicate you can splice into a
      * statement of your own.
      *
-     * The companion to {@link queryAcrossOrganizations} and {@link queryRawAcrossOrganizations}:
+     * The companion to {@link queryStatementAcrossOrganizations} and {@link queryRawAcrossOrganizations}:
      * those two leave the tenant boundary, and this is how a statement that only needed the *shape*
      * they allow - a CTE, a `distinct on`, a group-by - gets the filter back without re-deriving it.
      * Splice `sql` and spread `params` in the same order the fragments appear; positional binding is
@@ -149,10 +165,10 @@ export class OrgSnapshotBaseRepository extends BaseRepository {
      * It exposes nothing new - `domainContext.organizationId` is public - it just means the filter is
      * written once, here, rather than once per statement that needs it.
      *
-     * @returns {SnapshotPredicate} The filter and the current organization's id.
+     * @returns {SnapshotPredicate} The filter and the current organization's id. Branded `acrossOrganizations: false`, naturally - it is the tenant filter.
      */
     get organizationPredicate() {
-        return { sql: "organization_id = ?", params: [this.domainContext.organizationId] };
+        return { sql: "organization_id = ?", params: [this.domainContext.organizationId], acrossOrganizations: false };
     }
     get domainContext() { return super.domainContext; }
     get eventStreamRepository() { return this._eventStreamRepository; }
@@ -188,7 +204,8 @@ export class OrgSnapshotBaseRepository extends BaseRepository {
      * Unbounded within the tenant, and takes no arguments so that it can only be called on purpose.
      * It is {@link query} with no predicate, so the organization filter is still prepended - this is
      * one studio's rows, never the whole table. Crossing that boundary takes
-     * {@link queryAcrossOrganizations}, which is named for it.
+     * {@link queryAcrossOrganizations}, which is named for it - with `{}` it is this read over every
+     * organization.
      *
      * @returns {Promise<Array<T>>} Every aggregate in the current organization, deserialized.
      */
@@ -305,7 +322,9 @@ export class OrgSnapshotBaseRepository extends BaseRepository {
      * `offset`, or to run with no predicate at all (`{}`). To constrain the id as well as the
      * predicate, use {@link queryById} or {@link queryByIds} - `id` is a column beside `data`, so no
      * predicate this takes can reach it. For a read that genuinely spans organizations, and only
-     * then, use {@link queryAcrossOrganizations}. For reads whose shape does not map onto the
+     * then, use {@link queryAcrossOrganizations} - this same shape, admitting only predicates over
+     * paths declared `acrossOrganizations` - or {@link queryStatementAcrossOrganizations} for a whole
+     * statement. For reads whose shape does not map onto the
      * aggregate - counts, group-bys, projections - use {@link queryRawAcrossOrganizations}, which
      * performs no deserialization and, as its name says, adds no organization filter either.
      *
@@ -429,38 +448,105 @@ export class OrgSnapshotBaseRepository extends BaseRepository {
         return executeRawQuery(this.db, sql, params);
     }
     /**
+     * Runs a typed query **across every organization** and deserializes each row into an aggregate.
+     *
+     * {@link query} with the organization filter dropped: the same statement shape - `select data from
+     * <this.table> where (<your predicate>)`, with `order by`, `limit` and `offset` on the
+     * {@link RepositoryQuery} form and `{}` for every row of every organization - built by the same
+     * builder, so what differs is exactly one conjunct. Named for its consequence, so the tenant
+     * implication is visible at the call site.
+     *
+     * **What it accepts is what an index can still serve.** Every btree index on this table leads with
+     * `organization_id`, and btree serves only a leading prefix, so once the filter is gone a condition
+     * on an ordinary declared path cannot be an index lookup - the planner scans the table, or walks the
+     * whole index. A path declared `{ acrossOrganizations: true }` on the query set is different: the
+     * migration also builds it a prefix-free `_xorg` twin, and every predicate and order-by term over
+     * such paths is branded `acrossOrganizations: true`. This door takes only that brand
+     * (`SnapshotPredicate<true>`, `RepositoryQuery<true>`), so a predicate on an unflagged path is a
+     * compile error here - the same contract as {@link query}'s path checking, restated for the index
+     * that is actually there. Containment is always branded (a GIN index has no prefix), `and`/`or`
+     * only when every arm is, and a hand-written fragment is branded by
+     * `SnapshotQuerySet.rawAcrossOrganizations`, where the caller owns the claim. The brand is checked
+     * at runtime as well, so a JavaScript caller is refused the same way.
+     *
+     * The brand says every path is indexed across organizations; whether a particular plan uses the
+     * index is Postgres's, exactly as within an organization - a `not`, an `is null`, or the second
+     * member of a composite compile on both doors and are served by neither.
+     *
+     * **What comes back is read-only in practice**: each aggregate is deserialized against the
+     * *current* {@link BaseRepository.domainContext} while carrying its own `organizationId`, and
+     * `save` rejects one whose organization is not this one, `force` included.
+     *
+     * @param {SnapshotPredicate<true> | RepositoryQuery<true>} whereOrQuery - A branded predicate from {@link querySet}, or the predicate and the clauses that follow it; `{}` reads every row of every organization.
+     * @returns {Promise<Array<T>>} The deserialized aggregates, from whatever organizations hold them; empty when nothing matched.
+     * @throws {ArgumentException} If the predicate or a typed order-by term is not branded across organizations; if the predicate is a whole statement, keeps the `where` keyword, is empty, or contains a ';'; if orderBy is empty or contains a ';'; or if limit or offset is not a non-negative integer.
+     */
+    async queryAcrossOrganizations(whereOrQuery) {
+        RepositoryQueryBuilder.ensureAcrossOrganizations(whereOrQuery);
+        // the builder `query` uses, with organizationId omitted - the whole of the difference
+        const built = RepositoryQueryBuilder.build(this.table, whereOrQuery, []);
+        return this._deserialize(await this.queryRawAcrossOrganizations(built.sql, ...built.params));
+    }
+    /**
+     * Whether anything matches **in any organization** - {@link exists} with the organization filter
+     * dropped, and typed like {@link queryAcrossOrganizations}: only a predicate branded across
+     * organizations, so the check is an index lookup rather than a scan.
+     *
+     * @param {SnapshotPredicate<true>} [predicate] - What to match; omitted asks whether the table holds any row at all.
+     * @param {string} [excludeId] - An id that does not count as a match.
+     * @returns {Promise<boolean>} Whether at least one row matched, in any organization.
+     * @throws {ArgumentException} If the predicate is not branded across organizations, or is malformed as described on {@link queryAcrossOrganizations}.
+     */
+    async existsAcrossOrganizations(predicate, excludeId) {
+        RepositoryQueryBuilder.ensureAcrossOrganizations(predicate);
+        const built = RepositoryQueryBuilder.buildExists(this.table, predicate, excludeId);
+        return !(await this.queryRawAcrossOrganizations(built.sql, ...built.params)).isEmpty;
+    }
+    /**
+     * How many rows match **across every organization** - {@link count} with the organization filter
+     * dropped, and typed like {@link queryAcrossOrganizations}.
+     *
+     * @param {SnapshotPredicate<true>} [predicate] - What to count; omitted counts every row of every organization.
+     * @returns {Promise<number>} The number of matching rows.
+     * @throws {ArgumentException} If the predicate is not branded across organizations, or is malformed as described on {@link queryAcrossOrganizations}.
+     */
+    async countAcrossOrganizations(predicate) {
+        RepositoryQueryBuilder.ensureAcrossOrganizations(predicate);
+        const built = RepositoryQueryBuilder.buildCount(this.table, predicate);
+        const result = await this.queryRawAcrossOrganizations(built.sql, ...built.params);
+        return result.rows[0].count;
+    }
+    /**
      * Runs a whole statement, **with no organization filter added**, and deserializes each row into
      * an aggregate.
      *
-     * The deliberate exception to {@link query}, for a read that is genuinely meant to span tenants -
-     * an admin-wide report, a cross-organization reconciliation - and for the joins, unions and CTEs
-     * the statement {@link query} builds cannot express. It is named for its consequence so that the
-     * tenant implication is visible at the call site rather than inferred from a flag.
-     *
-     * Everything {@link query} guarantees is yours to get right here:
+     * The plain repository's `queryStatement`, named here for its consequence: for the joins, unions
+     * and CTEs the statement {@link queryAcrossOrganizations} builds cannot express. Everything the
+     * built doors guarantee is yours to get right:
      *
      * - the select list must be `data`, since that is the column each row is deserialized from;
      * - build any expression over `data` from {@link querySet}'s `expressionFor`, so it still matches
      *   the index it was created from - Postgres uses an expression index only when the expression
-     *   matches *textually*, and a near-miss silently falls back to a sequential scan;
+     *   matches *textually*, and a near-miss silently loses the index;
      * - if the read is meant to stay within one organization, splice {@link organizationPredicate} in
      *   leading, so the filter both isolates the tenant and lets the index be used.
      *
      * **Know what an index can and cannot serve once the filter is gone.** Every btree expression
      * index on this table leads with `organization_id`, and btree serves only a leading prefix - so a
-     * cross-organization condition on a declared path cannot use its index and scans the table. The
-     * two reads that survive the boundary intact are containment on an array path, whose GIN index
-     * carries no tenant prefix, and a lookup by `id`, which is the primary key - and the latter has
-     * its own doors, {@link queryByIdAcrossOrganizations} and {@link queryByIdsAcrossOrganizations},
-     * for the same reason {@link queryById} exists beside {@link query}.
+     * cross-organization condition on an unflagged path cannot be an index lookup: the planner scans
+     * the table, or walks the whole index. What survives the boundary intact: a path declared
+     * `acrossOrganizations`, whose prefix-free `_xorg` twin is what {@link queryAcrossOrganizations}
+     * exists to use; containment on an array path, whose GIN index carries no tenant prefix; and a
+     * lookup by `id`, the primary key, which has its own doors in {@link queryByIdAcrossOrganizations}
+     * and {@link queryByIdsAcrossOrganizations}.
      *
-     * Prefer {@link query} unless it cannot express the read.
+     * Prefer {@link queryAcrossOrganizations} unless it cannot express the read.
      *
      * @param {string} sql - The statement to run. Must select the `data` column.
      * @param {...ReadonlyArray<any>} params - Values bound to the statement's `?` placeholders.
      * @returns {Promise<Array<T>>} The deserialized aggregates; empty when nothing matched.
      */
-    async queryAcrossOrganizations(sql, ...params) {
+    async queryStatementAcrossOrganizations(sql, ...params) {
         return this._deserialize(await this.queryRawAcrossOrganizations(sql, ...params));
     }
     /**
@@ -473,9 +559,10 @@ export class OrgSnapshotBaseRepository extends BaseRepository {
      * subclass has to name for itself rather than something `get` could do quietly.
      *
      * **At most one row, because `id` is the primary key - and globally, not per tenant.** That is
-     * also what makes this cheap: the primary key is the one index on this table with no leading
-     * `organization_id`, so this is an index lookup rather than the sequential scan a cross-organization
-     * condition on a declared path would be (see {@link queryAcrossOrganizations}).
+     * also what makes this cheap: the primary key carries no leading `organization_id`, so this is an
+     * index lookup where a cross-organization condition on an unflagged path would be a scan (see
+     * {@link queryAcrossOrganizations}, and the `acrossOrganizations` declaration that gives a path
+     * its own prefix-free index).
      *
      * **The aggregate that comes back is read-only in practice.** It is deserialized against the
      * *current* {@link BaseRepository.domainContext} while its state carries its own
@@ -501,9 +588,10 @@ export class OrgSnapshotBaseRepository extends BaseRepository {
      * without the tenant filter - so the id hygiene is the same one: ids that are blank once trimmed
      * are dropped, and if that leaves none the result is empty without a statement being run at all.
      *
-     * The optional predicate costs nothing here, unlike one handed to {@link queryAcrossOrganizations}:
-     * the ids have already narrowed the read to a primary key lookup, so the predicate filters those
-     * few rows rather than deciding whether an index can be used at all.
+     * The optional predicate costs nothing here, which is why - unlike {@link queryAcrossOrganizations} -
+     * this door takes any `SnapshotPredicate`, branded or not: the ids have already narrowed the read
+     * to a primary key lookup, so the predicate filters those few rows rather than deciding whether an
+     * index can be used at all.
      *
      * @param {ReadonlyArray<string>} ids - The aggregate ids to load.
      * @param {SnapshotPredicate} [predicate] - A further condition each row must satisfy; omitted loads by id alone.
@@ -519,7 +607,7 @@ export class OrgSnapshotBaseRepository extends BaseRepository {
         // this method means, and the reason it is not built by hand: `idPredicate` owns the
         // placeholder run and the order its values bind in
         const built = RepositoryQueryBuilder.build(this.table, RepositoryQueryBuilder.idPredicate("id", trimmed, predicate), []);
-        return this.queryAcrossOrganizations(built.sql, ...built.params);
+        return this.queryStatementAcrossOrganizations(built.sql, ...built.params);
     }
     /**
      * The body both save doors share; `owned` is who commits and `force` is whether the change check
