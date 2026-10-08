@@ -2,16 +2,14 @@ import { Logger } from "@nivinjoseph/n-log";
 import { AnyReadModel } from "./read-model.js";
 import { ReadModelSchema } from "./read-model-schema.js";
 /**
- * The save-time half of `ReadModelSchema.verifyModel`, in its two halves: `verifyValues` on every
- * save, throwing on a fatal issue, and `verifyShape` once per schema per process, logging its
- * advisories.
+ * The once-per-schema half of a save's checks: `ReadModelSchema.verifyShape`, run against the first
+ * model a process saves through a schema and logged as advisories, never again for that schema.
  *
- * Values every save, unlike `SnapshotShapeGuard`: a fatal here is a *value* of the wrong kind or
- * range, which varies per instance, and it is the only data check before the database's own type
- * errors - which a `text` column never raises, since pg coerces into it silently. The shape is a
- * fact about the class, read from its metadata without serializing anything, so once per schema
- * (the schema object IS the declaration, normally a static) is enough - tracked in a `WeakSet` that
- * also gives tests natural isolation.
+ * The per-value half (`verifyValues`) is not here: it varies per instance, is synchronous, and the
+ * repositories run it on every row before anything is queued. The shape is a fact about the class,
+ * read from its metadata without serializing anything, so once per schema (the schema object IS the
+ * declaration, normally a static) is enough - tracked in a `WeakSet` that also gives tests natural
+ * isolation.
  *
  * Internal: not in the barrel. The consumer-facing door is `verifyModel` itself.
  */
@@ -22,8 +20,8 @@ export declare class ReadModelShapeGuard {
      */
     private constructor();
     /**
-     * @throws {ArgumentException} If the model is not an instance of the schema's class, or any column cannot hold its value.
+     * Logs the schema's shape advisories once per process, reading them off `model`.
      */
-    static verify<T extends AnyReadModel>(schema: ReadModelSchema<T>, model: T, logger: Logger): Promise<void>;
+    static adviseOnce<T extends AnyReadModel>(schema: ReadModelSchema<T>, model: T, logger: Logger): Promise<void>;
 }
 //# sourceMappingURL=read-model-shape-guard.d.ts.map

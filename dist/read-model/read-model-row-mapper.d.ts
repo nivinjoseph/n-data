@@ -21,20 +21,39 @@ export declare class ReadModelRowMapper {
     private readonly _typeName;
     private readonly _columns;
     private readonly _selectList;
+    private readonly _upsertHead;
+    private readonly _rowTerms;
+    private readonly _upsertTail;
     private readonly _upsertSql;
+    private readonly _upsertSqlByRowCount;
     private readonly _deleteSql;
     /**
      * `id, <column>, ...` - every declared column, in declaration order.
      */
     get selectList(): string;
     /**
-     * The upsert: an insert of every column, `on conflict (id) do update` setting each from
-     * `excluded`. One row is always affected, which is what keeps the driver's affected-row check
-     * satisfied on both paths.
+     * The single-row upsert: an insert of every column, `on conflict (id) do update` setting each
+     * from `excluded`. One row is always affected, which is what keeps the driver's affected-row
+     * check satisfied on both paths.
      */
     get upsertSql(): string;
     get deleteSql(): string;
+    /**
+     * How many rows one multi-row upsert may carry: Postgres binds at most 65535 parameters per
+     * statement, and each row binds `id` plus one per column - capped at 500, past which a statement
+     * gains nothing and only grows.
+     */
+    get chunkSize(): number;
     constructor(table: string, typeName: string, columns: ReadonlyArray<ReadModelColumnInfo>);
+    /**
+     * The upsert for `rowCount` rows: one value tuple per row, each binding `id` and then every
+     * column through its own term, so the parameters are the rows' {@link toParams} results
+     * concatenated in row order. `rowCount` rows are always affected. Rendered once per row count
+     * and remembered - a batch only ever asks for the chunk size and one remainder.
+     *
+     * @throws {ArgumentException} If rowCount is not a positive integer within {@link chunkSize}.
+     */
+    upsertSqlFor(rowCount: number): string;
     /**
      * The values the upsert binds, positionally: the id, then one per column in declaration order.
      * `undefined` binds as NULL, like `null` does; an array is copied so a frozen one binds too.

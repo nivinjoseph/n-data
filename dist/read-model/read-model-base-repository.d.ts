@@ -13,7 +13,7 @@ import { IntactReadModelSchema, ReadModelPredicate, ReadModelSchema } from "./re
  * key, declared once by a {@link ReadModelSchema}.
  *
  * Publicly, {@link get} and {@link getByIds} cover lookup by id, {@link getAll} takes the whole
- * table, and {@link save}/{@link delete} (with their `Within` forms) are the explicit writes. Any
+ * table, and {@link save}/{@link saveAll}/{@link delete} (with their `Within` forms) are the explicit writes. Any
  * other read is a method the concrete subclass names for itself, built over one of the `protected`
  * doors below:
  *
@@ -149,6 +149,34 @@ export declare abstract class ReadModelBaseRepository<T extends AnyReadModel> ex
      */
     saveWithin(model: T, unitOfWork: UnitOfWork): Promise<void>;
     /**
+     * Writes a batch of read models in a transaction this repository owns, and commits it, or rolls
+     * it back and rethrows.
+     *
+     * One multi-row upsert per chunk of up to 500 rows (fewer for a very wide table, since Postgres
+     * binds at most 65535 parameters per statement), so a re-projection of thousands of rows costs a
+     * few round trips rather than one per row. Every model is checked - its class, every value
+     * against its column - before anything is queued, so a bad row anywhere rejects the batch whole,
+     * named by its position and id; and a batch may not carry the same id twice, because Postgres
+     * refuses to upsert one row twice in a statement. An empty batch writes nothing and leaves the
+     * unit of work untouched.
+     *
+     * The rows go out **sorted by id**, whatever order they arrived in: a multi-row upsert locks each
+     * row as it reaches it, so two concurrent batches over overlapping ids in different orders could
+     * deadlock. One order for every batch removes that between batches; a batch can still deadlock
+     * against some other transaction that locks the same rows in another order, which is the usual
+     * Postgres rule and not something a repository can prevent.
+     *
+     * @throws {ArgumentException} If a model is not an instance of the schema's class, a value does not fit its column, or an id repeats within the batch.
+     */
+    saveAll(models: ReadonlyArray<T>): Promise<void>;
+    /**
+     * Writes a batch into a transaction the caller owns, and **does not commit**. Checked and chunked
+     * exactly as {@link saveAll} is.
+     *
+     * @throws {ArgumentException} If a model is not an instance of the schema's class, a value does not fit its column, or an id repeats within the batch.
+     */
+    saveAllWithin(models: ReadonlyArray<T>, unitOfWork: UnitOfWork): Promise<void>;
+    /**
      * Removes the row with this id in a transaction this repository owns, and commits it. A no-op
      * when no row carries the id - a delete is not row-count checked.
      */
@@ -209,7 +237,14 @@ export declare abstract class ReadModelBaseRepository<T extends AnyReadModel> ex
      */
     protected queryStatement(sql: string, ...params: ReadonlyArray<any>): Promise<Array<T>>;
     private _save;
+    private _saveAll;
     private _delete;
+    /**
+     * The envelope every write shares: run the statements, commit when this repository owns the
+     * unit of work; on failure log, roll back when owned, and rethrow. A shared unit of work is left
+     * to its owner either way.
+     */
+    private _write;
     private _materialize;
     /**
      * The runtime half of the table brand: a predicate built by another schema is refused here,

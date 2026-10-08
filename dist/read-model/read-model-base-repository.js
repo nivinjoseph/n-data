@@ -12,7 +12,7 @@ import { ReadModelShapeGuard } from "./read-model-shape-guard.js";
  * key, declared once by a {@link ReadModelSchema}.
  *
  * Publicly, {@link get} and {@link getByIds} cover lookup by id, {@link getAll} takes the whole
- * table, and {@link save}/{@link delete} (with their `Within` forms) are the explicit writes. Any
+ * table, and {@link save}/{@link saveAll}/{@link delete} (with their `Within` forms) are the explicit writes. Any
  * other read is a method the concrete subclass names for itself, built over one of the `protected`
  * doors below:
  *
@@ -170,6 +170,39 @@ export class ReadModelBaseRepository extends BaseRepository {
         return this._save(model, unitOfWork, false);
     }
     /**
+     * Writes a batch of read models in a transaction this repository owns, and commits it, or rolls
+     * it back and rethrows.
+     *
+     * One multi-row upsert per chunk of up to 500 rows (fewer for a very wide table, since Postgres
+     * binds at most 65535 parameters per statement), so a re-projection of thousands of rows costs a
+     * few round trips rather than one per row. Every model is checked - its class, every value
+     * against its column - before anything is queued, so a bad row anywhere rejects the batch whole,
+     * named by its position and id; and a batch may not carry the same id twice, because Postgres
+     * refuses to upsert one row twice in a statement. An empty batch writes nothing and leaves the
+     * unit of work untouched.
+     *
+     * The rows go out **sorted by id**, whatever order they arrived in: a multi-row upsert locks each
+     * row as it reaches it, so two concurrent batches over overlapping ids in different orders could
+     * deadlock. One order for every batch removes that between batches; a batch can still deadlock
+     * against some other transaction that locks the same rows in another order, which is the usual
+     * Postgres rule and not something a repository can prevent.
+     *
+     * @throws {ArgumentException} If a model is not an instance of the schema's class, a value does not fit its column, or an id repeats within the batch.
+     */
+    saveAll(models) {
+        return this._saveAll(models, this.unitOfWork, true);
+    }
+    /**
+     * Writes a batch into a transaction the caller owns, and **does not commit**. Checked and chunked
+     * exactly as {@link saveAll} is.
+     *
+     * @throws {ArgumentException} If a model is not an instance of the schema's class, a value does not fit its column, or an id repeats within the batch.
+     */
+    saveAllWithin(models, unitOfWork) {
+        given(unitOfWork, "unitOfWork").ensureHasValue().ensureIsObject();
+        return this._saveAll(models, unitOfWork, false);
+    }
+    /**
      * Removes the row with this id in a transaction this repository owns, and commits it. A no-op
      * when no row carries the id - a delete is not row-count checked.
      */
@@ -267,27 +300,69 @@ export class ReadModelBaseRepository extends BaseRepository {
     async queryStatement(sql, ...params) {
         return this._materialize(await this.queryRaw(sql, ...params));
     }
+    // async, like every writer here: a guard failure must surface as a rejection, never as a
+    // synchronous throw from a method whose signature promises a Promise
     async _save(model, unitOfWork, owned) {
         given(model, "model").ensureHasValue().ensureIsObject().ensureIsType(this._schema.modelType);
-        try {
-            // checked before anything is queued, so a value of the wrong kind rejects the save whole
-            await ReadModelShapeGuard.verify(this._schema, model, this.logger);
+        // checked before anything is queued, so a value of the wrong kind rejects the save whole
+        const fatals = this._schema.verifyValues(model);
+        if (fatals.length > 0)
+            throw new ArgumentException("model", `cannot be stored in '${this.table}': ${fatals.map(t => t.message).join(" | ")}`);
+        await this._write(unitOfWork, owned, async () => {
+            await ReadModelShapeGuard.adviseOnce(this._schema, model, this.logger);
             await this.db.executeCommandWithinUnitOfWork(unitOfWork, this._mapper.upsertSql, ...this._mapper.toParams(model));
-            if (owned)
-                await unitOfWork.commit();
-        }
-        catch (error) {
-            await this.logger.logError(error);
-            if (owned)
-                await unitOfWork.rollback();
-            throw error;
-        }
+        });
+    }
+    async _saveAll(models, unitOfWork, owned) {
+        given(models, "models").ensureHasValue().ensureIsArray();
+        if (models.isEmpty)
+            return;
+        // every row checked before anything is queued, named by its position in the batch as handed
+        // over and by its id, so a bad row anywhere rejects the batch whole without a bisection
+        models.forEach((model, i) => {
+            // read through a nullable view: a JavaScript caller can hand over anything, and the
+            // position has to be named even when the slot is empty
+            const id = model?.id;
+            const label = `models[${i}]${typeof id === "string" ? ` (id '${id}')` : ""}`;
+            given(model, label).ensureHasValue().ensureIsObject().ensureIsType(this._schema.modelType);
+            const fatals = this._schema.verifyValues(model);
+            if (fatals.length > 0)
+                throw new ArgumentException("models", `${label} cannot be stored in '${this.table}': ${fatals.map(t => t.message).join(" | ")}`);
+        });
+        // Postgres refuses to upsert one row twice in a statement ("cannot affect row a second
+        // time"), so a repeated id is refused here by name rather than there by position
+        const seen = new Set();
+        const repeated = new Set();
+        for (const model of models)
+            (seen.has(model.id) ? repeated : seen).add(model.id);
+        given([...repeated], "models").ensure(t => t.isEmpty, `a batch cannot carry the same id twice: ${[...repeated].join(", ")}`);
+        // sorted by id: a multi-row upsert locks each row as it reaches it in VALUES order, so two
+        // concurrent batches over overlapping ids in different orders could deadlock - one order for
+        // every batch removes that. Row order is not part of the contract
+        const sorted = [...models].sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+        await this._write(unitOfWork, owned, async () => {
+            await ReadModelShapeGuard.adviseOnce(this._schema, sorted[0], this.logger);
+            const size = this._mapper.chunkSize;
+            for (let start = 0; start < sorted.length; start += size) {
+                const chunk = sorted.slice(start, start + size);
+                const params = chunk.flatMap(t => this._mapper.toParams(t));
+                await this.db.executeCommandWithinUnitOfWork(unitOfWork, this._mapper.upsertSqlFor(chunk.length), ...params);
+            }
+        });
     }
     async _delete(id, unitOfWork, owned) {
         given(id, "id").ensureHasValue().ensureIsString();
         id = id.trim();
+        await this._write(unitOfWork, owned, () => this.db.executeCommandWithinUnitOfWork(unitOfWork, this._mapper.deleteSql, id));
+    }
+    /**
+     * The envelope every write shares: run the statements, commit when this repository owns the
+     * unit of work; on failure log, roll back when owned, and rethrow. A shared unit of work is left
+     * to its owner either way.
+     */
+    async _write(unitOfWork, owned, work) {
         try {
-            await this.db.executeCommandWithinUnitOfWork(unitOfWork, this._mapper.deleteSql, id);
+            await work();
             if (owned)
                 await unitOfWork.commit();
         }
