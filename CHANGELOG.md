@@ -19,11 +19,21 @@ per flagged path and needs a migration to do so.
 - **Breaking:** `ReadModelRepository<T>` gains `saveAll(models)` and `saveAllWithin(models, unitOfWork)`.
   A hand-written implementor — an in-memory test double of a domain interface extending it — must add
   both; a class extending `ReadModelBaseRepository` inherits them.
-- **Breaking:** n-domain 4.0.3 is required, and nested typed paths follow it exclusively. Typed paths,
+- **Breaking:** n-domain 5.0.1 is required, and nested typed paths follow it exclusively. Typed paths,
   array paths and containment element shapes come from `DomainObjectSerialized`, offered only for real
   n-domain `DomainObject`/`DomainEntity` members. A state member typed as a bare or custom
   `Serializable` — even with a structurally typed `serialize()` — no longer offers nested paths:
   convert it to a `DomainObject`, or go through `forRawPath`.
+- **Breaking:** n-domain 5 separates creating an aggregate from loading one, and an application on
+  n-domain 4.x has to move with it. Stored data needs nothing: the repositories here already load
+  through `AggregateRoot.deserializeFromEvents` / `deserializeFromSnapshot`, and every stored event
+  carries the `$version` that n-domain 5 uses to tell a stored event from a new one. Application code
+  is what changes. A new aggregate is created through `AggregateFactory.createFromEvents` — a direct
+  `new MyAggregate(domainContext, [createdEvent])` throws `InvalidOperationException` — and
+  `createFromEvents` no longer loads, so a test that rebuilt an aggregate from `serialize().$events`
+  goes through `AggregateRoot.deserializeFromEvents` instead. A stored event whose `$userId` is blank
+  or missing reads back as `UNKNOWN` rather than as the loading user's id. The full list is "Migration
+  from 4.x" in n-domain's changelog.
 - **Breaking:** `$`-prefixed keys are excluded from every typed surface — paths, array paths and
   `contains` match keys. (n-domain 4.0.2 put `$typename` into the serialized *type*, which would
   otherwise offer paths the segment validation rejects at runtime.) The raw doors are unchanged, and a
